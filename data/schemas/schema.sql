@@ -521,6 +521,95 @@ CREATE TRIGGER update_policy_updated_at BEFORE UPDATE ON policy_persistence
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
+-- AI PROVENANCE TABLES
+-- ============================================================================
+
+-- AI Documents (source tracking)
+CREATE TABLE ai_document (
+    id SERIAL PRIMARY KEY,
+    source_url TEXT NOT NULL,
+    title VARCHAR(500),
+    publisher VARCHAR(200),  -- County name or agency
+    published_date DATE,
+    fetched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sha256 VARCHAR(64) UNIQUE NOT NULL,  -- For deduplication
+    local_path TEXT,  -- Optional: path to stored document
+    file_size_bytes INTEGER,
+    mime_type VARCHAR(100),
+    metadata_json JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_ai_doc_sha256 ON ai_document(sha256);
+CREATE INDEX idx_ai_doc_publisher ON ai_document(publisher);
+
+COMMENT ON TABLE ai_document IS 'Metadata for all policy documents processed by AI extraction';
+
+-- AI Extractions (LLM outputs with full provenance)
+CREATE TABLE ai_extraction (
+    id SERIAL PRIMARY KEY,
+    doc_id INTEGER REFERENCES ai_document(id) ON DELETE CASCADE,
+    task_name VARCHAR(100) NOT NULL,  -- e.g., 'cip_capital_commitment'
+    model VARCHAR(100) NOT NULL,  -- e.g., 'gpt-4-turbo-preview'
+    prompt_version VARCHAR(50) NOT NULL,  -- e.g., 'cip_v1.0'
+    output_json JSONB,  -- Raw model output
+    extracted_facts_json JSONB,  -- Validated structured facts
+    confidence NUMERIC(3,2),  -- Model-reported confidence (0-1)
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    cost_estimate NUMERIC(10,6),  -- USD
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    validation_status VARCHAR(20) CHECK (validation_status IN ('valid', 'failed', 'manual_review')),
+    error_message TEXT,
+    UNIQUE(doc_id, task_name, prompt_version)  -- One extraction per task/prompt version
+);
+
+CREATE INDEX idx_ai_extraction_doc ON ai_extraction(doc_id);
+CREATE INDEX idx_ai_extraction_task ON ai_extraction(task_name, created_at DESC);
+CREATE INDEX idx_ai_extraction_status ON ai_extraction(validation_status);
+
+COMMENT ON TABLE ai_extraction IS 'AI extraction results with full provenance and cost tracking';
+
+-- AI Evidence Links (connects extracted facts to geographic areas)
+CREATE TABLE ai_evidence_link (
+    id SERIAL PRIMARY KEY,
+    geoid VARCHAR(5) REFERENCES md_counties(fips_code),
+    doc_id INTEGER REFERENCES ai_document(id) ON DELETE CASCADE,
+    extraction_id INTEGER REFERENCES ai_extraction(id) ON DELETE CASCADE,
+    claim_type VARCHAR(100) NOT NULL,  -- e.g., 'capital_commitment', 'project_count'
+    claim_value NUMERIC,  -- Quantitative value
+    claim_value_unit VARCHAR(50),  -- e.g., 'USD', 'years', 'count'
+    claim_date DATE,  -- Temporal reference
+    weight NUMERIC(3,2) DEFAULT 1.0,  -- Weight in scoring (0-1)
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_ai_evidence_geoid ON ai_evidence_link(geoid);
+CREATE INDEX idx_ai_evidence_claim ON ai_evidence_link(claim_type);
+
+COMMENT ON TABLE ai_evidence_link IS 'Links AI-extracted facts to counties for scoring';
+
+-- AI Cost Tracking View
+CREATE OR REPLACE VIEW v_ai_cost_summary AS
+SELECT
+    DATE(created_at) as extraction_date,
+    task_name,
+    model,
+    COUNT(*) as extraction_count,
+    SUM(tokens_input) as total_tokens_input,
+    SUM(tokens_output) as total_tokens_output,
+    SUM(cost_estimate) as total_cost_usd,
+    COUNT(CASE WHEN validation_status = 'valid' THEN 1 END) as valid_count,
+    COUNT(CASE WHEN validation_status = 'failed' THEN 1 END) as failed_count,
+    COUNT(CASE WHEN validation_status = 'manual_review' THEN 1 END) as review_count
+FROM ai_extraction
+GROUP BY DATE(created_at), task_name, model
+ORDER BY extraction_date DESC;
+
+COMMENT ON VIEW v_ai_cost_summary IS 'Daily AI extraction cost and validation summary';
+
+-- ============================================================================
 -- GRANTS (adjust for your user)
 -- ============================================================================
 
