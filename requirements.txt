@@ -1,0 +1,64 @@
+# Core Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Database
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.25
+geoalchemy2==0.14.3
+alembic==1.13.1
+
+# Geospatial
+geopandas==0.14.2
+shapely==2.0.2
+pyproj==3.6.1
+fiona==1.9.5
+rtree==1.1.0
+
+# Data Ingestion
+requests==2.31.0
+pandas==2.1.4
+numpy==1.26.3
+openpyxl==3.1.2  # For Excel files from some gov sources
+lxml==5.1.0  # For XML parsing (GTFS, etc.)
+
+# Census & Government APIs
+census==0.8.22  # Census API wrapper
+us==3.1.1  # US state metadata
+
+# HTTP & Scraping (defensive, for public data only)
+httpx==0.26.0
+beautifulsoup4==4.12.3
+
+# OpenStreetMap
+osmnx==1.8.1  # For highway network analysis
+
+# Scheduling & Background Tasks
+apscheduler==3.10.4
+
+# Logging & Monitoring
+python-json-logger==2.0.7
+sentry-sdk[fastapi]==1.39.2  # Optional: error tracking
+
+# Utilities
+python-dotenv==1.0.0
+click==8.1.7  # For CLI commands
+pyyaml==6.0.1
+pytz==2023.3.post1
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+httpx==0.26.0  # For FastAPI testing
+
+# Development
+black==24.1.1
+flake8==7.0.0
+mypy==1.8.0
+
+# Specific for data sources
+pygris==0.1.6  # Census TIGER shapefiles
+gtfs-kit==6.1.0  # GTFS feed parsing
