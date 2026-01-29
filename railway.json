@@ -25,19 +25,19 @@
   },
   "cron": [
     {
-      "name": "monthly-employment-update",
+      "name": "monthly-pipeline-run",
       "schedule": "0 2 1 * *",
-      "command": "python -m src.ingest.layer1_employment"
+      "command": "python src/run_pipeline.py --level county --run-ai auto --skip-ingestion false"
     },
     {
-      "name": "monthly-housing-update",
-      "schedule": "0 3 1 * *",
-      "command": "python -m src.ingest.layer4_housing"
+      "name": "weekly-ai-cip-extraction",
+      "schedule": "0 3 * * 1",
+      "command": "python -m src.ai.pipeline.cip_extractor --all --cost-limit 5.0"
     },
     {
-      "name": "quarterly-full-refresh",
-      "schedule": "0 4 1 1,4,7,10 *",
-      "command": "python -m src.ingest.run_all"
+      "name": "daily-export-refresh",
+      "schedule": "0 5 * * *",
+      "command": "python src/run_pipeline.py --export-only"
     }
   ]
 }

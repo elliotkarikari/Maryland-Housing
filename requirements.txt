@@ -62,3 +62,8 @@ mypy==1.8.0
 # Specific for data sources
 pygris==0.1.6  # Census TIGER shapefiles
 gtfs-kit==6.1.0  # GTFS feed parsing
+
+# AI / LLM (optional, only if AI_ENABLED=true)
+openai==1.10.0  # OpenAI API for document extraction
+PyPDF2==3.0.1  # PDF text extraction
+tiktoken==0.5.2  # Token counting for OpenAI models
