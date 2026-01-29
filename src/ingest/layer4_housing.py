@@ -13,15 +13,21 @@ Signals Produced:
 - Housing supply indicators
 """
 
+import sys
+from pathlib import Path
 import pandas as pd
-import numpy as np
 from datetime import datetime
 from sqlalchemy import text
 import argparse
 
+# Ensure project root is on sys.path when running as a script
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
-from src.utils.data_sources import fetch_census_data
+from src.utils.data_sources import fetch_census_data, download_file
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,7 +48,59 @@ ACS_HOUSING_VARIABLES = {
     'B25024_007E': 'units_10_19_units',        # 10-19 units
     'B25024_008E': 'units_20_49_units',        # 20-49 units
     'B25024_009E': 'units_50plus_units',       # 50+ units
+    'B11001_001E': 'households_total',         # Total households
 }
+
+CACHE_DIR = Path("data/cache/housing")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+BPS_COUNTY_BASE_URL = "https://www2.census.gov/econ/bps/County"
+
+
+def _download_bps_file(year: int) -> Path:
+    """Download Census BPS county annual file and return local path."""
+    filename = f"co{year}a.txt"
+    target = CACHE_DIR / filename
+    if not target.exists():
+        url = f"{BPS_COUNTY_BASE_URL}/{filename}"
+        logger.info(f"Downloading BPS county file for {year}")
+        ok = download_file(url, str(target))
+        if not ok:
+            raise RuntimeError(f"Failed to download BPS county file for {year}")
+    return target
+
+
+def fetch_bps_permits(data_year: int) -> pd.DataFrame:
+    """Fetch annual county permit counts from BPS (Census)."""
+    path = _download_bps_file(data_year)
+    logger.info(f"Reading BPS county permits for {data_year}")
+
+    columns = [
+        "survey_date", "fips_state", "fips_county", "region", "division", "county_name",
+        "bldg_101", "units_101", "val_101",
+        "bldg_103", "units_103", "val_103",
+        "bldg_104", "units_104", "val_104",
+        "bldg_105", "units_105", "val_105",
+        "bldg_101_rep", "units_101_rep", "val_101_rep",
+        "bldg_103_rep", "units_103_rep", "val_103_rep",
+        "bldg_104_rep", "units_104_rep", "val_104_rep",
+        "bldg_105_rep", "units_105_rep", "val_105_rep",
+    ]
+
+    df = pd.read_csv(path, header=None, names=columns, dtype=str, low_memory=False)
+    df['fips_state'] = df['fips_state'].str.zfill(2)
+    df['fips_county'] = df['fips_county'].str.zfill(3)
+    df['fips_code'] = df['fips_state'] + df['fips_county']
+    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())].copy()
+
+    for col in ['units_101', 'units_103', 'units_104', 'units_105']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df['permits_single_family'] = df['units_101']
+    df['permits_multifamily'] = df[['units_103', 'units_104', 'units_105']].sum(axis=1, min_count=1)
+    df['permits_total'] = df[['units_101', 'units_103', 'units_104', 'units_105']].sum(axis=1, min_count=1)
+
+    return df[['fips_code', 'permits_total', 'permits_single_family', 'permits_multifamily']]
 
 
 def fetch_acs_housing_data(data_year: int = 2021) -> pd.DataFrame:
@@ -125,6 +183,12 @@ def calculate_housing_indicators(df: pd.DataFrame, data_year: int) -> pd.DataFra
     df['single_family_units'] = df['units_single_family'] + df['units_single_attached']
     df['multifamily_share'] = df['multifamily_units'] / df['total_housing_units']
 
+    # Permit intensity (per 1000 households)
+    if 'permits_total' in df.columns and 'households_total' in df.columns:
+        df['permits_per_1000_households'] = (df['permits_total'] / df['households_total']) * 1000
+    else:
+        df['permits_per_1000_households'] = pd.NA
+
     # Housing elasticity index (simplified: lower price-to-income + higher vacancy = more elastic)
     # Normalize components
     price_ratio_norm = 1 - (df['price_to_income_ratio'].rank(pct=True))
@@ -132,8 +196,12 @@ def calculate_housing_indicators(df: pd.DataFrame, data_year: int) -> pd.DataFra
 
     df['housing_elasticity_index'] = (0.6 * price_ratio_norm + 0.4 * vacancy_norm)
 
-    # Supply responsiveness score (vacancy as proxy for supply-demand balance)
-    df['supply_responsiveness_score'] = df['vacancy_rate'].clip(0, 0.15) / 0.15
+    # Supply responsiveness score (vacancy + permits)
+    permits_norm = df['permits_per_1000_households'].rank(pct=True) if df['permits_per_1000_households'].notna().any() else None
+    if permits_norm is not None:
+        df['supply_responsiveness_score'] = (0.5 * vacancy_norm + 0.5 * permits_norm)
+    else:
+        df['supply_responsiveness_score'] = df['vacancy_rate'].clip(0, 0.15) / 0.15
 
     logger.info(f"Calculated indicators for {len(df)} counties")
     return df
@@ -152,34 +220,34 @@ def store_housing_data(df: pd.DataFrame):
         insert_sql = text("""
             INSERT INTO layer4_housing_elasticity (
                 fips_code, data_year,
+                permits_total, permits_single_family, permits_multifamily,
+                permits_per_1000_households, permits_3yr_trend,
                 median_home_value, median_household_income,
-                price_to_income_ratio,
-                total_housing_units, occupied_units, vacant_units,
-                vacancy_rate, occupancy_rate,
-                single_family_units, multifamily_units, multifamily_share,
+                price_to_income_ratio, price_to_income_5yr_change,
+                has_open_zoning_gis, zoning_capacity_indicator,
                 supply_responsiveness_score, housing_elasticity_index
             ) VALUES (
                 :fips_code, :data_year,
+                :permits_total, :permits_single_family, :permits_multifamily,
+                :permits_per_1000_households, :permits_3yr_trend,
                 :median_home_value, :median_household_income,
-                :price_to_income_ratio,
-                :total_housing_units, :occupied_units, :vacant_units,
-                :vacancy_rate, :occupancy_rate,
-                :single_family_units, :multifamily_units, :multifamily_share,
+                :price_to_income_ratio, :price_to_income_5yr_change,
+                :has_open_zoning_gis, :zoning_capacity_indicator,
                 :supply_responsiveness_score, :housing_elasticity_index
             )
             ON CONFLICT (fips_code, data_year)
             DO UPDATE SET
+                permits_total = EXCLUDED.permits_total,
+                permits_single_family = EXCLUDED.permits_single_family,
+                permits_multifamily = EXCLUDED.permits_multifamily,
+                permits_per_1000_households = EXCLUDED.permits_per_1000_households,
+                permits_3yr_trend = EXCLUDED.permits_3yr_trend,
                 median_home_value = EXCLUDED.median_home_value,
                 median_household_income = EXCLUDED.median_household_income,
                 price_to_income_ratio = EXCLUDED.price_to_income_ratio,
-                total_housing_units = EXCLUDED.total_housing_units,
-                occupied_units = EXCLUDED.occupied_units,
-                vacant_units = EXCLUDED.vacant_units,
-                vacancy_rate = EXCLUDED.vacancy_rate,
-                occupancy_rate = EXCLUDED.occupancy_rate,
-                single_family_units = EXCLUDED.single_family_units,
-                multifamily_units = EXCLUDED.multifamily_units,
-                multifamily_share = EXCLUDED.multifamily_share,
+                price_to_income_5yr_change = EXCLUDED.price_to_income_5yr_change,
+                has_open_zoning_gis = EXCLUDED.has_open_zoning_gis,
+                zoning_capacity_indicator = EXCLUDED.zoning_capacity_indicator,
                 supply_responsiveness_score = EXCLUDED.supply_responsiveness_score,
                 housing_elasticity_index = EXCLUDED.housing_elasticity_index,
                 updated_at = CURRENT_TIMESTAMP
@@ -189,17 +257,17 @@ def store_housing_data(df: pd.DataFrame):
             row_dict = {
                 'fips_code': row['fips_code'],
                 'data_year': int(row['data_year']),
+                'permits_total': int(row['permits_total']) if pd.notna(row.get('permits_total')) else None,
+                'permits_single_family': int(row['permits_single_family']) if pd.notna(row.get('permits_single_family')) else None,
+                'permits_multifamily': int(row['permits_multifamily']) if pd.notna(row.get('permits_multifamily')) else None,
+                'permits_per_1000_households': float(row['permits_per_1000_households']) if pd.notna(row.get('permits_per_1000_households')) else None,
+                'permits_3yr_trend': None if pd.isna(row.get('permits_3yr_trend')) else row.get('permits_3yr_trend'),
                 'median_home_value': float(row['median_home_value']) if pd.notna(row['median_home_value']) else None,
                 'median_household_income': float(row['median_household_income']) if pd.notna(row['median_household_income']) else None,
                 'price_to_income_ratio': float(row['price_to_income_ratio']) if pd.notna(row['price_to_income_ratio']) else None,
-                'total_housing_units': int(row['total_housing_units']) if pd.notna(row['total_housing_units']) else None,
-                'occupied_units': int(row['occupied_units']) if pd.notna(row['occupied_units']) else None,
-                'vacant_units': int(row['vacant_units']) if pd.notna(row['vacant_units']) else None,
-                'vacancy_rate': float(row['vacancy_rate']) if pd.notna(row['vacancy_rate']) else None,
-                'occupancy_rate': float(row['occupancy_rate']) if pd.notna(row['occupancy_rate']) else None,
-                'single_family_units': int(row['single_family_units']) if pd.notna(row['single_family_units']) else None,
-                'multifamily_units': int(row['multifamily_units']) if pd.notna(row['multifamily_units']) else None,
-                'multifamily_share': float(row['multifamily_share']) if pd.notna(row['multifamily_share']) else None,
+                'price_to_income_5yr_change': float(row['price_to_income_5yr_change']) if pd.notna(row.get('price_to_income_5yr_change')) else None,
+                'has_open_zoning_gis': None,
+                'zoning_capacity_indicator': None,
                 'supply_responsiveness_score': float(row['supply_responsiveness_score']) if pd.notna(row['supply_responsiveness_score']) else None,
                 'housing_elasticity_index': float(row['housing_elasticity_index']) if pd.notna(row['housing_elasticity_index']) else None,
             }
@@ -219,11 +287,12 @@ def run_layer4_ingestion(data_year: int = None, multi_year: bool = True):
         data_year: Latest year to process (default: 2021, latest ACS 5-year)
         multi_year: If True, fetch 3 years of ACS data; if False, single year only
     """
-    latest_year = data_year or settings.ACS_LATEST_YEAR
+    current_year = datetime.utcnow().year
+    latest_year = data_year or min(settings.ACS_LATEST_YEAR, current_year)
 
     if multi_year:
-        # Fetch 3 years of ACS 5-year estimates (2019, 2020, 2021)
-        years_to_fetch = list(range(latest_year - 2, latest_year + 1))
+        # Fetch last 5 years (max lookback per project rules)
+        years_to_fetch = list(range(latest_year - 4, latest_year + 1))
         logger.info(f"Starting Layer 4 (Housing Elasticity) MULTI-YEAR ingestion for years {years_to_fetch[0]}-{years_to_fetch[-1]}")
     else:
         years_to_fetch = [latest_year]
@@ -231,6 +300,7 @@ def run_layer4_ingestion(data_year: int = None, multi_year: bool = True):
 
     total_records = 0
     failed_years = []
+    all_years = []
 
     for year in years_to_fetch:
         logger.info("=" * 70)
@@ -247,21 +317,74 @@ def run_layer4_ingestion(data_year: int = None, multi_year: bool = True):
                 failed_years.append(year)
                 continue
 
+            # Fetch BPS permits (may not be available for all years)
+            permits_df = pd.DataFrame()
+            try:
+                logger.info(f"  Fetching BPS permit data for {year}...")
+                permits_df = fetch_bps_permits(data_year=year)
+            except Exception as e:
+                logger.warning(f"  BPS permits unavailable for {year}: {e}")
+
             # Calculate indicators
             logger.info(f"  Calculating housing indicators for {year}...")
-            df = calculate_housing_indicators(acs_df, year)
+            if not permits_df.empty:
+                merged = acs_df.merge(permits_df, on='fips_code', how='left')
+            else:
+                merged = acs_df.copy()
+                merged['permits_total'] = pd.NA
+                merged['permits_single_family'] = pd.NA
+                merged['permits_multifamily'] = pd.NA
 
-            # Store in database
-            logger.info(f"  Storing {year} data...")
-            store_housing_data(df)
-
-            total_records += len(df)
-            logger.info(f"✓ Year {year} complete: {len(df)} records stored")
+            df = calculate_housing_indicators(merged, year)
+            all_years.append(df)
+            logger.info(f"✓ Year {year} prepared: {len(df)} records")
 
         except Exception as e:
             logger.error(f"✗ Year {year} ingestion failed: {e}", exc_info=True)
             failed_years.append(year)
             continue
+
+    if not all_years:
+        raise Exception("No housing data produced from ACS/BPS sources")
+
+    combined = pd.concat(all_years, ignore_index=True)
+
+    # Compute 5-year price-to-income change when baseline exists
+    combined['price_to_income_5yr_change'] = pd.NA
+    for fips in combined['fips_code'].unique():
+        sub = combined[combined['fips_code'] == fips].copy()
+        year_to_ratio = {row['data_year']: row['price_to_income_ratio'] for _, row in sub.iterrows()}
+        for idx, row in sub.iterrows():
+            baseline_year = row['data_year'] - 5
+            if baseline_year in year_to_ratio:
+                baseline = year_to_ratio[baseline_year]
+                if pd.notna(baseline):
+                    combined.loc[idx, 'price_to_income_5yr_change'] = round(row['price_to_income_ratio'] - baseline, 4)
+
+    # Compute 3-year permits trend (per 1000 households) when baseline exists
+    combined['permits_3yr_trend'] = pd.NA
+    for fips in combined['fips_code'].unique():
+        sub = combined[combined['fips_code'] == fips].copy()
+        year_to_permits = {row['data_year']: row['permits_per_1000_households'] for _, row in sub.iterrows()}
+        for idx, row in sub.iterrows():
+            baseline_year = row['data_year'] - 2
+            if baseline_year in year_to_permits:
+                baseline = year_to_permits[baseline_year]
+                current = row['permits_per_1000_households']
+                if pd.notna(baseline) and pd.notna(current) and baseline != 0:
+                    pct_change = (current - baseline) / baseline * 100
+                    if pct_change >= 5:
+                        combined.loc[idx, 'permits_3yr_trend'] = 'increasing'
+                    elif pct_change <= -5:
+                        combined.loc[idx, 'permits_3yr_trend'] = 'decreasing'
+                    else:
+                        combined.loc[idx, 'permits_3yr_trend'] = 'stable'
+
+    # Store in database
+    logger.info("Storing combined housing data...")
+    store_housing_data(combined)
+    total_records = len(combined)
+    logger.info(f"✓ Stored {total_records} housing records")
 
     # Log final summary
     logger.info("=" * 70)
@@ -277,7 +400,7 @@ def run_layer4_ingestion(data_year: int = None, multi_year: bool = True):
     # Log refresh
     log_refresh(
         layer_name="layer4_housing_elasticity",
-        data_source="ACS 5-Year Estimates",
+        data_source="ACS 5-Year Estimates + Census BPS",
         status="success" if not failed_years or len(failed_years) < len(years_to_fetch) else "partial",
         records_processed=total_records,
         records_inserted=total_records,
