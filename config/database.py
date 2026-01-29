@@ -131,23 +131,70 @@ def init_db():
     logger.info("Initializing database schema...")
 
     try:
-        # Read and execute schema.sql
+        # Use psql command directly to avoid SQL parsing issues
+        import subprocess
+        import os
+        import platform
+        schema_path = "data/schemas/schema.sql"
+
+        # Get database URL from settings
+        db_url = settings.DATABASE_URL
+
+        # Find psql command (check common locations)
+        psql_cmd = 'psql'
+        if platform.system() == 'Darwin':  # macOS
+            # Try Homebrew paths
+            homebrew_paths = [
+                '/opt/homebrew/opt/postgresql@17/bin/psql',
+                '/opt/homebrew/opt/postgresql@16/bin/psql',
+                '/usr/local/opt/postgresql@17/bin/psql',
+                '/usr/local/opt/postgresql@16/bin/psql'
+            ]
+            for path in homebrew_paths:
+                if os.path.exists(path):
+                    psql_cmd = path
+                    break
+
+        # Execute schema using psql
+        logger.info(f"Executing schema from {schema_path} using {psql_cmd}")
+        result = subprocess.run(
+            [psql_cmd, db_url, '-f', schema_path],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode == 0:
+            logger.info("Database schema initialized successfully")
+        else:
+            logger.warning(f"Schema execution warnings: {result.stderr}")
+            # Don't raise - tables may already exist
+            logger.info("Database schema initialization completed with warnings")
+
+    except FileNotFoundError:
+        # psql not in PATH - fall back to SQLAlchemy
+        logger.warning("psql not found, using SQLAlchemy (may have issues with functions)")
+
         schema_path = "data/schemas/schema.sql"
         with open(schema_path, 'r') as f:
             schema_sql = f.read()
 
         with get_db() as db:
-            # Execute schema (split by semicolons)
-            statements = [s.strip() for s in schema_sql.split(';') if s.strip()]
-            for statement in statements:
-                try:
-                    db.execute(text(statement))
-                except Exception as e:
-                    # Log but continue (some statements may fail if already exist)
-                    logger.warning(f"Statement execution warning: {e}")
-
-            db.commit()
-            logger.info("Database schema initialized successfully")
+            try:
+                # Try to execute as single statement
+                db.execute(text(schema_sql))
+                db.commit()
+                logger.info("Database schema initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize database: {e}")
+                logger.info("Trying statement-by-statement (may have issues)...")
+                # Fall back to splitting by semicolons
+                statements = [s.strip() for s in schema_sql.split(';') if s.strip()]
+                for statement in statements:
+                    try:
+                        db.execute(text(statement))
+                    except Exception as e2:
+                        logger.warning(f"Statement warning: {e2}")
+                db.commit()
 
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")

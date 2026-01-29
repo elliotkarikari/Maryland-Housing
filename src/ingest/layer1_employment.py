@@ -427,7 +427,10 @@ def merge_and_store(
                     updated_at = CURRENT_TIMESTAMP
             """)
 
-            db.execute(sql, row.to_dict())
+            # Convert row to dict and replace NaN with None for PostgreSQL NULL
+            row_dict = row.to_dict()
+            row_dict = {k: (None if pd.isna(v) else v) for k, v in row_dict.items()}
+            db.execute(sql, row_dict)
 
         db.commit()
 
