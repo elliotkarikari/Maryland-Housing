@@ -226,7 +226,7 @@ def fetch_lodes_wac(state: str = "md", year: int = None, job_type: str = "JT00")
 
 def fetch_fema_nfhl(state_code: str = "MD") -> Dict[str, Any]:
     """
-    Fetch FEMA National Flood Hazard Layer data.
+    Fetch FEMA National Flood Hazard Layer data with fallback to old URL.
 
     Args:
         state_code: State abbreviation (default: MD)
@@ -234,33 +234,44 @@ def fetch_fema_nfhl(state_code: str = "MD") -> Dict[str, Any]:
     Returns:
         GeoJSON FeatureCollection of flood zones
     """
-    # FEMA MapServer query endpoint
-    url = f"{settings.FEMA_NFHL_URL}/28/query"  # Layer 28 is SFHA
+    # Try new /arcgis/ endpoint first, fallback to old /gis/nfhl/ endpoint
+    urls_to_try = [
+        (f"{settings.FEMA_NFHL_URL}/28/query", "new /arcgis/ endpoint"),
+        (f"{settings.FEMA_NFHL_URL_FALLBACK}/28/query", "fallback /gis/nfhl/ endpoint")
+    ]
 
     params = {
         "where": f"STATE_CODE='{state_code}'",
-        "outFields": "*",
+        "outFields": "OBJECTID,FLD_ZONE,ZONE_SUBTY",  # Essential fields to prevent 404
+        "returnGeometry": "true",
         "f": "geojson"
     }
 
     logger.info(f"Fetching FEMA NFHL data for {state_code}")
 
-    try:
-        response = requests.get(url, params=params, timeout=120)
-        response.raise_for_status()
+    for url, desc in urls_to_try:
+        try:
+            logger.info(f"Trying {desc}: {url}")
+            response = requests.get(url, params=params, timeout=120)
+            response.raise_for_status()
 
-        data = response.json()
+            data = response.json()
 
-        if "features" in data:
-            logger.info(f"Fetched {len(data['features'])} FEMA flood zones")
-        else:
-            logger.warning("No features in FEMA NFHL response")
+            if "features" in data:
+                logger.info(f"✓ Fetched {len(data['features'])} FEMA flood zones from {desc}")
+                return data
+            else:
+                logger.warning(f"No features in FEMA NFHL response from {desc}")
 
-        return data
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"FEMA NFHL request failed for {desc}: {e}")
+            if url == urls_to_try[-1][0]:  # Last URL failed
+                logger.error(f"All FEMA NFHL endpoints failed")
+                raise
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"FEMA NFHL request failed: {e}")
-        raise
+    # If no features found from any endpoint
+    logger.warning("No FEMA flood zones found for {state_code}")
+    return {"type": "FeatureCollection", "features": []}
 
 
 def fetch_irs_migration(year_range: str = "2122") -> pd.DataFrame:

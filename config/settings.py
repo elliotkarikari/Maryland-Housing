@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     BLS_API_BASE_URL: str = "https://api.bls.gov/publicAPI/v2"
     USASPENDING_API_URL: str = "https://api.usaspending.gov/api/v2"
     CENSUS_API_BASE_URL: str = "https://api.census.gov/data"
-    FEMA_NFHL_URL: str = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
+    FEMA_NFHL_URL: str = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer"
+    FEMA_NFHL_URL_FALLBACK: str = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
     EPA_EJSCREEN_URL: str = "https://gaftp.epa.gov/EJSCREEN"
 
     # Maryland state FIPS code

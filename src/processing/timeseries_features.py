@@ -365,7 +365,7 @@ def compute_all_timeseries_features(
         },
         'school_trajectory': {
             'table': 'layer3_school_trajectory',
-            'metric': 'enrollment_momentum_score'
+            'metric': 'total_enrollment'  # Use total enrollment for timeseries (more reliable than momentum score)
         },
         'housing_elasticity': {
             'table': 'layer4_housing_elasticity',
