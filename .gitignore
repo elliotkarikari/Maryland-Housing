@@ -98,3 +98,7 @@ coverage.xml
 *.swp
 *~
 .tmp/
+
+# Data cache (auto-downloaded, never commit)
+data/cache/
+data/cache/**/*
