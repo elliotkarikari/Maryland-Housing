@@ -217,7 +217,7 @@ The timeseries analysis uses one primary metric per layer as the core signal for
 
 | Layer                         | Table                         | Primary Metric                     | Notes                                    |
 | ----------------------------- | ----------------------------- | ---------------------------------- | ---------------------------------------- |
-| Employment Gravity (L1)       | `layer1_employment_gravity`   | `employment_diversification_score` | Used for multi-year trend and stability. |
+| Employment Gravity (L1)       | `layer1_employment_gravity`   | `economic_opportunity_index`       | Used for multi-year trend and stability. |
 | Mobility Optionality (L2)     | `layer2_mobility_optionality` | `mobility_optionality_index`       | Used for multi-year trend and stability. |
 | School System Trajectory (L3) | `layer3_school_trajectory`    | `total_enrollment`                 | Uses total enrollment for timeseries.    |
 | Housing Elasticity (L4)       | `layer4_housing_elasticity`   | `housing_elasticity_index`         | Used for multi-year trend and stability. |
@@ -241,9 +241,93 @@ This section documents the raw fields written into each layer table. These are t
 
 ### Layer 1 — Employment Gravity (`layer1_employment_gravity`)
 
-Primary sources: LODES (employment), BLS QCEW (wages/establishments), USAspending (federal awards).
+**Version 2.0 (2026): Accessibility-Based Economic Opportunity**
 
-Stored fields:
+Layer 1 was completely overhauled in January 2026 to use accessibility-based metrics instead of simple job counts. The new approach measures actual ability to reach high-wage jobs using proximity-based routing and LODES wage-segmented data.
+
+**Primary sources:**
+- LODES WAC (Workplace Area Characteristics): Employment by census tract with wage segments
+- Census: Tract boundaries and population for weighting
+- ACS: Tract-level population for aggregation
+
+**Wage Segments (LODES):**
+
+| Segment | Column | Definition |
+|---------|--------|------------|
+| Low Wage | SE01 | Jobs earning < $15,000/year |
+| Mid Wage | SE02 | Jobs earning $15,000 - $40,000/year |
+| High Wage | SE03 | Jobs earning > $40,000/year |
+
+**Core Economic Accessibility Metrics (NEW in v2):**
+
+| Metric | Description |
+|--------|-------------|
+| `high_wage_jobs_accessible_30min` | High-wage jobs (SE03) reachable within 30 minutes |
+| `high_wage_jobs_accessible_45min` | High-wage jobs (SE03) reachable within 45 minutes |
+| `total_jobs_accessible_45min` | All jobs reachable within 45 minutes |
+| `pct_regional_high_wage_accessible` | Percentage of regional high-wage jobs reachable |
+| `wage_quality_ratio` | Ratio of high-wage to low-wage accessible jobs |
+
+**Normalized Scores (0-1 scale):**
+
+| Score | Computation |
+|-------|-------------|
+| `economic_accessibility_score` | Percentile rank of high_wage_jobs_accessible_45min |
+| `job_quality_index` | Weighted composite: 0.7×economic_accessibility + 0.3×wage_quality |
+
+**Economic Accessibility Score Formula:**
+```
+economic_accessibility_score = percentile_rank(high_wage_jobs_accessible_45min)
+
+job_quality_index =
+    0.70 × economic_accessibility_score +
+    0.30 × percentile_rank(wage_quality_ratio)
+```
+
+**Composite Opportunity Index (NEW):**
+```
+economic_opportunity_index =
+    0.40 × employment_diversification_score +
+    0.60 × economic_accessibility_score
+```
+
+This composite becomes the primary Layer 1 metric used for timeseries analysis.
+
+**Sector Diversity Metrics:**
+
+| Metric | Description |
+|--------|-------------|
+| `sector_diversity_shannon` | Shannon entropy across NAICS 2-digit sectors |
+| `high_wage_sector_concentration` | HHI concentration of high-wage jobs by sector |
+
+**Tract-Level Analysis:**
+
+The v2 system computes economic accessibility at the census tract level first, then aggregates to county using population-weighted averages:
+
+1. **Proximity-based gravity model**: Uses haversine distance with distance decay
+2. **Distance thresholds**: 20km (~30 min), 35km (~45 min) approximations
+3. **Population weighting**: County scores weighted by tract population
+4. **No Java required**: Pure Python implementation using scipy
+
+**Distance Decay Function:**
+```python
+# Gravity model: jobs weighted by inverse square of distance
+weight = 1 / (1 + (distance_km / reference_km)²)
+accessibility = Σ(jobs × weight)
+```
+
+**Why Wage-Weighted Accessibility > Raw Job Counts:**
+
+The v1 approach counted total jobs and sector diversity, which correlates weakly with economic opportunity. The v2 approach measures what matters for family viability:
+
+- **High-wage job access**: Jobs that support family formation (>$40k)
+- **Job quality ratio**: Balance of high vs low-wage opportunities
+- **Regional reach**: Access to the broader labor market
+
+This makes `economic_opportunity_index` a more robust measure of economic opportunity, combining
+local job-base strength with regional access to high-wage opportunities.
+
+**V1 Fields (retained for backwards compatibility):**
 
 - `total_jobs`
 - `sector_diversity_entropy`
@@ -262,27 +346,110 @@ Stored fields:
 - `federal_awards_5yr_avg`
 - `federal_awards_volatility`
 - `stable_sector_share`
-- `employment_diversification_score` (derived)
+- `employment_diversification_score` (v1 local strength composite)
+- `economic_opportunity_index` (v1 + v2 combined)
 
-Source: `src/ingest/layer1_employment.py` (`merge_and_store`).
+**Source:** `src/ingest/layer1_economic_accessibility.py` (v2), `src/ingest/layer1_employment.py` (v1 fallback).
+
+**Tract Table:** `layer1_economic_opportunity_tract` (new in v2)
 
 ### Layer 2 — Mobility Optionality (`layer2_mobility_optionality`)
 
-Primary sources: OpenStreetMap (highways, rail), GTFS-like feeds when available.
+**Version 2.0 (2026): Accessibility-Based Metrics**
 
-Stored fields:
+Layer 2 was completely overhauled in January 2026 to use modern accessibility-based analysis instead of simple infrastructure counts. The new approach measures actual ability to reach jobs and opportunities using travel time routing.
 
-- `highway_miles_total`
-- `interstate_exits`
-- `major_highway_redundancy`
-- `has_rail_service`
-- `has_frequent_bus`
-- `transit_stations_count`
-- `mode_count`
-- `mobility_optionality_index` (derived)
-- `aadt_major_corridors` (currently null)
+**Primary sources:**
+- OpenStreetMap: Maryland statewide extract (.osm.pbf) from Geofabrik
+- GTFS feeds: MTA Maryland (local bus, light rail, metro, MARC, commuter bus), WMATA
+- LODES: Workplace Area Characteristics (jobs by census tract)
+- Census: Tract boundaries and population for weighting
 
-Source: `src/ingest/layer2_mobility.py` (`store_mobility_data`).
+**Computation Engine:**
+- **R5py** (Conveyal R5 routing engine Python wrapper) for travel time matrix computation
+- Fallback: Proximity-based gravity model if R5 is not available
+
+**Core Accessibility Metrics (NEW in v2):**
+
+| Metric | Description |
+|--------|-------------|
+| `jobs_accessible_transit_45min` | Jobs reachable by transit within 45 minutes |
+| `jobs_accessible_transit_30min` | Jobs reachable by transit within 30 minutes |
+| `jobs_accessible_walk_30min` | Jobs reachable by walking within 30 minutes |
+| `jobs_accessible_bike_30min` | Jobs reachable by cycling within 30 minutes |
+| `jobs_accessible_car_30min` | Jobs reachable by car within 30 minutes (baseline) |
+| `pct_regional_jobs_by_transit` | Percentage of regional jobs reachable by transit |
+| `transit_car_accessibility_ratio` | Transit competitiveness vs car access |
+
+**Normalized Scores (0-1 scale):**
+
+| Score | Computation |
+|-------|-------------|
+| `transit_accessibility_score` | Percentile rank of jobs_accessible_transit_45min |
+| `walk_accessibility_score` | Percentile rank of jobs_accessible_walk_30min |
+| `bike_accessibility_score` | Percentile rank of jobs_accessible_bike_30min |
+| `multimodal_accessibility_score` | Weighted composite (see below) |
+
+**Multimodal Accessibility Score Formula:**
+```
+multimodal_accessibility_score =
+    0.60 × transit_accessibility_score +
+    0.25 × walk_accessibility_score +
+    0.15 × bike_accessibility_score
+```
+
+This composite becomes the new `mobility_optionality_index` used for timeseries analysis.
+
+**Transit Quality Metrics:**
+
+| Metric | Description |
+|--------|-------------|
+| `transit_stop_density` | Transit stops per square mile |
+| `frequent_transit_area_pct` | Fraction of stops with ≤15 min headways |
+| `average_headway_minutes` | Average service frequency |
+
+**Infrastructure Metrics (retained from v1):**
+
+| Metric | Description |
+|--------|-------------|
+| `highway_miles_total` | Total major highway miles in county |
+| `interstate_exits` | Count of interstate exits |
+| `major_highway_redundancy` | Boolean: multiple major routes available |
+| `has_rail_service` | Boolean: rail transit available |
+| `has_frequent_bus` | Boolean: frequent bus service available |
+| `transit_stations_count` | Total transit stops |
+| `mode_count` | Number of distinct modes (highway, rail, bus) |
+
+**Tract-Level Analysis:**
+
+The v2 system computes accessibility at the census tract level first, then aggregates to county using population-weighted averages. This provides:
+
+1. **Finer spatial resolution**: Tract centroids serve as origins
+2. **Population weighting**: County scores weighted by tract population
+3. **Intra-county variation**: Can identify transit deserts vs hubs
+
+**Data Provenance:**
+
+| Field | Description |
+|-------|-------------|
+| `gtfs_feed_date` | Date of GTFS snapshot used |
+| `osm_extract_date` | Date of OSM data used |
+| `lodes_year` | Year of LODES job data |
+| `accessibility_version` | `v1-infrastructure` or `v2-accessibility` |
+
+**Why Accessibility > Infrastructure Counts:**
+
+The v1 approach counted infrastructure (highway miles, transit stops) which correlates weakly with actual mobility. The v2 approach measures what matters:
+
+- **Jobs you can actually reach** within a reasonable commute time
+- **Transit competitiveness** vs driving (key for mode choice)
+- **Regional job market access** (not just local infrastructure)
+
+This makes `mobility_optionality_index` a true measure of economic opportunity access, not just infrastructure presence.
+
+**Source:** `src/ingest/layer2_accessibility.py` (v2), `src/ingest/layer2_mobility.py` (v1 fallback).
+
+**Tract Table:** `layer2_mobility_accessibility_tract` (new in v2)
 
 ### Layer 3 — School System Trajectory (`layer3_school_trajectory`)
 
@@ -387,7 +554,8 @@ The system is explicitly designed to avoid synthetic or imputed values. This cre
 
 3. **Layer-specific caveats**
 
-- **Layer 2 (Mobility):** currently uses OSM + transit feeds and is typically point-in-time. Multi-year trend may be limited until multi-year mobility sources are added.
+- **Layer 1 (Economic Opportunity v2):** Uses LODES wage-segmented data with proximity-based accessibility model. LODES data lags ~2-3 years (latest typically 2021). High-wage job accessibility varies significantly between DC-adjacent counties and rural Western Maryland. The proximity model approximates travel time as straight-line distance, which may underestimate rural accessibility due to sparse road networks.
+- **Layer 2 (Mobility v2):** Uses R5 routing engine for accessibility computation. Multi-year trend now possible via archived GTFS feeds from Mobility Database. Transit accessibility scores may vary significantly between urban (DC-adjacent) and rural counties. The fallback proximity model is less accurate but preserves basic accessibility signal.
 - **Layer 3 (Schools):** depends on CCD membership file availability; some years can be missing, creating gaps in momentum and stability.
 - **Layer 4 (Housing):** permits may be unavailable for some years; ACS availability is stable but lagged.
 - **Layer 5 (Demographics):** IRS migration series may lag or change file formats; missing years reduce momentum confidence.

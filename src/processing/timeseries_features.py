@@ -357,7 +357,7 @@ def compute_all_timeseries_features(
     layer_configs = {
         'employment_gravity': {
             'table': 'layer1_employment_gravity',
-            'metric': 'employment_diversification_score'
+            'metric': 'economic_opportunity_index'
         },
         'mobility_optionality': {
             'table': 'layer2_mobility_optionality',

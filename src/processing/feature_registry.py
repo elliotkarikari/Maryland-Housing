@@ -93,8 +93,19 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         directionality=Directionality.POSITIVE,
         norm_method=NormMethod.PERCENTILE,
         unit="Composite score (0-1)",
-        description="Pre-calculated composite of diversity + stability",
-        weight=2.0  # This is the primary signal
+        description="Legacy local-strength composite (sector diversity + stability)",
+        weight=0.8
+    ),
+    FeatureDefinition(
+        name="economic_opportunity_index",
+        layer="employment_gravity",
+        source_table="layer1_employment_gravity",
+        source_column="economic_opportunity_index",
+        directionality=Directionality.POSITIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Composite score (0-1)",
+        description="Composite of local strength (v1) + regional accessibility (v2)",
+        weight=2.2  # Primary Layer 1 signal
     )
 ]
 

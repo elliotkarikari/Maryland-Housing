@@ -1,0 +1,1186 @@
+"""
+Maryland Viability Atlas - Layer 1: Economic Opportunity Accessibility (v2)
+Modern accessibility-based economic analysis using LODES wage-filtered data.
+
+This module computes travel time-based economic accessibility metrics that measure
+actual ability to reach high-wage jobs and economic opportunities, replacing simple
+job counts with policy-relevant opportunity access analysis.
+
+Data Sources:
+- LODES WAC: Workplace Area Characteristics with wage segments (SE01/SE02/SE03)
+- LODES RAC: Residence Area Characteristics for labor force
+- ACS 5-Year: Demographics, income, labor force participation
+- Opportunity Insights: Upward mobility predictors (optional)
+
+Core Metrics:
+- High-wage jobs accessible (30min, 45min)
+- Total jobs accessible (30min, 45min)
+- Economic accessibility score (normalized)
+- Wage quality ratio (high-wage / total accessible)
+- Upward mobility composite
+
+Author: Maryland Viability Atlas Team
+Date: 2026-01-29
+Version: 2.0
+"""
+
+import os
+import sys
+import hashlib
+from pathlib import Path
+from datetime import datetime, date, timedelta
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+import warnings
+
+import pandas as pd
+import geopandas as gpd
+import numpy as np
+from sqlalchemy import text
+import requests
+
+# Ensure project root is on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from config.settings import get_settings, MD_COUNTY_FIPS
+from config.database import get_db, log_refresh
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+settings = get_settings()
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+CACHE_DIR = Path("data/cache/economic_v2")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+LODES_CACHE_DIR = CACHE_DIR / "lodes"
+LODES_CACHE_DIR.mkdir(exist_ok=True)
+
+ACS_CACHE_DIR = CACHE_DIR / "acs"
+ACS_CACHE_DIR.mkdir(exist_ok=True)
+
+# LODES wage segments
+# SE01: $1,250/month or less (~$15k/year)
+# SE02: $1,251/month to $3,333/month (~$15k-$40k/year)
+# SE03: More than $3,333/month (>$40k/year) - "high wage"
+WAGE_SEGMENTS = {
+    'SE01': 'low_wage',      # <$15k/year
+    'SE02': 'mid_wage',      # $15k-$40k/year
+    'SE03': 'high_wage'      # >$40k/year
+}
+
+# County-level composite weights
+# Local strength = v1 employment diversification score
+# Regional access = v2 economic accessibility score
+LOCAL_STRENGTH_WEIGHT = 0.4
+REGIONAL_ACCESS_WEIGHT = 0.6
+
+# Sectors for diversity analysis (NAICS 2-digit via CNS codes)
+NAICS_SECTORS = {
+    'CNS01': 'Agriculture',
+    'CNS02': 'Mining',
+    'CNS03': 'Utilities',
+    'CNS04': 'Construction',
+    'CNS05': 'Manufacturing',
+    'CNS06': 'Wholesale',
+    'CNS07': 'Retail',
+    'CNS08': 'Transportation',
+    'CNS09': 'Information',
+    'CNS10': 'Finance',
+    'CNS11': 'Real Estate',
+    'CNS12': 'Professional/Tech',
+    'CNS13': 'Management',
+    'CNS14': 'Admin Support',
+    'CNS15': 'Education',
+    'CNS16': 'Healthcare',
+    'CNS17': 'Arts/Entertainment',
+    'CNS18': 'Accommodation/Food',
+    'CNS19': 'Other Services',
+    'CNS20': 'Public Admin'
+}
+
+# High-wage intensive sectors (typically pay above median)
+HIGH_WAGE_SECTORS = ['CNS09', 'CNS10', 'CNS11', 'CNS12', 'CNS13', 'CNS20']
+
+# =============================================================================
+# DATA ACQUISITION
+# =============================================================================
+
+def download_lodes_wac_segments(year: int) -> pd.DataFrame:
+    """
+    Download LODES Workplace Area Characteristics with wage segments.
+
+    Wage segments require downloading 4 separate files and merging:
+    - S000: Total jobs + sectors
+    - SE01: Low wage jobs (<$1250/month = <$15k/year)
+    - SE02: Mid wage jobs ($1251-$3333/month = $15k-$40k/year)
+    - SE03: High wage jobs (>$3333/month = >$40k/year)
+
+    Args:
+        year: LODES year (typically 2 years behind current)
+
+    Returns:
+        DataFrame with jobs by tract and wage segment
+    """
+    cache_path = LODES_CACHE_DIR / f"md_wac_segments_{year}.csv"
+
+    if cache_path.exists():
+        logger.info(f"Using cached LODES WAC: {cache_path}")
+        df = pd.read_csv(cache_path, dtype={'w_geocode': str, 'tract_geoid': str, 'fips_code': str})
+        # Ensure proper string formatting
+        if 'tract_geoid' in df.columns:
+            df['tract_geoid'] = df['tract_geoid'].astype(str)
+            df['fips_code'] = df['fips_code'].astype(str)
+        return df
+
+    logger.info(f"Downloading LODES WAC with wage segments for {year}...")
+
+    try:
+        # Download S000 (total jobs and sectors)
+        url_s000 = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_S000_JT00_{year}.csv.gz"
+        logger.info(f"  Downloading S000 (all jobs)...")
+        df = pd.read_csv(url_s000, compression='gzip', dtype={'w_geocode': str})
+
+        # Keep relevant columns from S000
+        columns_to_keep = ['w_geocode', 'C000',
+                          'CNS01', 'CNS02', 'CNS03', 'CNS04', 'CNS05',
+                          'CNS06', 'CNS07', 'CNS08', 'CNS09', 'CNS10',
+                          'CNS11', 'CNS12', 'CNS13', 'CNS14', 'CNS15',
+                          'CNS16', 'CNS17', 'CNS18', 'CNS19', 'CNS20']
+        available_cols = [c for c in columns_to_keep if c in df.columns]
+        df = df[available_cols].copy()
+
+        # Download and merge wage segments
+        for seg_code, seg_name in [('SE01', 'low'), ('SE02', 'mid'), ('SE03', 'high')]:
+            url_seg = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_{seg_code}_JT00_{year}.csv.gz"
+            logger.info(f"  Downloading {seg_code} ({seg_name} wage)...")
+            df_seg = pd.read_csv(url_seg, compression='gzip', dtype={'w_geocode': str})
+
+            # Keep only w_geocode and C000 (job count for this segment)
+            df_seg = df_seg[['w_geocode', 'C000']].copy()
+            df_seg = df_seg.rename(columns={'C000': seg_code})
+
+            # Merge with main dataframe
+            df = df.merge(df_seg, on='w_geocode', how='left')
+
+        # Fill NaN values with 0
+        df['SE01'] = df['SE01'].fillna(0).astype(int)
+        df['SE02'] = df['SE02'].fillna(0).astype(int)
+        df['SE03'] = df['SE03'].fillna(0).astype(int)
+
+        # Extract tract GEOID and ensure string formatting
+        df['w_geocode'] = df['w_geocode'].astype(str).str.zfill(15)  # Block codes are 15 digits
+        df['tract_geoid'] = df['w_geocode'].str[:11]
+        df['fips_code'] = df['w_geocode'].str[:5]
+
+        # Filter to Maryland (state FIPS 24)
+        df = df[df['fips_code'].str.startswith('24')]
+
+        # Cache
+        df.to_csv(cache_path, index=False)
+
+        logger.info(f"✓ Downloaded LODES WAC: {len(df)} blocks, {df['C000'].sum():,} total jobs")
+        logger.info(f"   Low wage: {df['SE01'].sum():,}, Mid wage: {df['SE02'].sum():,}, High wage: {df['SE03'].sum():,}")
+        return df
+
+    except Exception as e:
+        logger.error(f"Failed to download LODES WAC: {e}")
+        raise
+
+
+def download_lodes_rac(year: int) -> pd.DataFrame:
+    """
+    Download LODES Residence Area Characteristics.
+
+    RAC shows where workers live, complementing WAC which shows where they work.
+
+    Args:
+        year: LODES year
+
+    Returns:
+        DataFrame with worker residence by tract
+    """
+    cache_path = LODES_CACHE_DIR / f"md_rac_{year}.csv"
+
+    if cache_path.exists():
+        logger.info(f"Using cached LODES RAC: {cache_path}")
+        return pd.read_csv(cache_path, dtype={'h_geocode': str})
+
+    url = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
+
+    logger.info(f"Downloading LODES RAC for {year}...")
+
+    try:
+        df = pd.read_csv(url, compression='gzip', dtype={'h_geocode': str})
+
+        # Keep relevant columns
+        columns_to_keep = ['h_geocode', 'C000', 'SE01', 'SE02', 'SE03']
+        available_cols = [c for c in columns_to_keep if c in df.columns]
+        df = df[available_cols].copy()
+
+        # Extract tract GEOID
+        df['tract_geoid'] = df['h_geocode'].str[:11]
+        df['fips_code'] = df['h_geocode'].str[:5]
+
+        # Filter to Maryland
+        df = df[df['fips_code'].str.startswith('24')]
+
+        # Cache
+        df.to_csv(cache_path, index=False)
+
+        logger.info(f"✓ Downloaded LODES RAC: {len(df)} blocks")
+        return df
+
+    except Exception as e:
+        logger.error(f"Failed to download LODES RAC: {e}")
+        raise
+
+
+def aggregate_lodes_to_tract(wac_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate block-level LODES data to tract level.
+
+    Args:
+        wac_df: Block-level WAC DataFrame
+
+    Returns:
+        Tract-level aggregated DataFrame
+    """
+    # Ensure tract_geoid and fips_code are strings
+    wac_df['tract_geoid'] = wac_df['tract_geoid'].astype(str)
+    wac_df['fips_code'] = wac_df['fips_code'].astype(str)
+
+    # Numeric columns to sum
+    sum_cols = ['C000', 'SE01', 'SE02', 'SE03',
+               'CNS01', 'CNS02', 'CNS03', 'CNS04', 'CNS05',
+               'CNS06', 'CNS07', 'CNS08', 'CNS09', 'CNS10',
+               'CNS11', 'CNS12', 'CNS13', 'CNS14', 'CNS15',
+               'CNS16', 'CNS17', 'CNS18', 'CNS19', 'CNS20']
+
+    available_sum = [c for c in sum_cols if c in wac_df.columns]
+
+    tract_agg = wac_df.groupby(['tract_geoid', 'fips_code'])[available_sum].sum().reset_index()
+
+    # Rename for clarity
+    tract_agg = tract_agg.rename(columns={
+        'C000': 'total_jobs',
+        'SE01': 'low_wage_jobs',
+        'SE02': 'mid_wage_jobs',
+        'SE03': 'high_wage_jobs'
+    })
+
+    logger.info(f"Aggregated to {len(tract_agg)} tracts")
+    return tract_agg
+
+
+def fetch_tract_centroids(year: int = 2020) -> gpd.GeoDataFrame:
+    """
+    Fetch Maryland census tract centroids and areas.
+
+    Args:
+        year: Census year
+
+    Returns:
+        GeoDataFrame with tract centroids
+    """
+    cache_path = CACHE_DIR / f"md_tract_centroids_{year}.csv"
+
+    if cache_path.exists():
+        logger.info("Using cached tract centroids")
+        df = pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        return df
+
+    try:
+        import pygris
+
+        tracts = pygris.tracts(state="MD", year=year, cb=True)
+        tracts = tracts.to_crs("EPSG:4326")
+
+        # Compute centroids
+        tracts_proj = tracts.to_crs("EPSG:3857")
+        tracts['centroid_lon'] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").x
+        tracts['centroid_lat'] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").y
+        tracts['area_sq_mi'] = tracts_proj.geometry.area / 2.59e6
+
+        # Rename columns and ensure string types
+        tracts['tract_geoid'] = tracts['GEOID'].astype(str).str.zfill(11)  # Ensure 11-digit format
+        tracts['fips_code'] = (tracts['STATEFP'].astype(str) + tracts['COUNTYFP'].astype(str)).str.zfill(5)
+
+        # Filter to valid counties
+        tracts = tracts[tracts['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+
+        # Keep essential columns
+        result = tracts[['tract_geoid', 'fips_code', 'centroid_lon', 'centroid_lat', 'area_sq_mi']].copy()
+
+        # Ensure string types are preserved
+        result['tract_geoid'] = result['tract_geoid'].astype(str)
+        result['fips_code'] = result['fips_code'].astype(str)
+
+        # Cache
+        result.to_csv(cache_path, index=False)
+
+        logger.info(f"✓ Loaded {len(result)} tract centroids")
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to fetch tract centroids: {e}")
+        raise
+
+
+def fetch_acs_demographics(year: int) -> pd.DataFrame:
+    """
+    Fetch ACS demographic data for tracts (population, labor force, etc.)
+
+    Args:
+        year: ACS 5-year end year
+
+    Returns:
+        DataFrame with tract demographics
+    """
+    cache_path = ACS_CACHE_DIR / f"md_acs_demo_{year}.csv"
+
+    if cache_path.exists():
+        logger.info(f"Using cached ACS demographics: {cache_path}")
+        return pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+
+    try:
+        from census import Census
+
+        c = Census(settings.CENSUS_API_KEY)
+
+        # ACS variables
+        variables = (
+            'B01003_001E',  # Total population
+            'B01001_011E', 'B01001_012E', 'B01001_013E', 'B01001_014E',  # Male 25-44
+            'B01001_015E', 'B01001_016E', 'B01001_017E',  # Male 45-64
+            'B01001_035E', 'B01001_036E', 'B01001_037E', 'B01001_038E',  # Female 25-44
+            'B01001_039E', 'B01001_040E', 'B01001_041E',  # Female 45-64
+            'B23025_003E',  # In labor force
+            'B23025_002E',  # Labor force total
+        )
+
+        data = c.acs5.state_county_tract(
+            variables,
+            state_fips='24',
+            county_fips='*',
+            tract='*',
+            year=year
+        )
+
+        df = pd.DataFrame(data)
+        df['tract_geoid'] = df['state'] + df['county'] + df['tract']
+        df['fips_code'] = df['state'] + df['county']
+
+        # Compute working age population (25-64)
+        male_25_64_cols = ['B01001_011E', 'B01001_012E', 'B01001_013E', 'B01001_014E',
+                          'B01001_015E', 'B01001_016E', 'B01001_017E']
+        female_25_64_cols = ['B01001_035E', 'B01001_036E', 'B01001_037E', 'B01001_038E',
+                            'B01001_039E', 'B01001_040E', 'B01001_041E']
+
+        for col in male_25_64_cols + female_25_64_cols:
+            if col not in df.columns:
+                df[col] = 0
+
+        df['working_age_pop'] = (
+            df[male_25_64_cols].fillna(0).sum(axis=1) +
+            df[female_25_64_cols].fillna(0).sum(axis=1)
+        ).astype(int)
+
+        # Labor force participation
+        df['labor_force'] = pd.to_numeric(df.get('B23025_003E', 0), errors='coerce').fillna(0)
+        df['labor_force_total'] = pd.to_numeric(df.get('B23025_002E', 0), errors='coerce').fillna(0)
+        df['labor_force_participation'] = np.where(
+            df['labor_force_total'] > 0,
+            df['labor_force'] / df['labor_force_total'],
+            0
+        )
+
+        df = df.rename(columns={'B01003_001E': 'population'})
+        df['population'] = pd.to_numeric(df['population'], errors='coerce').fillna(0).astype(int)
+
+        result = df[['tract_geoid', 'fips_code', 'population', 'working_age_pop',
+                    'labor_force_participation']].copy()
+
+        # Cache
+        result.to_csv(cache_path, index=False)
+
+        logger.info(f"✓ Loaded ACS demographics for {len(result)} tracts")
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to fetch ACS demographics: {e}")
+        # Return empty with expected columns
+        return pd.DataFrame(columns=['tract_geoid', 'fips_code', 'population',
+                                     'working_age_pop', 'labor_force_participation'])
+
+
+# =============================================================================
+# ACCESSIBILITY COMPUTATION
+# =============================================================================
+
+def compute_economic_accessibility(
+    tract_jobs: pd.DataFrame,
+    tract_centroids: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Compute economic accessibility metrics using proximity-based model.
+
+    This uses a gravity model with distance decay to estimate job accessibility.
+    For each tract, we calculate how many high-wage and total jobs are
+    reachable within various travel time thresholds.
+
+    Travel time approximations (straight-line distance → time):
+    - 30 min driving: ~30 km (18.6 mi) at 60 km/h avg
+    - 45 min driving: ~45 km (28 mi)
+    - 30 min transit: ~15 km (9.3 mi) at 30 km/h avg
+    - 45 min transit: ~22 km (13.7 mi)
+
+    We use a blended estimate assuming ~70% drive, ~30% transit.
+
+    Args:
+        tract_jobs: DataFrame with jobs by tract
+        tract_centroids: DataFrame with tract centroids
+
+    Returns:
+        DataFrame with accessibility metrics
+    """
+    logger.info("Computing economic accessibility (proximity-based model)...")
+
+    # Ensure both have string types for merge keys
+    tract_centroids['tract_geoid'] = tract_centroids['tract_geoid'].astype(str)
+    tract_centroids['fips_code'] = tract_centroids['fips_code'].astype(str)
+    tract_jobs['tract_geoid'] = tract_jobs['tract_geoid'].astype(str)
+    tract_jobs['fips_code'] = tract_jobs['fips_code'].astype(str)
+
+    # Merge centroids with jobs
+    df = tract_centroids.merge(tract_jobs, on=['tract_geoid', 'fips_code'], how='inner')
+    logger.info(f"Merged {len(df)} tracts with job and location data")
+
+    # Fill missing values
+    df = df.fillna(0)
+
+    # Distance thresholds (km) - blended car/transit estimate
+    DIST_30MIN = 20  # ~30 min travel (blended)
+    DIST_45MIN = 35  # ~45 min travel (blended)
+
+    # Create coordinate arrays for efficient computation
+    n_tracts = len(df)
+    lons = df['centroid_lon'].values
+    lats = df['centroid_lat'].values
+    high_wage = df['high_wage_jobs'].values if 'high_wage_jobs' in df else np.zeros(n_tracts)
+    total = df['total_jobs'].values if 'total_jobs' in df else np.zeros(n_tracts)
+
+    # Results arrays
+    high_wage_45 = np.zeros(n_tracts)
+    high_wage_30 = np.zeros(n_tracts)
+    total_45 = np.zeros(n_tracts)
+    total_30 = np.zeros(n_tracts)
+
+    logger.info(f"Computing accessibility for {n_tracts} tracts...")
+
+    # Haversine distance computation (vectorized for speed)
+    def haversine_matrix(lon1, lat1, lon2, lat2):
+        """Compute haversine distance in km between two points."""
+        R = 6371  # Earth radius in km
+
+        lat1_rad = np.radians(lat1)
+        lat2_rad = np.radians(lat2)
+        dlat = np.radians(lat2 - lat1)
+        dlon = np.radians(lon2 - lon1)
+
+        a = np.sin(dlat/2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(a))
+
+        return R * c
+
+    # Compute pairwise distances and accessibility
+    # Process in batches for memory efficiency
+    batch_size = 100
+
+    for i in range(0, n_tracts, batch_size):
+        batch_end = min(i + batch_size, n_tracts)
+
+        for j in range(i, batch_end):
+            # Compute distances from tract j to all other tracts
+            distances = haversine_matrix(lons[j], lats[j], lons, lats)
+
+            # Jobs within 30 min threshold
+            mask_30 = distances <= DIST_30MIN
+            high_wage_30[j] = high_wage[mask_30].sum()
+            total_30[j] = total[mask_30].sum()
+
+            # Jobs within 45 min threshold
+            mask_45 = distances <= DIST_45MIN
+            high_wage_45[j] = high_wage[mask_45].sum()
+            total_45[j] = total[mask_45].sum()
+
+        if (batch_end) % 500 == 0:
+            logger.info(f"  Processed {batch_end}/{n_tracts} tracts")
+
+    # Add results to DataFrame
+    df['high_wage_jobs_accessible_45min'] = high_wage_45.astype(int)
+    df['high_wage_jobs_accessible_30min'] = high_wage_30.astype(int)
+    df['total_jobs_accessible_45min'] = total_45.astype(int)
+    df['total_jobs_accessible_30min'] = total_30.astype(int)
+
+    # Regional totals for normalization
+    regional_high_wage = high_wage.sum()
+    regional_total = total.sum()
+
+    # Compute normalized scores
+    df['pct_regional_high_wage_accessible'] = np.where(
+        regional_high_wage > 0,
+        df['high_wage_jobs_accessible_45min'] / regional_high_wage,
+        0
+    )
+
+    df['pct_regional_jobs_accessible'] = np.where(
+        regional_total > 0,
+        df['total_jobs_accessible_45min'] / regional_total,
+        0
+    )
+
+    # Wage quality ratio (high-wage / total accessible)
+    df['wage_quality_ratio'] = np.where(
+        df['total_jobs_accessible_45min'] > 0,
+        df['high_wage_jobs_accessible_45min'] / df['total_jobs_accessible_45min'],
+        0
+    )
+
+    logger.info("✓ Economic accessibility computed")
+    return df
+
+
+def compute_sector_diversity(tract_jobs: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute sector diversity metrics for each tract.
+
+    Args:
+        tract_jobs: DataFrame with sector-level job counts
+
+    Returns:
+        DataFrame with diversity metrics added
+    """
+    sector_cols = [f'CNS{i:02d}' for i in range(1, 21)]
+    available_sectors = [c for c in sector_cols if c in tract_jobs.columns]
+
+    if not available_sectors:
+        tract_jobs['sector_diversity_entropy'] = 0
+        tract_jobs['high_wage_sector_concentration'] = 0
+        return tract_jobs
+
+    def shannon_entropy(row):
+        jobs = row[available_sectors].values.astype(float)
+        total = jobs.sum()
+        if total == 0:
+            return 0
+        probs = jobs / total
+        probs = probs[probs > 0]  # Avoid log(0)
+        return -np.sum(probs * np.log2(probs))
+
+    def hhi_concentration(row):
+        # HHI for high-wage sectors only
+        hw_sectors = [c for c in HIGH_WAGE_SECTORS if c in available_sectors]
+        if not hw_sectors:
+            return 0
+        jobs = row[hw_sectors].values.astype(float)
+        total = jobs.sum()
+        if total == 0:
+            return 0
+        shares = jobs / total
+        return np.sum(shares ** 2)
+
+    tract_jobs['sector_diversity_entropy'] = tract_jobs.apply(shannon_entropy, axis=1)
+    tract_jobs['high_wage_sector_concentration'] = tract_jobs.apply(hhi_concentration, axis=1)
+
+    return tract_jobs
+
+
+def normalize_accessibility_scores(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize accessibility metrics to 0-1 scores.
+
+    Uses percentile ranking within Maryland for comparability.
+
+    Args:
+        df: DataFrame with raw accessibility counts
+
+    Returns:
+        DataFrame with normalized scores
+    """
+    # Economic accessibility score (primary metric)
+    # Based on high-wage jobs accessible within 45 min
+    df['economic_accessibility_score'] = df['high_wage_jobs_accessible_45min'].rank(pct=True)
+
+    # Job market reach score (total jobs accessible)
+    df['job_market_reach_score'] = df['total_jobs_accessible_45min'].rank(pct=True)
+
+    # Job quality index (weighted by wage quality ratio)
+    df['job_quality_index'] = (
+        0.7 * df['economic_accessibility_score'] +
+        0.3 * df['wage_quality_ratio'].rank(pct=True)
+    )
+
+    # Upward mobility score (composite)
+    # For now, use economic accessibility as proxy
+    # Can be enhanced with Opportunity Insights data
+    df['upward_mobility_score'] = df['economic_accessibility_score']
+
+    return df
+
+
+# =============================================================================
+# AGGREGATION
+# =============================================================================
+
+def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate tract-level metrics to county level.
+
+    Uses population-weighted averaging for score metrics.
+
+    Args:
+        tract_df: DataFrame with tract-level metrics
+
+    Returns:
+        DataFrame with county-level metrics
+    """
+    # Prepare population weights
+    tract_df['population'] = tract_df['population'].fillna(0)
+    tract_df['pop_weight'] = tract_df.groupby('fips_code')['population'].transform(
+        lambda x: x / x.sum() if x.sum() > 0 else 1 / len(x)
+    )
+
+    # Weighted averages for scores
+    score_cols = ['economic_accessibility_score', 'job_market_reach_score',
+                  'wage_quality_ratio', 'job_quality_index', 'upward_mobility_score',
+                  'sector_diversity_entropy', 'labor_force_participation']
+
+    weighted_cols = {}
+    for col in score_cols:
+        if col in tract_df.columns:
+            tract_df[f'{col}_weighted'] = tract_df[col] * tract_df['pop_weight']
+            weighted_cols[f'{col}_weighted'] = (f'{col}_weighted', 'sum')
+
+    # Aggregation spec
+    agg_spec = {
+        # Sum job counts
+        'total_jobs': ('total_jobs', 'sum'),
+        'high_wage_jobs': ('high_wage_jobs', 'sum'),
+        'mid_wage_jobs': ('mid_wage_jobs', 'sum'),
+        'low_wage_jobs': ('low_wage_jobs', 'sum'),
+
+        # Sum accessible jobs (max of tracts is more meaningful)
+        'high_wage_jobs_accessible_45min': ('high_wage_jobs_accessible_45min', 'max'),
+        'high_wage_jobs_accessible_30min': ('high_wage_jobs_accessible_30min', 'max'),
+        'total_jobs_accessible_45min': ('total_jobs_accessible_45min', 'max'),
+        'total_jobs_accessible_30min': ('total_jobs_accessible_30min', 'max'),
+
+        # Sum population
+        'population': ('population', 'sum'),
+        'working_age_pop': ('working_age_pop', 'sum'),
+
+        # Count tracts
+        'tract_count': ('tract_geoid', 'count'),
+
+        # Area
+        'area_sq_mi': ('area_sq_mi', 'sum'),
+    }
+
+    # Add weighted columns to spec
+    for new_col, (src_col, func) in weighted_cols.items():
+        if src_col in tract_df.columns:
+            agg_spec[new_col] = (src_col, func)
+
+    county_agg = tract_df.groupby('fips_code').agg(**agg_spec).reset_index()
+
+    # Rename weighted columns back
+    for col in score_cols:
+        weighted_name = f'{col}_weighted'
+        if weighted_name in county_agg.columns:
+            county_agg[col] = county_agg[weighted_name]
+            county_agg = county_agg.drop(columns=[weighted_name])
+
+    # Compute regional percentages
+    regional_high_wage = county_agg['high_wage_jobs'].sum()
+    regional_total = county_agg['total_jobs'].sum()
+
+    county_agg['pct_regional_high_wage_accessible'] = np.where(
+        regional_high_wage > 0,
+        county_agg['high_wage_jobs'] / regional_high_wage,
+        0
+    )
+
+    county_agg['pct_regional_jobs_accessible'] = np.where(
+        regional_total > 0,
+        county_agg['total_jobs'] / regional_total,
+        0
+    )
+
+    # Entrepreneurship density (establishments per 1000 pop)
+    # This would need BLS QCEW data - set to None for now
+    county_agg['entrepreneurship_density'] = None
+
+    return county_agg
+
+
+# =============================================================================
+# DATABASE STORAGE
+# =============================================================================
+
+def store_tract_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_year: int, acs_year: int):
+    """
+    Store tract-level economic opportunity data in database.
+
+    Args:
+        df: DataFrame with tract metrics
+        data_year: Year to associate with this data
+        lodes_year: Year of LODES data used
+        acs_year: Year of ACS data used
+    """
+    logger.info(f"Storing {len(df)} tract economic opportunity records")
+
+    with get_db() as db:
+        # Clear existing data for this year
+        db.execute(text("""
+            DELETE FROM layer1_economic_opportunity_tract
+            WHERE data_year = :data_year
+        """), {"data_year": data_year})
+
+        # Insert new records
+        for _, row in df.iterrows():
+            econ_score = row.get('economic_accessibility_score', None)
+            if econ_score is not None and pd.isna(econ_score):
+                econ_score = None
+            elif econ_score is not None:
+                econ_score = float(econ_score)
+
+            db.execute(text("""
+                INSERT INTO layer1_economic_opportunity_tract (
+                    tract_geoid, fips_code, data_year,
+                    total_jobs, high_wage_jobs, mid_wage_jobs, low_wage_jobs,
+                    high_wage_jobs_accessible_45min, high_wage_jobs_accessible_30min,
+                    total_jobs_accessible_45min, total_jobs_accessible_30min,
+                    economic_accessibility_score, job_market_reach_score, wage_quality_ratio,
+                    pct_regional_high_wage_accessible, pct_regional_jobs_accessible,
+                    sector_diversity_entropy, high_wage_sector_concentration,
+                    upward_mobility_score, job_quality_index,
+                    tract_population, tract_working_age_pop, labor_force_participation,
+                    lodes_year, acs_year
+                ) VALUES (
+                    :tract_geoid, :fips_code, :data_year,
+                    :total_jobs, :high_wage_jobs, :mid_wage_jobs, :low_wage_jobs,
+                    :high_wage_45, :high_wage_30, :total_45, :total_30,
+                    :econ_score, :market_score, :wage_ratio,
+                    :pct_hw, :pct_total,
+                    :entropy, :concentration,
+                    :mobility, :quality,
+                    :population, :working_age, :lfp,
+                    :lodes_year, :acs_year
+                )
+            """), {
+                'tract_geoid': row['tract_geoid'],
+                'fips_code': row['fips_code'],
+                'data_year': data_year,
+                'total_jobs': int(row.get('total_jobs', 0)),
+                'high_wage_jobs': int(row.get('high_wage_jobs', 0)),
+                'mid_wage_jobs': int(row.get('mid_wage_jobs', 0)),
+                'low_wage_jobs': int(row.get('low_wage_jobs', 0)),
+                'high_wage_45': int(row.get('high_wage_jobs_accessible_45min', 0)),
+                'high_wage_30': int(row.get('high_wage_jobs_accessible_30min', 0)),
+                'total_45': int(row.get('total_jobs_accessible_45min', 0)),
+                'total_30': int(row.get('total_jobs_accessible_30min', 0)),
+                'econ_score': econ_score,
+                'market_score': float(row.get('job_market_reach_score', 0)),
+                'wage_ratio': float(row.get('wage_quality_ratio', 0)),
+                'pct_hw': float(row.get('pct_regional_high_wage_accessible', 0)),
+                'pct_total': float(row.get('pct_regional_jobs_accessible', 0)),
+                'entropy': float(row.get('sector_diversity_entropy', 0)),
+                'concentration': float(row.get('high_wage_sector_concentration', 0)),
+                'mobility': float(row.get('upward_mobility_score', 0)),
+                'quality': float(row.get('job_quality_index', 0)),
+                'population': int(row.get('population', 0)),
+                'working_age': int(row.get('working_age_pop', 0)),
+                'lfp': float(row.get('labor_force_participation', 0)),
+                'lodes_year': lodes_year,
+                'acs_year': acs_year
+            })
+
+        db.commit()
+
+    logger.info("✓ Tract economic opportunity data stored")
+
+
+def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_year: int, acs_year: int):
+    """
+    Store county-level economic opportunity data.
+
+    Updates the existing layer1_employment_gravity table with new accessibility metrics.
+
+    Args:
+        df: DataFrame with county metrics
+        data_year: Year for this data
+        lodes_year: Year of LODES data
+        acs_year: Year of ACS data
+    """
+    logger.info(f"Updating {len(df)} county economic opportunity records")
+
+    with get_db() as db:
+        local_strength_scores = {}
+        local_result = db.execute(text("""
+            SELECT fips_code,
+                   employment_diversification_score,
+                   sector_diversity_entropy,
+                   stable_sector_share
+            FROM layer1_employment_gravity
+            WHERE data_year = :data_year
+        """), {"data_year": data_year})
+        for row in local_result.fetchall():
+            fips_code, v1_score, entropy, stable_share = row
+            local_strength = None
+
+            if entropy is not None and stable_share is not None:
+                try:
+                    entropy_score = float(entropy) / np.log2(20)
+                    local_strength = 0.7 * entropy_score + 0.3 * float(stable_share)
+                except (TypeError, ValueError):
+                    local_strength = None
+
+            if local_strength is None and v1_score is not None:
+                try:
+                    local_strength = float(v1_score)
+                except (TypeError, ValueError):
+                    local_strength = None
+
+            if local_strength is not None:
+                local_strength = max(0.0, min(1.0, local_strength))
+
+            local_strength_scores[fips_code] = local_strength
+
+        for _, row in df.iterrows():
+            local_strength = local_strength_scores.get(row['fips_code'])
+            if local_strength is not None and pd.isna(local_strength):
+                local_strength = None
+            elif local_strength is not None:
+                local_strength = float(local_strength)
+
+            econ_score = row.get('economic_accessibility_score', None)
+            if econ_score is not None and pd.isna(econ_score):
+                econ_score = None
+            elif econ_score is not None:
+                econ_score = float(econ_score)
+
+            if local_strength is None and econ_score is None:
+                opportunity_index = None
+            elif local_strength is None:
+                opportunity_index = econ_score
+            elif econ_score is None:
+                opportunity_index = local_strength
+            else:
+                opportunity_index = (
+                    LOCAL_STRENGTH_WEIGHT * local_strength +
+                    REGIONAL_ACCESS_WEIGHT * econ_score
+                )
+
+            # Update existing records with new accessibility columns
+            db.execute(text("""
+                UPDATE layer1_employment_gravity
+                SET
+                    high_wage_jobs = :high_wage_jobs,
+                    mid_wage_jobs = :mid_wage_jobs,
+                    low_wage_jobs = :low_wage_jobs,
+                    high_wage_jobs_accessible_45min = :high_wage_45,
+                    high_wage_jobs_accessible_30min = :high_wage_30,
+                    total_jobs_accessible_45min = :total_45,
+                    total_jobs_accessible_30min = :total_30,
+                    economic_accessibility_score = :econ_score,
+                    job_market_reach_score = :market_score,
+                    wage_quality_ratio = :wage_ratio,
+                    pct_regional_high_wage_accessible = :pct_hw,
+                    pct_regional_jobs_accessible = :pct_total,
+                    high_wage_sector_concentration = :concentration,
+                    upward_mobility_score = :mobility,
+                    job_quality_index = :quality,
+                    employment_diversification_score = COALESCE(:local_strength, employment_diversification_score),
+                    economic_opportunity_index = :opportunity_index,
+                    working_age_pop = :working_age,
+                    labor_force_participation = :lfp,
+                    lodes_year = :lodes_year,
+                    acs_year = :acs_year,
+                    accessibility_version = 'v2-accessibility',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE fips_code = :fips_code AND data_year = :data_year
+            """), {
+                'fips_code': row['fips_code'],
+                'data_year': data_year,
+                'high_wage_jobs': int(row.get('high_wage_jobs', 0)),
+                'mid_wage_jobs': int(row.get('mid_wage_jobs', 0)),
+                'low_wage_jobs': int(row.get('low_wage_jobs', 0)),
+                'high_wage_45': int(row.get('high_wage_jobs_accessible_45min', 0)),
+                'high_wage_30': int(row.get('high_wage_jobs_accessible_30min', 0)),
+                'total_45': int(row.get('total_jobs_accessible_45min', 0)),
+                'total_30': int(row.get('total_jobs_accessible_30min', 0)),
+                'econ_score': float(row.get('economic_accessibility_score', 0)),
+                'market_score': float(row.get('job_market_reach_score', 0)),
+                'wage_ratio': float(row.get('wage_quality_ratio', 0)),
+                'pct_hw': float(row.get('pct_regional_high_wage_accessible', 0)),
+                'pct_total': float(row.get('pct_regional_jobs_accessible', 0)),
+                'concentration': float(row.get('high_wage_sector_concentration', 0)),
+                'mobility': float(row.get('upward_mobility_score', 0)),
+                'quality': float(row.get('job_quality_index', 0)),
+                'local_strength': local_strength,
+                'opportunity_index': opportunity_index,
+                'working_age': int(row.get('working_age_pop', 0)),
+                'lfp': float(row.get('labor_force_participation', 0)),
+                'lodes_year': lodes_year,
+                'acs_year': acs_year
+            })
+
+        db.commit()
+
+    logger.info("✓ County economic opportunity data updated")
+
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+def calculate_economic_opportunity_indicators(
+    data_year: int = None,
+    lodes_year: int = None,
+    acs_year: int = None
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Main function to calculate economic opportunity indicators.
+
+    Args:
+        data_year: Year to associate with this data (default: current year)
+        lodes_year: LODES year to use (default: data_year - 2)
+        acs_year: ACS year to use (default: data_year - 2)
+
+    Returns:
+        Tuple of (tract_df, county_df) with economic opportunity metrics
+    """
+    data_year = data_year or datetime.now().year
+    lodes_year = lodes_year or min(data_year - 2, settings.LODES_LATEST_YEAR)
+    acs_year = acs_year or min(data_year - 2, settings.ACS_LATEST_YEAR)
+
+    logger.info("=" * 60)
+    logger.info("LAYER 1 v2: ECONOMIC OPPORTUNITY ACCESSIBILITY ANALYSIS")
+    logger.info("=" * 60)
+    logger.info(f"Data year: {data_year}")
+    logger.info(f"LODES year: {lodes_year}")
+    logger.info(f"ACS year: {acs_year}")
+
+    # Step 1: Download LODES data
+    logger.info("\n[1/6] Downloading LODES data with wage segments...")
+    wac_df = download_lodes_wac_segments(lodes_year)
+
+    # Step 2: Aggregate to tract level
+    logger.info("\n[2/6] Aggregating to tract level...")
+    tract_jobs = aggregate_lodes_to_tract(wac_df)
+
+    # Step 3: Compute sector diversity
+    logger.info("\n[3/6] Computing sector diversity...")
+    tract_jobs = compute_sector_diversity(tract_jobs)
+
+    # Step 4: Get tract centroids
+    logger.info("\n[4/6] Loading tract centroids...")
+    tract_centroids = fetch_tract_centroids()
+
+    # Step 5: Compute accessibility
+    logger.info("\n[5/6] Computing economic accessibility...")
+    tract_df = compute_economic_accessibility(tract_jobs, tract_centroids)
+
+    # Merge with ACS demographics
+    logger.info("\n[6/6] Merging ACS demographics...")
+    acs_df = fetch_acs_demographics(acs_year)
+    if not acs_df.empty:
+        tract_df = tract_df.merge(
+            acs_df[['tract_geoid', 'population', 'working_age_pop', 'labor_force_participation']],
+            on='tract_geoid',
+            how='left'
+        )
+
+    # Fill missing demographics
+    tract_df['population'] = tract_df.get('population', 0).fillna(0).astype(int)
+    tract_df['working_age_pop'] = tract_df.get('working_age_pop', 0).fillna(0).astype(int)
+    tract_df['labor_force_participation'] = tract_df.get('labor_force_participation', 0).fillna(0)
+
+    # Normalize scores
+    tract_df = normalize_accessibility_scores(tract_df)
+
+    # Aggregate to county
+    county_df = aggregate_to_county(tract_df)
+
+    # Summary
+    logger.info("\n" + "=" * 60)
+    logger.info("ECONOMIC OPPORTUNITY ANALYSIS COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Tracts analyzed: {len(tract_df)}")
+    logger.info(f"Counties: {len(county_df)}")
+    logger.info(f"Total jobs: {tract_df['total_jobs'].sum():,}")
+    logger.info(f"High-wage jobs: {tract_df['high_wage_jobs'].sum():,}")
+    logger.info(f"Avg accessibility score: {tract_df['economic_accessibility_score'].mean():.3f}")
+
+    return tract_df, county_df
+
+
+def run_layer1_v2_ingestion(
+    data_year: int = None,
+    multi_year: bool = True,
+    store_data: bool = True,
+    window_years: int = 5
+):
+    """
+    Run complete Layer 1 v2 ingestion pipeline.
+
+    Args:
+        data_year: End year for analysis window (default: latest available)
+        multi_year: If True, run a multi-year window ending at the latest available year
+        store_data: Whether to store results in database
+        window_years: Window size for multi-year ingestion (default: 5)
+    """
+    latest_available_year = min(settings.LODES_LATEST_YEAR, settings.ACS_LATEST_YEAR) + 2
+    end_year = data_year or latest_available_year
+    if end_year > latest_available_year:
+        logger.warning(
+            f"Requested end year {end_year} exceeds latest available data year "
+            f"{latest_available_year}. Using {latest_available_year}."
+        )
+        end_year = latest_available_year
+
+    try:
+        if multi_year:
+            start_year = end_year - window_years + 1
+            years_to_fetch = list(range(start_year, end_year + 1))
+            logger.info(
+                "Starting Layer 1 v2 MULTI-YEAR ingestion for years "
+                f"{years_to_fetch[0]}-{years_to_fetch[-1]}"
+            )
+        else:
+            years_to_fetch = [end_year]
+            logger.info(f"Starting Layer 1 v2 single-year ingestion for {end_year}")
+
+        total_records = 0
+        failed_years = []
+        last_tract_df = pd.DataFrame()
+        last_county_df = pd.DataFrame()
+
+        for year in years_to_fetch:
+            lodes_year = min(year - 2, settings.LODES_LATEST_YEAR)
+            acs_year = min(year - 2, settings.ACS_LATEST_YEAR)
+
+            logger.info("=" * 70)
+            logger.info(f"Processing year {year}")
+            logger.info("=" * 70)
+
+            try:
+                tract_df, county_df = calculate_economic_opportunity_indicators(
+                    data_year=year,
+                    lodes_year=lodes_year,
+                    acs_year=acs_year
+                )
+
+                if store_data and not tract_df.empty:
+                    store_tract_economic_opportunity(
+                        tract_df, year, lodes_year, acs_year
+                    )
+                    store_county_economic_opportunity(
+                        county_df, year, lodes_year, acs_year
+                    )
+
+                    log_refresh(
+                        layer_name="layer1_employment_gravity",
+                        data_source="LODES+ACS (v2 accessibility)",
+                        status="success",
+                        records_processed=len(tract_df),
+                        records_inserted=len(tract_df) + len(county_df),
+                        metadata={
+                            "data_year": year,
+                            "lodes_year": lodes_year,
+                            "acs_year": acs_year,
+                            "version": "v2-accessibility",
+                            "tracts": len(tract_df),
+                            "counties": len(county_df),
+                            "total_jobs": int(tract_df['total_jobs'].sum()),
+                            "high_wage_jobs": int(tract_df['high_wage_jobs'].sum())
+                        }
+                    )
+
+                total_records += len(tract_df)
+                last_tract_df = tract_df
+                last_county_df = county_df
+                logger.info(f"✓ Year {year} complete: {len(tract_df)} tract records")
+
+            except Exception as e:
+                logger.error(f"✗ Year {year} ingestion failed: {e}", exc_info=True)
+                failed_years.append(year)
+                continue
+
+        logger.info("=" * 70)
+        if multi_year:
+            logger.info("MULTI-YEAR INGESTION SUMMARY")
+            logger.info(
+                f"  Years requested: {years_to_fetch[0]}-{years_to_fetch[-1]} "
+                f"({len(years_to_fetch)} years)"
+            )
+            logger.info(f"  Years successful: {len(years_to_fetch) - len(failed_years)}")
+            logger.info(f"  Years failed: {len(failed_years)} {failed_years if failed_years else ''}")
+            logger.info(f"  Total tract records stored: {total_records}")
+        else:
+            logger.info(f"Single-year ingestion {'succeeded' if not failed_years else 'failed'}")
+
+        if failed_years and len(failed_years) == len(years_to_fetch):
+            raise Exception(f"All years failed: {failed_years}")
+
+        logger.info("✓ Layer 1 v2 ingestion complete")
+        return last_tract_df, last_county_df
+
+    except Exception as e:
+        logger.error(f"Layer 1 v2 ingestion failed: {e}", exc_info=True)
+        log_refresh(
+            layer_name="layer1_employment_gravity",
+            data_source="LODES+ACS (v2 accessibility)",
+            status="failed",
+            error_message=str(e)
+        )
+        raise
+
+
+def main():
+    """CLI entry point."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Layer 1 v2: Economic Opportunity Accessibility Analysis'
+    )
+    parser.add_argument(
+        '--year', type=int, default=None,
+        help='End year for window (default: latest available year)'
+    )
+    parser.add_argument(
+        '--single-year', action='store_true',
+        help='Fetch only single year (default: multi-year window)'
+    )
+    parser.add_argument(
+        '--dry-run', action='store_true',
+        help='Calculate but do not store results'
+    )
+
+    args = parser.parse_args()
+
+    run_layer1_v2_ingestion(
+        data_year=args.year,
+        multi_year=not args.single_year,
+        store_data=not args.dry_run
+    )
+
+
+if __name__ == "__main__":
+    main()

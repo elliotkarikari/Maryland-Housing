@@ -1,0 +1,23 @@
+# Layer 2 v2 Accessibility - Optional Dependencies
+# These are OPTIONAL - the fallback mode works without them
+
+# R5 routing engine (requires Java 11+)
+# Provides true travel time routing instead of straight-line distances
+# Install Java first: brew install openjdk@11 (macOS)
+r5py>=0.1.1
+
+# Performance optimizations
+pyarrow>=10.0.0  # Faster parquet caching (optional)
+fastparquet>=2023.0.0  # Alternative parquet engine (optional)
+
+# Already in main requirements.txt (listed for reference):
+# - geopandas
+# - pandas
+# - numpy
+# - requests
+# - gtfs-kit
+# - pygris
+# - census
+
+# Note: If r5py fails to install, the fallback mode will work fine
+# The fallback uses proximity-based accessibility estimates
