@@ -15,9 +15,10 @@ Signals Produced:
 """
 
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import pandas as pd
 import geopandas as gpd
@@ -25,6 +26,11 @@ import osmnx as ox
 import gtfs_kit as gk
 from shapely.geometry import Point
 from sqlalchemy import text
+
+# Ensure project root is on sys.path when running as a script
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
@@ -72,30 +78,91 @@ def _fetch_md_counties() -> gpd.GeoDataFrame:
     md_counties = md_counties[md_counties['fips_code'].isin(MD_COUNTY_FIPS.keys())]
     return md_counties[['fips_code', 'county_name', 'geometry']]
 
+def _fetch_osm_features_by_county(counties: gpd.GeoDataFrame,
+                                  tags: Dict[str, Union[List[str], str]],
+                                  geom_types: List[str],
+                                  cache_key: str,
+                                  max_age_days: int = 30) -> gpd.GeoDataFrame:
+    """Fetch OSM features per county to avoid Overpass max area failures."""
+    features = []
 
-def _fetch_osm_highways() -> gpd.GeoDataFrame:
-    """Fetch major highways from OSM for Maryland."""
+    # Choose best available OSMnx function
+    features_fn = getattr(ox, "features_from_polygon", None)
+    geometries_fn = getattr(ox, "geometries_from_polygon", None)
+
+    for _, county in counties.iterrows():
+        fips = county['fips_code']
+        geom = county['geometry']
+        cache_path = CACHE_DIR / f"osm_{cache_key}_{fips}.geojson"
+
+        if not _is_stale(cache_path, max_age_days=max_age_days):
+            try:
+                gdf = gpd.read_file(cache_path)
+                if not gdf.empty:
+                    features.append(gdf)
+                continue
+            except Exception as e:
+                logger.warning(f"Failed to read cache {cache_path}: {e}")
+
+        try:
+            if features_fn:
+                gdf = features_fn(geom, tags)
+            elif geometries_fn:
+                gdf = geometries_fn(geom, tags=tags)
+            else:
+                raise RuntimeError("OSMnx features/geometries API not available")
+
+            gdf = gdf.reset_index()
+            gdf = gdf[gdf.geometry.type.isin(geom_types)].copy()
+
+            if not gdf.empty:
+                try:
+                    # Cache geometry only to avoid list/dict field serialization issues
+                    gdf_cache = gdf[['geometry']].copy()
+                    gdf_cache.to_file(cache_path, driver="GeoJSON")
+                except Exception as e:
+                    logger.warning(f"Failed to cache OSM data for {fips}: {e}")
+                features.append(gdf)
+        except Exception as e:
+            logger.warning(f"OSM query failed for {fips}: {e}")
+            continue
+
+    if not features:
+        return gpd.GeoDataFrame(columns=['geometry'], geometry='geometry', crs='EPSG:4326')
+
+    combined = pd.concat(features, ignore_index=True)
+    return gpd.GeoDataFrame(combined, geometry='geometry', crs='EPSG:4326')
+
+
+def _fetch_osm_highways(counties: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Fetch major highways from OSM per county."""
     tags = {"highway": ["motorway", "trunk"]}
-    gdf = ox.geometries_from_place("Maryland, USA", tags=tags)
-    gdf = gdf.reset_index()
-    gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
-    return gdf
+    return _fetch_osm_features_by_county(
+        counties=counties,
+        tags=tags,
+        geom_types=["LineString", "MultiLineString"],
+        cache_key="highways"
+    )
 
 
-def _fetch_osm_motorway_junctions() -> gpd.GeoDataFrame:
+def _fetch_osm_motorway_junctions(counties: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     tags = {"highway": "motorway_junction"}
-    gdf = ox.geometries_from_place("Maryland, USA", tags=tags)
-    gdf = gdf.reset_index()
-    gdf = gdf[gdf.geometry.type.isin(["Point", "MultiPoint"])].copy()
-    return gdf
+    return _fetch_osm_features_by_county(
+        counties=counties,
+        tags=tags,
+        geom_types=["Point", "MultiPoint"],
+        cache_key="junctions"
+    )
 
 
-def _fetch_osm_rail_lines() -> gpd.GeoDataFrame:
+def _fetch_osm_rail_lines(counties: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     tags = {"railway": "rail"}
-    gdf = ox.geometries_from_place("Maryland, USA", tags=tags)
-    gdf = gdf.reset_index()
-    gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
-    return gdf
+    return _fetch_osm_features_by_county(
+        counties=counties,
+        tags=tags,
+        geom_types=["LineString", "MultiLineString"],
+        cache_key="rail"
+    )
 
 
 def _download_gtfs(feed_url: str, name: str) -> Path:
@@ -270,9 +337,9 @@ def calculate_mobility_indicators(data_year: int = None) -> pd.DataFrame:
     counties = _fetch_md_counties()
     counties = counties[counties['fips_code'].isin(MD_COUNTY_FIPS.keys())].copy()
 
-    highways = _fetch_osm_highways()
-    junctions = _fetch_osm_motorway_junctions()
-    rail_lines = _fetch_osm_rail_lines()
+    highways = _fetch_osm_highways(counties)
+    junctions = _fetch_osm_motorway_junctions(counties)
+    rail_lines = _fetch_osm_rail_lines(counties)
 
     feeds = _load_gtfs_feeds()
     stops_gdf = _build_stops_gdf(feeds)

@@ -46,7 +46,7 @@ def fetch_census_data(
     variables: list[str],
     geography: str,
     state: str = "24",
-    year: int = None,
+    year: Optional[int] = None,
     **kwargs
 ) -> pd.DataFrame:
     """
@@ -102,7 +102,7 @@ def fetch_census_data(
 def fetch_bls_qcew(
     year: int,
     quarter: int,
-    area_codes: list[str] = None
+    area_codes: Optional[list[str]] = None
 ) -> pd.DataFrame:
     """
     Fetch BLS QCEW data for Maryland counties.
@@ -195,7 +195,7 @@ def fetch_usaspending_county(
         raise
 
 
-def fetch_lodes_wac(state: str = "md", year: int = None, job_type: str = "JT00") -> pd.DataFrame:
+def fetch_lodes_wac(state: str = "md", year: Optional[int] = None, job_type: str = "JT00") -> pd.DataFrame:
     """
     Fetch LEHD/LODES Workplace Area Characteristics data.
 
@@ -270,7 +270,7 @@ def fetch_fema_nfhl(state_code: str = "MD") -> Dict[str, Any]:
                 raise
 
     # If no features found from any endpoint
-    logger.warning("No FEMA flood zones found for {state_code}")
+    logger.warning(f"No FEMA flood zones found for {state_code}")
     return {"type": "FeatureCollection", "features": []}
 
 
@@ -327,10 +327,10 @@ def fetch_epa_ejscreen(year: int = 2023) -> pd.DataFrame:
                 df = pd.read_csv(f, dtype={'ID': str})
 
         # Filter to Maryland (state FIPS 24)
-        df_md = df[df['ID'].str.startswith('24')].copy()
+        df_md = df[df['ID'].str.startswith('24')].copy().reset_index(drop=True)
 
         logger.info(f"Fetched {len(df_md)} Maryland EJScreen records")
-        return df_md
+        return df_md.to_frame() if isinstance(df_md, pd.Series) else df_md
 
     except Exception as e:
         logger.error(f"Failed to fetch EPA EJScreen data: {e}")
