@@ -9,9 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional, List
 from pydantic import BaseModel
-from datetime import datetime
 import os
-import json
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db_session
@@ -55,6 +53,65 @@ class DataSource(BaseModel):
     url: str
     update_frequency: str
     latest_available: str
+
+
+def _identify_top_strengths(layer_scores: dict, top_n: int = 2) -> List[str]:
+    valid_scores = {k: v for k, v in layer_scores.items() if v is not None}
+    if not valid_scores:
+        return []
+    sorted_layers = sorted(valid_scores.items(), key=lambda x: x[1], reverse=True)
+    return [name for name, _ in sorted_layers[:top_n]]
+
+
+def _identify_top_weaknesses(layer_scores: dict, top_n: int = 2) -> List[str]:
+    valid_scores = {k: v for k, v in layer_scores.items() if v is not None}
+    if not valid_scores:
+        return []
+    sorted_layers = sorted(valid_scores.items(), key=lambda x: x[1])
+    return [name for name, _ in sorted_layers[:top_n]]
+
+
+def _generate_explainability_payload(
+    directional_class: str,
+    confidence_class: str,
+    risk_drag_score: Optional[float],
+    layer_scores: dict
+) -> dict:
+    layer_names = {
+        "employment_gravity": "Employment Gravity",
+        "mobility_optionality": "Mobility Optionality",
+        "school_trajectory": "School System Trajectory",
+        "housing_elasticity": "Housing Elasticity",
+        "demographic_momentum": "Demographic Momentum"
+    }
+
+    strengths = _identify_top_strengths(layer_scores, top_n=2)
+    weaknesses = _identify_top_weaknesses(layer_scores, top_n=2)
+
+    primary_strengths = [layer_names.get(s, s) for s in strengths]
+    primary_weaknesses = [layer_names.get(w, w) for w in weaknesses]
+
+    key_trends = []
+    if directional_class == 'improving':
+        key_trends.append("Multiple reinforcing structural tailwinds present")
+    elif directional_class == 'at_risk':
+        key_trends.append("Structural headwinds constraining growth capacity")
+    else:
+        key_trends.append("Balanced signals, mixed pressure directions")
+
+    if confidence_class == 'strong':
+        key_trends.append("High policy delivery reliability")
+    elif confidence_class == 'fragile':
+        key_trends.append("Low policy follow-through, high uncertainty")
+
+    if risk_drag_score is not None and risk_drag_score >= 0.5:
+        key_trends.append("Elevated environmental or infrastructure risk")
+
+    return {
+        "primary_strengths": primary_strengths,
+        "primary_weaknesses": primary_weaknesses,
+        "key_trends": key_trends
+    }
 
 
 @router.get("/layers/counties/latest")
@@ -128,33 +185,23 @@ async def get_area_detail(
         )
 
     try:
-        # Fetch classification and scores
         query = text("""
             SELECT
-                cc.fips_code,
-                cc.data_year,
-                cc.directional_class,
-                cc.confidence_class,
-                cc.synthesis_grouping,
-                cc.composite_score,
-                cc.primary_strengths,
-                cc.primary_weaknesses,
-                cc.key_trends,
-                cc.updated_at,
-                ls.employment_gravity_score,
-                ls.mobility_optionality_score,
-                ls.school_trajectory_score,
-                ls.housing_elasticity_score,
-                ls.demographic_momentum_score,
-                ls.risk_drag_score
-            FROM county_classifications cc
-            LEFT JOIN layer_scores ls
-                ON cc.fips_code = ls.fips_code
-                AND cc.data_year = ls.data_year
-            WHERE cc.fips_code = :geoid
-                AND cc.data_year = (
-                    SELECT MAX(data_year) FROM county_classifications WHERE fips_code = :geoid
-                )
+                fsc.geoid AS fips_code,
+                fsc.current_as_of_year AS data_year,
+                fsc.final_grouping,
+                fsc.directional_status,
+                fsc.confidence_level,
+                fsc.composite_score,
+                fsc.updated_at,
+                fsc.employment_gravity_score,
+                fsc.mobility_optionality_score,
+                fsc.school_trajectory_score,
+                fsc.housing_elasticity_score,
+                fsc.demographic_momentum_score,
+                fsc.risk_drag_score
+            FROM final_synthesis_current fsc
+            WHERE fsc.geoid = :geoid
         """)
 
         result = db.execute(query, {"geoid": geoid}).fetchone()
@@ -165,26 +212,34 @@ async def get_area_detail(
                 detail=f"No data found for FIPS code {geoid}"
             )
 
-        # Build response
+        layer_scores = {
+            "employment_gravity": result.employment_gravity_score,
+            "mobility_optionality": result.mobility_optionality_score,
+            "school_trajectory": result.school_trajectory_score,
+            "housing_elasticity": result.housing_elasticity_score,
+            "demographic_momentum": result.demographic_momentum_score,
+            "risk_drag": result.risk_drag_score
+        }
+
+        explainability = _generate_explainability_payload(
+            directional_class=result.directional_status,
+            confidence_class=result.confidence_level,
+            risk_drag_score=result.risk_drag_score,
+            layer_scores=layer_scores
+        )
+
         return AreaDetail(
             fips_code=result.fips_code,
             county_name=MD_COUNTY_FIPS[geoid],
             data_year=result.data_year,
-            directional_class=result.directional_class,
-            confidence_class=result.confidence_class,
-            synthesis_grouping=result.synthesis_grouping,
+            directional_class=result.directional_status,
+            confidence_class=result.confidence_level,
+            synthesis_grouping=result.final_grouping,
             composite_score=result.composite_score,
-            layer_scores={
-                "employment_gravity": result.employment_gravity_score,
-                "mobility_optionality": result.mobility_optionality_score,
-                "school_trajectory": result.school_trajectory_score,
-                "housing_elasticity": result.housing_elasticity_score,
-                "demographic_momentum": result.demographic_momentum_score,
-                "risk_drag": result.risk_drag_score
-            },
-            primary_strengths=result.primary_strengths or [],
-            primary_weaknesses=result.primary_weaknesses or [],
-            key_trends=result.key_trends or [],
+            layer_scores=layer_scores,
+            primary_strengths=explainability['primary_strengths'],
+            primary_weaknesses=explainability['primary_weaknesses'],
+            key_trends=explainability['key_trends'],
             last_updated=result.updated_at.isoformat() if result.updated_at else None
         )
 
@@ -315,11 +370,13 @@ async def get_classification_definitions():
     Returns:
         Classification definitions and thresholds
     """
+    from src.processing import multiyear_classification as myc
+
     return {
         "directional_status": {
             "improving": {
                 "definition": "Multiple reinforcing structural tailwinds present",
-                "criteria": f"≥{settings.THRESHOLD_IMPROVING_MIN_LAYERS} layers above {settings.THRESHOLD_IMPROVING_HIGH} AND none below {settings.THRESHOLD_IMPROVING_LOW}"
+                "criteria": f"≥{myc.THRESHOLD_IMPROVING_MIN_LAYERS} layers above {myc.THRESHOLD_IMPROVING_HIGH} AND ≤1 below {myc.THRESHOLD_IMPROVING_LOW} (with positive momentum if available)"
             },
             "stable": {
                 "definition": "Balanced signals, mixed pressure directions",
@@ -327,21 +384,21 @@ async def get_classification_definitions():
             },
             "at_risk": {
                 "definition": "Structural headwinds constraining growth capacity",
-                "criteria": f"≥{settings.THRESHOLD_AT_RISK_COUNT} layers below {settings.THRESHOLD_AT_RISK_LOW} OR severe risk drag with ≥1 layer below {settings.THRESHOLD_AT_RISK_WITH_DRAG}"
+                "criteria": f"≥{myc.THRESHOLD_AT_RISK_COUNT} layers below {myc.THRESHOLD_AT_RISK_LOW} OR severe risk drag (≥{myc.THRESHOLD_RISK_DRAG_SEVERE})"
             }
         },
         "confidence_overlay": {
             "strong": {
-                "definition": "High policy delivery reliability",
-                "criteria": f"Policy persistence score ≥ {settings.CONFIDENCE_STRONG_MIN}"
+                "definition": "High evidence coverage across layers",
+                "criteria": f"Average coverage ≥ {myc.COVERAGE_STRONG} years"
             },
             "conditional": {
-                "definition": "Mixed track record, administrative dependency",
-                "criteria": f"{settings.CONFIDENCE_CONDITIONAL_MIN} ≤ score < {settings.CONFIDENCE_STRONG_MIN}"
+                "definition": "Partial evidence coverage across layers",
+                "criteria": f"Average coverage ≥ {myc.COVERAGE_CONDITIONAL} years"
             },
             "fragile": {
-                "definition": "Low policy follow-through, high uncertainty",
-                "criteria": f"Policy persistence score < {settings.CONFIDENCE_CONDITIONAL_MIN}"
+                "definition": "Sparse evidence coverage across layers",
+                "criteria": f"Average coverage < {myc.COVERAGE_CONDITIONAL} years"
             }
         },
         "disclaimer": "This tool does NOT predict housing prices or provide investment recommendations. "

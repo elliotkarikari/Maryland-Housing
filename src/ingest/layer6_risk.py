@@ -9,7 +9,6 @@ Signals Produced:
 """
 
 import pandas as pd
-import numpy as np
 from datetime import datetime
 from sqlalchemy import text
 
@@ -23,83 +22,8 @@ settings = get_settings()
 
 def calculate_risk_indicators(data_year: int = 2025) -> pd.DataFrame:
     """Calculate risk drag indicators."""
-    logger.info(f"Calculating risk drag for {data_year}")
-
-    # Coastal counties with sea level rise risk
-    COASTAL_COUNTIES = ['24003', '24015', '24017', '24019', '24029', '24035',
-                        '24037', '24039', '24041', '24045', '24047', '24510']
-
-    # Counties with higher flood risk
-    HIGH_FLOOD_RISK = ['24003', '24017', '24037', '24510']
-
-    # Counties with aging infrastructure
-    INFRASTRUCTURE_RISK = ['24510', '24001', '24023', '24039']
-
-    records = []
-
-    for fips in MD_COUNTY_FIPS:
-        # Flood risk
-        if fips in HIGH_FLOOD_RISK:
-            sfha_area = np.random.uniform(50, 150)
-            sfha_pct = np.random.uniform(0.10, 0.25)
-        elif fips in COASTAL_COUNTIES:
-            sfha_area = np.random.uniform(20, 60)
-            sfha_pct = np.random.uniform(0.05, 0.15)
-        else:
-            sfha_area = np.random.uniform(1, 20)
-            sfha_pct = np.random.uniform(0.01, 0.05)
-
-        # Climate exposure
-        sea_level_exposure = fips in COASTAL_COUNTIES
-        heat_days = int(np.random.uniform(15, 45))
-
-        # Air quality (EPA EJScreen proxies)
-        pm25 = np.random.uniform(6.0, 10.0)  # μg/m³
-        ozone = np.random.uniform(40, 55)     # ppb
-        hazwaste_score = np.random.uniform(0.1, 0.6)
-        traffic_score = np.random.uniform(0.2, 0.7)
-
-        # Infrastructure
-        if fips in INFRASTRUCTURE_RISK:
-            bridges_total = int(np.random.uniform(150, 400))
-            bridges_deficient = int(bridges_total * np.random.uniform(0.15, 0.30))
-        else:
-            bridges_total = int(np.random.uniform(50, 200))
-            bridges_deficient = int(bridges_total * np.random.uniform(0.05, 0.15))
-
-        bridges_deficient_pct = bridges_deficient / bridges_total if bridges_total > 0 else 0
-
-        # Calculate risk drag index (higher = more drag)
-        flood_component = sfha_pct * 0.3
-        climate_component = (1 if sea_level_exposure else 0) * 0.2
-        infra_component = bridges_deficient_pct * 0.3
-        env_component = ((pm25 / 15) + (ozone / 70) + hazwaste_score + traffic_score) / 4 * 0.2
-
-        risk_drag = flood_component + climate_component + infra_component + env_component
-        risk_drag = np.clip(risk_drag, 0, 1)
-
-        records.append({
-            'fips_code': fips,
-            'data_year': data_year,
-            'sfha_area_sq_mi': round(sfha_area, 2),
-            'sfha_pct_of_county': round(sfha_pct, 4),
-            'sea_level_rise_exposure': sea_level_exposure,
-            'extreme_heat_days_annual': heat_days,
-            'pm25_avg': round(pm25, 2),
-            'ozone_avg': round(ozone, 2),
-            'proximity_hazwaste_score': round(hazwaste_score, 4),
-            'traffic_proximity_score': round(traffic_score, 4),
-            'bridges_total': bridges_total,
-            'bridges_structurally_deficient': bridges_deficient,
-            'bridges_deficient_pct': round(bridges_deficient_pct, 4),
-            'risk_drag_index': round(risk_drag, 4)
-        })
-
-    df = pd.DataFrame(records)
-    logger.info(f"Calculated risk indicators for {len(df)} counties")
-    logger.info(f"High risk (>0.3): {(df['risk_drag_index'] > 0.3).sum()} counties")
-
-    return df
+    logger.error("Layer 6 risk ingestion is disabled until real FEMA/EPA/MDOT data is wired.")
+    return pd.DataFrame()
 
 
 def store_risk_data(df: pd.DataFrame):
@@ -151,7 +75,14 @@ def main():
         df = calculate_risk_indicators(data_year)
 
         if df.empty:
-            logger.error("No risk data to store")
+            logger.error("No risk data to store (real data not wired)")
+            log_refresh(
+                layer_name="layer6_risk_drag",
+                data_source="FEMA+EPA+MDOT",
+                status="failed",
+                error_message="Ingestion disabled until real data sources are implemented",
+                metadata={"data_year": data_year}
+            )
             return
 
         store_risk_data(df)
@@ -172,7 +103,7 @@ def main():
         log_refresh(
             layer_name="layer6_risk_drag",
             data_source="FEMA+EPA+MDOT",
-            status="error",
+            status="failed",
             error_message=str(e)
         )
         raise

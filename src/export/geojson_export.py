@@ -4,8 +4,7 @@ Generates map-ready GeoJSON outputs with county boundaries and classifications
 
 Data sources:
 - Geometries: US Census TIGER/Line (via pygris)
-- Classifications: Database (county_classifications table)
-- Layer scores: Database (layer_scores table)
+- Synthesis: Database (final_synthesis_current table)
 
 Outputs:
 - exports/md_counties_latest.geojson (always current)
@@ -75,53 +74,129 @@ def fetch_maryland_county_boundaries() -> gpd.GeoDataFrame:
         raise
 
 
-def fetch_latest_classifications() -> pd.DataFrame:
+def _identify_top_strengths(layer_scores: dict, top_n: int = 2) -> list:
+    valid_scores = {k: v for k, v in layer_scores.items() if pd.notna(v)}
+    if not valid_scores:
+        return []
+    sorted_layers = sorted(valid_scores.items(), key=lambda x: x[1], reverse=True)
+    return [name for name, _ in sorted_layers[:top_n]]
+
+
+def _identify_top_weaknesses(layer_scores: dict, top_n: int = 2) -> list:
+    valid_scores = {k: v for k, v in layer_scores.items() if pd.notna(v)}
+    if not valid_scores:
+        return []
+    sorted_layers = sorted(valid_scores.items(), key=lambda x: x[1], reverse=False)
+    return [name for name, _ in sorted_layers[:top_n]]
+
+
+def _generate_explainability_payload(
+    directional_class: str,
+    confidence_class: str,
+    risk_drag_score: float,
+    layer_scores: dict
+) -> dict:
+    layer_names = {
+        "employment_gravity": "Employment Gravity",
+        "mobility_optionality": "Mobility Optionality",
+        "school_trajectory": "School System Trajectory",
+        "housing_elasticity": "Housing Elasticity",
+        "demographic_momentum": "Demographic Momentum"
+    }
+
+    strengths = _identify_top_strengths(layer_scores, top_n=2)
+    weaknesses = _identify_top_weaknesses(layer_scores, top_n=2)
+
+    primary_strengths = [layer_names.get(s, s) for s in strengths]
+    primary_weaknesses = [layer_names.get(w, w) for w in weaknesses]
+
+    key_trends = []
+    if directional_class == 'improving':
+        key_trends.append("Multiple reinforcing structural tailwinds present")
+    elif directional_class == 'at_risk':
+        key_trends.append("Structural headwinds constraining growth capacity")
+    else:
+        key_trends.append("Balanced signals, mixed pressure directions")
+
+    if confidence_class == 'strong':
+        key_trends.append("High policy delivery reliability")
+    elif confidence_class == 'fragile':
+        key_trends.append("Low policy follow-through, high uncertainty")
+
+    if pd.notna(risk_drag_score) and risk_drag_score >= 0.5:
+        key_trends.append("Elevated environmental or infrastructure risk")
+
+    return {
+        "primary_strengths": primary_strengths,
+        "primary_weaknesses": primary_weaknesses,
+        "key_trends": key_trends
+    }
+
+
+def fetch_latest_synthesis() -> pd.DataFrame:
     """
-    Fetch latest county classifications and layer scores from database.
+    Fetch latest multi-year synthesis and layer scores from database.
 
     Returns:
         DataFrame with all classification and score data
     """
-    logger.info("Fetching latest classifications from database")
+    logger.info("Fetching latest synthesis from database")
 
     with get_db() as db:
         query = text("""
             SELECT
-                cc.fips_code,
-                cc.data_year,
-                cc.directional_class,
-                cc.composite_score,
-                cc.confidence_class,
-                cc.synthesis_grouping,
-                cc.primary_strengths,
-                cc.primary_weaknesses,
-                cc.key_trends,
-                cc.classification_method,
-                cc.version,
-                ls.employment_gravity_score,
-                ls.mobility_optionality_score,
-                ls.school_trajectory_score,
-                ls.housing_elasticity_score,
-                ls.demographic_momentum_score,
-                ls.risk_drag_score,
-                ls.composite_raw,
-                ls.composite_normalized
-            FROM county_classifications cc
-            LEFT JOIN layer_scores ls
-                ON cc.fips_code = ls.fips_code
-                AND cc.data_year = ls.data_year
-            WHERE cc.data_year = (
-                SELECT MAX(data_year) FROM county_classifications
-            )
+                fsc.geoid AS fips_code,
+                fsc.current_as_of_year AS data_year,
+                fsc.final_grouping,
+                fsc.directional_status,
+                fsc.confidence_level,
+                fsc.uncertainty_level,
+                fsc.uncertainty_reasons,
+                fsc.composite_score,
+                fsc.employment_gravity_score,
+                fsc.mobility_optionality_score,
+                fsc.school_trajectory_score,
+                fsc.housing_elasticity_score,
+                fsc.demographic_momentum_score,
+                fsc.risk_drag_score,
+                fsc.classification_version,
+                fsc.updated_at
+            FROM final_synthesis_current fsc
         """)
 
         df = pd.read_sql(query, db.connection())
 
     if df.empty:
-        logger.warning("No classifications found in database")
+        logger.warning("No synthesis records found in database")
         return pd.DataFrame()
 
-    logger.info(f"Fetched classifications for {len(df)} counties")
+    # Map V2 fields to V1-compatible property names for frontend
+    df['synthesis_grouping'] = df['final_grouping']
+    df['directional_class'] = df['directional_status']
+    df['confidence_class'] = df['confidence_level']
+
+    # Generate explainability fields (not stored in V2 table)
+    explainability = []
+    for _, row in df.iterrows():
+        layer_scores = {
+            "employment_gravity": row.get('employment_gravity_score'),
+            "mobility_optionality": row.get('mobility_optionality_score'),
+            "school_trajectory": row.get('school_trajectory_score'),
+            "housing_elasticity": row.get('housing_elasticity_score'),
+            "demographic_momentum": row.get('demographic_momentum_score')
+        }
+        payload = _generate_explainability_payload(
+            directional_class=row.get('directional_status'),
+            confidence_class=row.get('confidence_level'),
+            risk_drag_score=row.get('risk_drag_score'),
+            layer_scores=layer_scores
+        )
+        explainability.append(payload)
+
+    explainability_df = pd.DataFrame(explainability)
+    df = pd.concat([df.reset_index(drop=True), explainability_df], axis=1)
+
+    logger.info(f"Fetched synthesis for {len(df)} counties")
 
     return df
 
@@ -171,7 +246,7 @@ def prepare_geojson_properties(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
     logger.info("Preparing GeoJSON properties")
 
-    # Convert arrays to lists (for JSON serialization)
+    # Normalize common list-like fields
     for col in ['primary_strengths', 'primary_weaknesses', 'key_trends']:
         if col in gdf.columns:
             gdf[col] = gdf[col].apply(
@@ -194,22 +269,37 @@ def prepare_geojson_properties(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             if mask.any():
                 gdf.loc[mask, col] = gdf.loc[mask, col].round(4)
 
-    # Convert array columns to JSON strings for GeoJSON compatibility
+    # Convert list/dict/object fields to JSON strings for GeoJSON compatibility
     import json
-    array_cols = ['primary_strengths', 'primary_weaknesses', 'key_trends']
+
+    def safe_json_dumps(x):
+        if x is None:
+            return None
+        try:
+            if isinstance(x, float) and pd.isna(x):
+                return None
+            return json.dumps(x)
+        except (TypeError, ValueError):
+            return None
+
+    # Known array/json fields
+    array_cols = [
+        'primary_strengths', 'primary_weaknesses', 'key_trends',
+        'uncertainty_reasons', 'per_layer_coverage', 'drivers', 'constraints',
+        'coverage_summary'
+    ]
     for col in array_cols:
         if col in gdf.columns:
-            def safe_json_dumps(x):
-                if x is None:
-                    return None
-                try:
-                    # Check if it's a scalar NaN
-                    if isinstance(x, float) and pd.isna(x):
-                        return None
-                    return json.dumps(x)
-                except (TypeError, ValueError):
-                    return None
             gdf[col] = gdf[col].apply(safe_json_dumps)
+
+    # Fallback: stringify any remaining list/dict values in object columns
+    object_cols = [c for c in gdf.columns if gdf[c].dtype == 'object']
+    for col in object_cols:
+        def coerce_obj(v):
+            if isinstance(v, (list, dict, tuple)):
+                return safe_json_dumps(v)
+            return v
+        gdf[col] = gdf[col].apply(coerce_obj)
 
     # Fill NaN with None (for JSON null)
     gdf = gdf.where(pd.notna(gdf), None)
@@ -344,8 +434,8 @@ def run_geojson_export(
         # Fetch county boundaries
         boundaries_gdf = fetch_maryland_county_boundaries()
 
-        # Fetch latest classifications
-        classifications_df = fetch_latest_classifications()
+        # Fetch latest synthesis
+        classifications_df = fetch_latest_synthesis()
 
         if classifications_df.empty:
             raise ValueError("No classification data available for export")
@@ -379,7 +469,7 @@ def run_geojson_export(
         # Log success
         log_refresh(
             layer_name="geojson_export",
-            data_source="county_classifications",
+            data_source="final_synthesis_current",
             status="success",
             records_processed=len(merged_gdf),
             records_inserted=len(merged_gdf),
@@ -405,7 +495,7 @@ def run_geojson_export(
 
         log_refresh(
             layer_name="geojson_export",
-            data_source="county_classifications",
+            data_source="final_synthesis_current",
             status="failed",
             error_message=str(e)
         )

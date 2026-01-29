@@ -138,18 +138,18 @@ make db-setup
 # 3. Run initial data ingestion
 make ingest-all
 
-# 4. Start API server
-make serve
+# 4. Run V2 pipeline + export
+python src/run_pipeline.py --year 2025
 
-# 5. Generate GeoJSON output
-make export
+# 5. Start API server
+make serve
 ```
 
 ## API Endpoints
 
 ### County-Level GeoJSON
 ```
-GET /api/v1/counties/geojson
+GET /api/v1/layers/counties/latest
 ```
 
 Returns Maryland counties with:
@@ -160,12 +160,12 @@ Returns Maryland counties with:
 
 ### Individual Layer Data
 ```
-GET /api/v1/layers/{layer_name}/counties/{fips}
+GET /api/v1/areas/{fips}
 ```
 
 ### Versioned Snapshots
 ```
-GET /api/v1/snapshots/{version}/geojson
+GET /api/v1/layers/counties/{version}
 ```
 
 ## Architecture
@@ -214,7 +214,7 @@ GET /api/v1/snapshots/{version}/geojson
 
 ## Known Limitations
 
-### V1 Exclusions (Data Access Constraints)
+### Current Exclusions (Data Access Constraints)
 - **County zoning capacity**: Many counties lack machine-readable zoning GIS layers
 - **Planning commission approvals**: No standardized API; requires manual scraping
 - **Leadership tenure**: No consolidated Maryland source; would need manual assembly

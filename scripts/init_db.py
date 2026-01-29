@@ -145,9 +145,10 @@ def main():
     logger.info("DATABASE INITIALIZATION COMPLETE")
     logger.info("=" * 60)
     logger.info("\nNext steps:")
-    logger.info("1. Run data ingestion: python src/run_pipeline.py --level county")
-    logger.info("2. Start API server: make serve")
-    logger.info("3. View GeoJSON: exports/md_counties_latest.geojson")
+    logger.info("1. Run data ingestion: make ingest-all")
+    logger.info("2. Run V2 pipeline: python src/run_pipeline.py --year 2025")
+    logger.info("3. Start API server: make serve")
+    logger.info("4. View GeoJSON: exports/md_counties_latest.geojson")
 
 
 if __name__ == "__main__":

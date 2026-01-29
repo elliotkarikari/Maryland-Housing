@@ -135,7 +135,10 @@ def init_db():
         import subprocess
         import os
         import platform
-        schema_path = "data/schemas/schema.sql"
+        schema_files = [
+            "data/schemas/schema.sql",
+            "data/schemas/schema_timeseries.sql"
+        ]
 
         # Get database URL from settings
         db_url = settings.DATABASE_URL
@@ -156,45 +159,58 @@ def init_db():
                     break
 
         # Execute schema using psql
-        logger.info(f"Executing schema from {schema_path} using {psql_cmd}")
-        result = subprocess.run(
-            [psql_cmd, db_url, '-f', schema_path],
-            capture_output=True,
-            text=True
-        )
+        for schema_path in schema_files:
+            if not os.path.exists(schema_path):
+                logger.warning(f"Schema file not found, skipping: {schema_path}")
+                continue
 
-        if result.returncode == 0:
-            logger.info("Database schema initialized successfully")
-        else:
-            logger.warning(f"Schema execution warnings: {result.stderr}")
-            # Don't raise - tables may already exist
-            logger.info("Database schema initialization completed with warnings")
+            logger.info(f"Executing schema from {schema_path} using {psql_cmd}")
+            result = subprocess.run(
+                [psql_cmd, db_url, '-f', schema_path],
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Schema applied successfully: {schema_path}")
+            else:
+                logger.warning(f"Schema execution warnings for {schema_path}: {result.stderr}")
+                # Don't raise - tables may already exist
+                logger.info("Schema initialization completed with warnings")
 
     except FileNotFoundError:
         # psql not in PATH - fall back to SQLAlchemy
         logger.warning("psql not found, using SQLAlchemy (may have issues with functions)")
 
-        schema_path = "data/schemas/schema.sql"
-        with open(schema_path, 'r') as f:
-            schema_sql = f.read()
-
+        schema_files = [
+            "data/schemas/schema.sql",
+            "data/schemas/schema_timeseries.sql"
+        ]
         with get_db() as db:
-            try:
-                # Try to execute as single statement
-                db.execute(text(schema_sql))
-                db.commit()
-                logger.info("Database schema initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize database: {e}")
-                logger.info("Trying statement-by-statement (may have issues)...")
-                # Fall back to splitting by semicolons
-                statements = [s.strip() for s in schema_sql.split(';') if s.strip()]
-                for statement in statements:
-                    try:
-                        db.execute(text(statement))
-                    except Exception as e2:
-                        logger.warning(f"Statement warning: {e2}")
-                db.commit()
+            for schema_path in schema_files:
+                if not os.path.exists(schema_path):
+                    logger.warning(f"Schema file not found, skipping: {schema_path}")
+                    continue
+
+                with open(schema_path, 'r') as f:
+                    schema_sql = f.read()
+
+                try:
+                    # Try to execute as single statement
+                    db.execute(text(schema_sql))
+                    db.commit()
+                    logger.info(f"Database schema initialized successfully: {schema_path}")
+                except Exception as e:
+                    logger.error(f"Failed to initialize schema {schema_path}: {e}")
+                    logger.info("Trying statement-by-statement (may have issues)...")
+                    # Fall back to splitting by semicolons
+                    statements = [s.strip() for s in schema_sql.split(';') if s.strip()]
+                    for statement in statements:
+                        try:
+                            db.execute(text(statement))
+                        except Exception as e2:
+                            logger.warning(f"Statement warning: {e2}")
+                    db.commit()
 
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")

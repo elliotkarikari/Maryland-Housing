@@ -20,7 +20,7 @@ Interactive web map visualizing the Maryland Growth & Family Viability Atlas. Th
   - 🟢 Conditional Growth
   - 🟡 Stable but Constrained
   - 🔴 At Risk / Headwinds
-  - ⚪ High Uncertainty (current V1.0 state)
+  - ⚪ High Uncertainty (current V2.0 state)
 
 ### Interactive Elements
 - **Hover** - Tooltip showing county name and grouping
@@ -81,7 +81,7 @@ frontend/
 ## Data Flow
 
 ```
-GeoJSON File (exports/md_counties_latest.geojson)
+GeoJSON Endpoint (API)
     ↓
 Frontend loads and displays on map
     ↓
@@ -115,18 +115,18 @@ Side panel displays detailed data
 
 ---
 
-## Current State (V1.0)
+## Current State (V2.0)
 
-All 24 counties currently show **"High Uncertainty"** (gray).
+If multi-year coverage is sparse, counties will show **\"High Uncertainty\"** (gray).
 
 **Why?**
-- Only Layer 1 (Employment Gravity) data is ingested
-- System requires ≥2 layers to avoid "sparse data" classification
-- This is **intentional and honest** - the system accurately reflects its analytical limitations
+- V2 requires multi-year evidence for momentum and stability signals
+- Missing years reduce confidence instead of being interpolated
+- This is **intentional and honest** - the system reflects evidence quality
 
-**When Layers 2-6 are added:**
-- Counties will distribute across all 5 groupings
-- Spatial patterns will emerge
+**When multi-year coverage improves:**
+- Counties distribute across all 5 groupings
+- Momentum and stability signal becomes active
 - More nuanced territorial assessments
 
 ---
@@ -273,13 +273,13 @@ aws s3 sync frontend/ s3://maryland-atlas-frontend --exclude "*.py"
 
 ## Known Limitations
 
-### V1.0
+### V2.0
 - Mobile layout not optimized (desktop-first)
 - No deep linking to specific counties
 - No search/filter functionality
 - No data export from UI
 
-### Future Enhancements (V1.1+)
+### Future Enhancements (V2.1+)
 - Mobile-responsive layout
 - URL-based county selection (`?county=24031`)
 - Search bar for county lookup
@@ -294,7 +294,7 @@ aws s3 sync frontend/ s3://maryland-atlas-frontend --exclude "*.py"
 ### Map doesn't load
 - Check browser console for errors
 - Verify API server is running on port 8000
-- Ensure GeoJSON file exists at `../exports/md_counties_latest.geojson`
+- Verify `http://localhost:8000/api/v1/layers/counties/latest` responds
 
 ### Counties show as gray squares
 - GeoJSON may not have loaded properly

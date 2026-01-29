@@ -75,25 +75,20 @@ This fetches real data from:
 
 **Expected time:** 2-5 minutes
 
-### 5. Run Full Pipeline
+### 5. Run V2 Pipeline
 
 ```bash
-# Full pipeline with AI extraction
-python src/run_pipeline.py --level county --run-ai auto
-
-# Or skip AI for faster testing
-python src/run_pipeline.py --level county --run-ai false
+# Multi-year synthesis + GeoJSON export
+python src/run_pipeline.py --year 2025
 ```
 
-Pipeline stages:
-1. Data ingestion (Layer 1)
-2. AI extraction (if enabled)
-3. Normalization
-4. Scoring
-5. Classification
-6. GeoJSON export
+Pipeline stages (V2):
+1. Timeseries features (level, momentum, stability)
+2. Multi-year scoring
+3. Multi-year classification (final synthesis)
+4. GeoJSON export
 
-**Expected time:** 5-10 minutes (without AI), 10-15 minutes (with AI)
+**Expected time:** 5-10 minutes (depends on data volume)
 
 ### 6. Start API Server
 
@@ -183,7 +178,7 @@ railway run python scripts/init_db.py
 
 ```bash
 # Manual trigger (or wait for monthly cron)
-railway run python src/run_pipeline.py --level county --run-ai auto
+railway run python src/run_pipeline.py --year 2025
 ```
 
 ### 8. Monitor
@@ -204,8 +199,7 @@ Railway runs these automatically:
 
 | Job | Schedule | Command |
 |-----|----------|---------|
-| Monthly pipeline | 1st of month, 2 AM | Full ingestion + processing |
-| Weekly AI extraction | Every Monday, 3 AM | CIP document updates |
+| Monthly pipeline | 1st of month, 2 AM | Multi-year synthesis + export |
 | Daily export refresh | Every day, 5 AM | Regenerate GeoJSON |
 
 **Manual override:**
@@ -237,42 +231,22 @@ export CENSUS_API_KEY=your_key
 # Or add to .env file
 ```
 
-### "No module named 'openai'"
-
-**Fix:**
-```bash
-pip install openai PyPDF2 tiktoken
-```
-
-### "AI extraction failed"
-
-**Check:**
-```bash
-echo $OPENAI_API_KEY
-echo $AI_ENABLED
-```
-
-**Skip AI:**
-```bash
-python src/run_pipeline.py --run-ai false
-```
-
 ### "No data found for layer X"
 
-**Expected for V1:**
-- Layers 2-6 are scaffolded but not ingesting yet
-- Only Layer 1 (Employment) is fully implemented
+**Check:**
+- Ensure the corresponding layer ingestion has been run
+- Verify the layer table has multiple years of data
 
-**This is normal** - system runs with partial data.
+**Note:** V2 needs multi-year data to enable momentum/stability signals.
 
 ### "Export failed - no classifications"
 
-**Cause:** Pipeline didn't complete processing stage.
+**Cause:** Pipeline didn't complete multi-year classification.
 
 **Fix:**
 ```bash
-# Run full pipeline first
-python src/run_pipeline.py --level county
+# Run V2 pipeline first
+python src/run_pipeline.py --year 2025
 
 # Then export
 python src/run_pipeline.py --export-only
@@ -306,24 +280,8 @@ THRESHOLD_AT_RISK_LOW = 0.3     # Lower to 0.2 for stricter "At Risk"
 
 Re-run classification:
 ```bash
-python -m src.processing.classification
+python -m src.run_multiyear_pipeline --skip-timeseries --skip-scoring
 python src/run_pipeline.py --export-only
-```
-
-### Add More Counties to AI Extraction
-
-Edit `src/ai/pipeline/cip_extractor.py`:
-
-```python
-CIP_SOURCES = {
-    "24031": {...},  # Montgomery (existing)
-    "24027": {       # Add Howard County
-        "name": "Howard County",
-        "url": "https://verified_url_here.pdf",
-        "title": "Howard County FY25 CIP",
-        "published_date": date(2024, 6, 1)
-    }
-}
 ```
 
 ### Build Frontend
