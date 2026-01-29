@@ -4,7 +4,7 @@
 // Configuration
 const MAPBOX_TOKEN = 'pk.eyJ1IjoiZWxrYXJpMjMiLCJhIjoiY2tubm04b3BkMTYwcTJzcG5tZDZ2YTV5MSJ9.S0oAvquhkkMoDGrRJ_oP-Q';
 const API_BASE_URL = 'http://localhost:8000/api/v1';
-const GEOJSON_PATH = `${API_BASE_URL}/layers/counties/latest`;
+const GEOJSON_PATH = 'md_counties_latest.geojson';  // Use static file for now
 
 // Color schemes for different layers
 const SYNTHESIS_COLORS = {

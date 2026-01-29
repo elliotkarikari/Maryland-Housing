@@ -16,6 +16,7 @@ Note: Capital investment and capacity strain require CIP data and remain NULL.
 import sys
 import zipfile
 import re
+import argparse
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -40,15 +41,10 @@ settings = get_settings()
 CACHE_DIR = Path("data/cache/schools")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# NCES CCD preliminary directory pages (recent years)
-# We resolve the actual ZIP download link at runtime.
-CCD_DIRECTORY_PAGES = {
-    2025: "https://nces.ed.gov/use-work/resource-library/data/data-file/2024-25-common-core-data-ccd-preliminary-directory-files",
-    2024: "https://nces.ed.gov/use-work/resource-library/data/data-file/2023-24-common-core-data-ccd-preliminary-directory-files",
-    2023: "https://nces.ed.gov/use-work/resource-library/data/data-file/2022-23-common-core-data-ccd-preliminary-directory-files",
-    2022: "https://nces.ed.gov/use-work/resource-library/data/data-file/2021-22-common-core-data-ccd-preliminary-files",
-    2021: "https://nces.ed.gov/use-work/resource-library/data/data-file/2020-21-common-core-data-ccd-preliminary-files",
-}
+# NCES CCD LEA browse page - contains direct download links
+# Pattern: ccd_lea_029_{YY}{YY}_w_{version}_{date}.zip
+CCD_LEA_BROWSE_URL = "https://nces.ed.gov/ccd/pau_rev.asp"
+CCD_BASE_URL = "https://nces.ed.gov/ccd/"
 
 
 def _normalize_name(name: str) -> str:
@@ -69,34 +65,63 @@ def _build_county_name_map() -> Dict[str, str]:
     return mapping
 
 
-def _resolve_ccd_zip_url(page_url: str) -> Optional[str]:
+def _resolve_ccd_lea_zip_url(year: int) -> Optional[str]:
+    """
+    Resolve the LEA ZIP download URL for a given school year from the browse page.
+
+    Args:
+        year: School year (e.g., 2022 for 2021-22)
+
+    Returns:
+        Full download URL or None if not found
+    """
     try:
-        resp = requests.get(page_url, timeout=60)
+        resp = requests.get(CCD_LEA_BROWSE_URL, timeout=60)
         resp.raise_for_status()
     except Exception as e:
-        logger.warning(f"Failed to load CCD page {page_url}: {e}")
+        logger.warning(f"Failed to load CCD LEA browse page: {e}")
         return None
 
-    links = re.findall(r"https?://[^\"']+\\.zip", resp.text)
-    if not links:
+    # Convert year to YYZZ format (e.g., 2022 -> 2122 for 2021-22)
+    prev_year = year - 1
+    yy_format = f"{str(prev_year)[-2:]}{str(year)[-2:]}"
+
+    # Look for patterns like: Data/zip/ccd_lea_029_2122_w_*.zip
+    # These are relative paths on the page
+    pattern = rf"Data/zip/ccd_lea_029_{yy_format}_[^\"'<>]+\.zip"
+    matches = re.findall(pattern, resp.text)
+
+    if not matches:
+        logger.warning(f"No LEA ZIP found for year {year} (pattern: {yy_format})")
         return None
 
-    for link in links:
-        if "asset_builder_data" in link or "/ccd/Data/zip/" in link:
-            return link
-    return links[0]
+    # Take first match and construct full URL
+    relative_path = matches[0]
+    full_url = CCD_BASE_URL + relative_path
+
+    logger.info(f"Resolved CCD LEA URL for {year}: {full_url}")
+    return full_url
 
 
-def _download_ccd_file(year: int, page_url: str) -> Path:
-    target = CACHE_DIR / f"ccd_directory_{year}.zip"
+def _download_ccd_file(year: int) -> Path:
+    """
+    Download CCD LEA file for a given year.
+
+    Args:
+        year: School year (e.g., 2022 for 2021-22 school year)
+
+    Returns:
+        Path to downloaded ZIP file
+    """
+    target = CACHE_DIR / f"ccd_lea_{year}.zip"
     if not target.exists():
-        zip_url = _resolve_ccd_zip_url(page_url)
+        zip_url = _resolve_ccd_lea_zip_url(year)
         if not zip_url:
-            raise RuntimeError(f"No download link found for CCD page {page_url}")
-        logger.info(f"Downloading CCD directory file for {year}")
+            raise RuntimeError(f"No CCD LEA download link found for year {year}")
+        logger.info(f"Downloading CCD LEA file for {year}")
         ok = download_file(zip_url, str(target))
         if not ok:
-            raise RuntimeError(f"Failed to download CCD file for {year}")
+            raise RuntimeError(f"Failed to download CCD LEA file for {year}")
     return target
 
 
@@ -108,32 +133,57 @@ def _read_membership_zip(zip_path: Path) -> pd.DataFrame:
         # Prefer LEA-level files when available
         preferred = [n for n in candidates if "lea" in n.lower() or "agency" in n.lower()]
         data_name = preferred[0] if preferred else candidates[0]
-        with zf.open(data_name) as f:
-            # Try common delimiters
+
+        # Try multiple encodings (NCES files can use different encodings)
+        encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+        df = None
+
+        for encoding in encodings_to_try:
             try:
-                df = pd.read_csv(f, dtype=str)
+                with zf.open(data_name) as f:
+                    # Try common delimiters
+                    try:
+                        df = pd.read_csv(f, dtype=str, encoding=encoding)
+                        break
+                    except Exception:
+                        pass
+
+                    # Try pipe delimiter
+                    with zf.open(data_name) as f:
+                        try:
+                            df = pd.read_csv(f, dtype=str, sep='|', encoding=encoding)
+                            break
+                        except Exception:
+                            pass
+
+                    # Try tab delimiter
+                    with zf.open(data_name) as f:
+                        try:
+                            df = pd.read_csv(f, dtype=str, sep='\t', encoding=encoding)
+                            break
+                        except Exception:
+                            pass
             except Exception:
-                f.seek(0)
-                try:
-                    df = pd.read_csv(f, dtype=str, sep='|')
-                except Exception:
-                    f.seek(0)
-                    df = pd.read_csv(f, dtype=str, sep='\t')
+                continue
+
+        if df is None or df.empty:
+            raise RuntimeError(f"Failed to parse data file {data_name} with any encoding/delimiter")
+
     return df
 
 
 def _filter_md_lea(df: pd.DataFrame) -> pd.DataFrame:
     cols = {c.lower(): c for c in df.columns}
     if 'fipst' in cols:
-        return df[df[cols['fipst']].astype(str).str.zfill(2) == '24']
+        return df[df[cols['fipst']].astype(str).str.zfill(2) == '24'].copy()
     if 'state' in cols:
-        return df[df[cols['state']].astype(str).str.upper() == 'MD']
+        return df[df[cols['state']].astype(str).str.upper() == 'MD'].copy()
     if 'stabbr' in cols:
-        return df[df[cols['stabbr']].astype(str).str.upper() == 'MD']
+        return df[df[cols['stabbr']].astype(str).str.upper() == 'MD'].copy()
     return df
 
 
-def _extract_enrollment(df: pd.DataFrame) -> pd.Series:
+def _extract_enrollment(df: pd.DataFrame) -> "pd.Series[float]":
     candidates = ['member', 'total', 'total_membership', 'totmem', 'enrollment']
     for c in candidates:
         if c in [col.lower() for col in df.columns]:
@@ -173,17 +223,27 @@ def _map_lea_to_county(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _build_enrollment_timeseries() -> pd.DataFrame:
+def _build_enrollment_timeseries(latest_year: Optional[int] = None, multi_year: bool = True) -> pd.DataFrame:
     records = []
 
-    current_year = datetime.utcnow().year
-    min_year = current_year - 4
+    # Default to 2025 (NCES data typically lags by 1 year)
+    if latest_year is None:
+        current_year = 2025
+    else:
+        current_year = latest_year
 
-    for year, page_url in CCD_DIRECTORY_PAGES.items():
-        if year < min_year or year > current_year:
-            continue
+    if multi_year:
+        min_year = current_year - 4
+        years_to_try = list(range(min_year, current_year + 1))
+    else:
+        years_to_try = [current_year]
+
+    logger.info(f"Attempting to fetch CCD data for years: {years_to_try}")
+
+    for year in years_to_try:
+        logger.info(f"Trying year {year}...")
         try:
-            zip_path = _download_ccd_file(year, page_url)
+            zip_path = _download_ccd_file(year)
             df = _read_membership_zip(zip_path)
             df = _filter_md_lea(df)
         except Exception as e:
@@ -238,15 +298,15 @@ def _build_enrollment_timeseries() -> pd.DataFrame:
     return pd.concat(records, ignore_index=True)
 
 
-def calculate_school_indicators() -> pd.DataFrame:
+def calculate_school_indicators(latest_year: Optional[int] = None, multi_year: bool = True) -> pd.DataFrame:
     """Compute enrollment trends from CCD LEA membership data."""
-    ts = _build_enrollment_timeseries()
+    ts = _build_enrollment_timeseries(latest_year=latest_year, multi_year=multi_year)
     if ts.empty:
         return pd.DataFrame()
 
     ts = ts.sort_values(['fips_code', 'data_year']).reset_index(drop=True)
 
-    # Compute 3-year change percent using year-2 baseline when available
+    # Compute 3-year change percent using year-3 baseline when available
     ts['enrollment_3yr_change_pct'] = pd.NA
 
     for fips in ts['fips_code'].unique():
@@ -254,7 +314,7 @@ def calculate_school_indicators() -> pd.DataFrame:
         year_to_val = {row['data_year']: row['total_enrollment'] for _, row in sub.iterrows()}
         for idx, row in sub.iterrows():
             year = row['data_year']
-            baseline_year = year - 2 if (year - 2) in year_to_val else None
+            baseline_year = year - 3 if (year - 3) in year_to_val else None
             if baseline_year is None:
                 continue
             baseline = year_to_val[baseline_year]
@@ -350,7 +410,14 @@ def main():
         logger.info("LAYER 3: SCHOOL TRAJECTORY INGESTION")
         logger.info("=" * 60)
 
-        df = calculate_school_indicators()
+        parser = argparse.ArgumentParser(description='Ingest Layer 3 School Trajectory data')
+        parser.add_argument('--year', type=int, default=2025, help='Latest year to fetch (default: 2025)')
+        parser.add_argument('--single-year', action='store_true', help='Fetch only single year (default: multi-year)')
+        args = parser.parse_args()
+
+        logger.info(f"Year: {args.year}, Multi-year: {not args.single_year}")
+
+        df = calculate_school_indicators(latest_year=args.year, multi_year=not args.single_year)
 
         if df.empty:
             logger.error("No school data to store (real data not available)")
@@ -370,7 +437,11 @@ def main():
             status="success",
             records_processed=len(df),
             records_inserted=len(df),
-            metadata={"years": sorted(df['data_year'].unique().tolist())}
+            metadata={
+                "years": sorted(df['data_year'].unique().tolist()),
+                "latest_year": args.year,
+                "multi_year": not args.single_year
+            }
         )
 
         logger.info("✓ Layer 3 ingestion complete")

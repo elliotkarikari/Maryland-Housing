@@ -151,6 +151,16 @@ def load_timeseries_features(as_of_year: int = 2025) -> pd.DataFrame:
         'coverage_years', 'min_year', 'max_year'
     ])
 
+    # Convert Decimal to float for numeric operations
+    numeric_cols = [
+        'level_latest', 'level_baseline',
+        'momentum_slope', 'momentum_delta', 'momentum_percent_change',
+        'stability_volatility', 'stability_cv', 'stability_consistency',
+        'stability_persistence', 'coverage_years', 'min_year', 'max_year'
+    ]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
     logger.info(f"Loaded {len(df)} timeseries feature records")
     return df
 

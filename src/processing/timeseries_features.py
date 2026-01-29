@@ -125,7 +125,8 @@ def extract_timeseries_data(
     layer_table: str,
     metric_column: str,
     geoid: str,
-    window_size: int = DEFAULT_WINDOW_SIZE
+    window_size: int = DEFAULT_WINDOW_SIZE,
+    as_of_year: int = 2025
 ) -> pd.DataFrame:
     """
     Extract timeseries data for a specific metric from a layer table.
@@ -135,13 +136,14 @@ def extract_timeseries_data(
         metric_column: Column name for the metric
         geoid: Geography ID (FIPS code)
         window_size: Number of years to look back
+        as_of_year: Reference year (latest year to consider)
 
     Returns:
         DataFrame with columns: year, value
     """
     with get_db() as db:
         # Calculate year range
-        current_year = 2025  # Could be made dynamic
+        current_year = as_of_year
         min_year = current_year - window_size + 1
 
         query = text(f"""
@@ -160,6 +162,11 @@ def extract_timeseries_data(
             return pd.DataFrame(columns=['year', 'value'])
 
         df = pd.DataFrame(rows, columns=['year', 'value'])
+
+        # Convert Decimal to float for numeric operations
+        df['value'] = pd.to_numeric(df['value'], errors='coerce')
+        df['year'] = pd.to_numeric(df['year'], errors='coerce')
+
         return df
 
 
@@ -186,7 +193,7 @@ def compute_layer_timeseries_features(
         Dict with all timeseries features, or None if insufficient data
     """
     # Extract timeseries data
-    ts_data = extract_timeseries_data(layer_table, metric_column, geoid, window_size)
+    ts_data = extract_timeseries_data(layer_table, metric_column, geoid, window_size, as_of_year)
 
     if ts_data.empty:
         logger.debug(f"No timeseries data for {geoid} {layer_name}")

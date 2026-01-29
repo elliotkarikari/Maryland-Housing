@@ -3,7 +3,7 @@ Maryland Viability Atlas - Multi-Year Evidence Pipeline
 Orchestrates the complete pipeline from timeseries features to final synthesis
 
 Usage:
-    python -m src.run_multiyear_pipeline [--skip-timeseries] [--skip-scoring]
+    python src/run_multiyear_pipeline.py [--as-of-year 2021] [--skip-timeseries] [--skip-scoring]
 
 Steps:
     1. Compute timeseries features (level, momentum, stability)
@@ -17,6 +17,12 @@ All steps use multi-year evidence when available.
 import argparse
 import sys
 from datetime import datetime
+from pathlib import Path
+
+# Ensure project root is on sys.path when running as a script
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.processing.timeseries_features import compute_all_timeseries_features
 from src.processing.multiyear_scoring import compute_all_layer_scores
