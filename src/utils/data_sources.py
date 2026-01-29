@@ -5,8 +5,10 @@ Helper functions for accessing open data APIs with rate limiting
 
 import requests
 import time
+import random
+import logging
 import pandas as pd
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 from functools import wraps
 from config.settings import get_settings
 from src.utils.logging import get_logger
@@ -224,54 +226,192 @@ def fetch_lodes_wac(state: str = "md", year: Optional[int] = None, job_type: str
         raise
 
 
-def fetch_fema_nfhl(state_code: str = "MD") -> Dict[str, Any]:
+class FEMAAPIError(RuntimeError):
+    """Raised when FEMA NFHL API fails after retries."""
+
+
+def fetch_fema_nfhl(
+    state_fips: str = "MD",
+    geometry: Optional[Tuple[float, float, float, float]] = None
+):
     """
-    Fetch FEMA National Flood Hazard Layer data with fallback to old URL.
+    Fetch FEMA National Flood Hazard Layer (NFHL) flood hazard polygons.
+
+    Endpoint (2026): https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query
+    Deprecated: https://hazards.fema.gov/gis/nfhl/... (no longer valid)
 
     Args:
-        state_code: State abbreviation (default: MD)
+        state_fips: State abbreviation (e.g., "MD") or FIPS (unused if geometry is provided).
+        geometry: (minx, miny, maxx, maxy) envelope in WGS84 (EPSG:4326).
 
     Returns:
-        GeoJSON FeatureCollection of flood zones
-    """
-    # Try new /arcgis/ endpoint first, fallback to old /gis/nfhl/ endpoint
-    urls_to_try = [
-        (f"{settings.FEMA_NFHL_URL}/28/query", "new /arcgis/ endpoint"),
-        (f"{settings.FEMA_NFHL_URL_FALLBACK}/28/query", "fallback /gis/nfhl/ endpoint")
-    ]
+        GeoDataFrame with NFHL features (can be empty).
 
-    params = {
-        "where": f"STATE_CODE='{state_code}'",
-        "outFields": "OBJECTID,FLD_ZONE,ZONE_SUBTY",  # Essential fields to prevent 404
+    Example:
+        md_bbox = (-79.487651, 37.911717, -75.048939, 39.723043)
+        gdf = fetch_fema_nfhl("MD", geometry=md_bbox)
+
+    Note:
+        If the API fails persistently, download the NFHL geodatabase from FEMA MSC
+        and ingest locally: https://msc.fema.gov/portal/search
+    """
+    import geopandas as gpd
+
+    local_logger = logging.getLogger(__name__)
+    session = requests.Session()
+    base_url = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
+
+    base_params = {
+        "outFields": "OBJECTID,SFHA_TF,FLD_ZONE,ZONE_SUBTY",
         "returnGeometry": "true",
-        "f": "geojson"
+        "outSR": 4326,
+        "f": "geojson",
+        "resultRecordCount": 500,
+        "where": "1=1"
     }
 
-    logger.info(f"Fetching FEMA NFHL data for {state_code}")
-
-    for url, desc in urls_to_try:
-        try:
-            logger.info(f"Trying {desc}: {url}")
-            response = requests.get(url, params=params, timeout=120)
-            response.raise_for_status()
-
-            data = response.json()
-
-            if "features" in data:
-                logger.info(f"✓ Fetched {len(data['features'])} FEMA flood zones from {desc}")
+    def _request_with_retries(params: Dict[str, Any]) -> Dict[str, Any]:
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 11):
+            try:
+                local_logger.info(f"FEMA NFHL request attempt {attempt} offset={params.get('resultOffset')}")
+                response = session.get(base_url, params=params, timeout=60)
+                local_logger.info(f"FEMA NFHL response status: {response.status_code}")
+                response.raise_for_status()
+                data = response.json()
+                if "error" in data:
+                    raise RuntimeError(data["error"])
                 return data
-            else:
-                logger.warning(f"No features in FEMA NFHL response from {desc}")
+            except (requests.exceptions.HTTPError,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ReadTimeout) as e:
+                last_error = e
+                code = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
+                if code not in (500, 429, None) and attempt >= 2:
+                    break
+                sleep_for = min(120, (4 ** attempt)) + random.uniform(0, 10)
+                local_logger.warning(f"FEMA NFHL error on attempt {attempt}: {e}. Retrying in {sleep_for:.1f}s")
+                time.sleep(sleep_for)
+            except Exception as e:
+                last_error = e
+                sleep_for = min(120, (4 ** attempt)) + random.uniform(0, 10)
+                local_logger.warning(f"FEMA NFHL parse error on attempt {attempt}: {e}. Retrying in {sleep_for:.1f}s")
+                time.sleep(sleep_for)
 
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"FEMA NFHL request failed for {desc}: {e}")
-            if url == urls_to_try[-1][0]:  # Last URL failed
-                logger.error(f"All FEMA NFHL endpoints failed")
-                raise
+        raise FEMAAPIError(f"FEMA NFHL API failed after retries: {last_error}")
 
-    # If no features found from any endpoint
-    logger.warning(f"No FEMA flood zones found for {state_code}")
-    return {"type": "FeatureCollection", "features": []}
+    def _fetch_bbox_features(bbox: Tuple[float, float, float, float]) -> List[Dict[str, Any]]:
+        minx, miny, maxx, maxy = bbox
+        params = dict(base_params)
+        params.update({
+            "geometry": f"{minx},{miny},{maxx},{maxy}",
+            "geometryType": "esriGeometryEnvelope",
+            "spatialRel": "esriSpatialRelIntersects",
+            "inSR": 4326
+        })
+
+        all_features: List[Dict[str, Any]] = []
+        offset = 0
+        while True:
+            params["resultOffset"] = offset
+            data = _request_with_retries(params)
+            features = data.get("features", [])
+            if not features:
+                break
+            all_features.extend(features)
+            local_logger.info(f"Fetched {len(features)} features (offset {offset})")
+            if len(features) < base_params["resultRecordCount"]:
+                break
+            offset += base_params["resultRecordCount"]
+        return all_features
+
+    def _split_bbox(bbox: Tuple[float, float, float, float], grid_size: float = 0.5) -> List[Tuple[float, float, float, float]]:
+        minx, miny, maxx, maxy = bbox
+        tiles = []
+        x = minx
+        while x < maxx:
+            y = miny
+            x2 = min(x + grid_size, maxx)
+            while y < maxy:
+                y2 = min(y + grid_size, maxy)
+                tiles.append((x, y, x2, y2))
+                y = y2
+            x = x2
+        return tiles
+
+    def _precheck_service() -> None:
+        if geometry is None:
+            return
+        minx, miny, maxx, maxy = geometry
+        cx = (minx + maxx) / 2
+        cy = (miny + maxy) / 2
+        test_bbox = (cx - 0.01, cy - 0.01, cx + 0.01, cy + 0.01)
+        params = dict(base_params)
+        params.update({
+            "geometry": f"{test_bbox[0]},{test_bbox[1]},{test_bbox[2]},{test_bbox[3]}",
+            "geometryType": "esriGeometryEnvelope",
+            "spatialRel": "esriSpatialRelIntersects",
+            "inSR": 4326,
+            "resultRecordCount": 1,
+            "resultOffset": 0
+        })
+        _request_with_retries(params)
+
+    def _fetch_wfs(bbox: Tuple[float, float, float, float]) -> List[Dict[str, Any]]:
+        minx, miny, maxx, maxy = bbox
+        wfs_url = "https://hazards.fema.gov/arcgis/services/public/NFHL/MapServer/WFSServer"
+        params = {
+            "SERVICE": "WFS",
+            "REQUEST": "GetFeature",
+            "VERSION": "1.1.0",
+            "TYPENAME": "public_NFHL:S_Fld_Haz_Ar",
+            "OUTPUTFORMAT": "application/json",
+            "BBOX": f"{minx},{miny},{maxx},{maxy},urn:ogc:def:crs:EPSG::4326",
+            "MAXFEATURES": 1000
+        }
+        try:
+            resp = session.get(wfs_url, params=params, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("features", [])
+        except Exception as e:
+            local_logger.warning(f"WFS fallback failed: {e}")
+            return []
+
+    if geometry is None:
+        local_logger.warning("No geometry provided; returning empty GeoDataFrame")
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+
+    # Pre-check service responsiveness
+    try:
+        _precheck_service()
+    except FEMAAPIError as e:
+        local_logger.error(f"FEMA NFHL service precheck failed: {e}")
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+
+    # Tiling for large bboxes
+    minx, miny, maxx, maxy = geometry
+    width = maxx - minx
+    height = maxy - miny
+    tiles = [geometry]
+    if width > 0.5 or height > 0.5:
+        tiles = _split_bbox(geometry, grid_size=0.5)
+
+    all_features: List[Dict[str, Any]] = []
+    for bbox in tiles:
+        try:
+            all_features.extend(_fetch_bbox_features(bbox))
+        except FEMAAPIError as e:
+            local_logger.warning(f"REST tile failed {bbox}: {e}")
+            all_features.extend(_fetch_wfs(bbox))
+
+    if not all_features:
+        local_logger.warning("No FEMA NFHL features returned")
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+
+    local_logger.info(f"Total FEMA NFHL features fetched: {len(all_features)}")
+    return gpd.GeoDataFrame.from_features(all_features, crs="EPSG:4326")
 
 
 def fetch_irs_migration(year_range: str = "2122") -> pd.DataFrame:

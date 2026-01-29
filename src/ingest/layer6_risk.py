@@ -62,30 +62,53 @@ def _pick_env_column(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
 
 def _compute_sfha_metrics() -> pd.DataFrame:
     logger.info("Fetching FEMA NFHL SFHA polygons")
-    geojson = fetch_fema_nfhl("MD")
-    if "features" not in geojson or not geojson["features"]:
-        return pd.DataFrame()
-
-    sfha_gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs='EPSG:4326')
-    sfha_gdf = sfha_gdf[sfha_gdf.geometry.notna()].copy()
-
     counties = _fetch_md_counties()
-    if sfha_gdf.empty or counties.empty:
+    if counties.empty:
         return pd.DataFrame()
 
     counties_proj = counties.to_crs('EPSG:5070')
-    sfha_proj = sfha_gdf.to_crs('EPSG:5070')
-
     results = []
-    for _, county in counties_proj.iterrows():
+
+    for _, county in counties.iterrows():
+        fips = county['fips_code']
         geom = county['geometry']
-        clipped = gpd.clip(sfha_proj, geom)
+        minx, miny, maxx, maxy = geom.bounds
+
+        try:
+            geojson = fetch_fema_nfhl("MD", geometry=(minx, miny, maxx, maxy))
+            features = geojson.get("features", [])
+        except Exception as e:
+            logger.warning(f"FEMA NFHL failed for {fips}: {e}")
+            features = []
+
+        if not features:
+            results.append({
+                "fips_code": fips,
+                "sfha_area_sq_mi": None,
+                "sfha_pct_of_county": None
+            })
+            continue
+
+        sfha_gdf = gpd.GeoDataFrame.from_features(features, crs='EPSG:4326')
+        sfha_gdf = sfha_gdf[sfha_gdf.geometry.notna()].copy()
+        if sfha_gdf.empty:
+            results.append({
+                "fips_code": fips,
+                "sfha_area_sq_mi": None,
+                "sfha_pct_of_county": None
+            })
+            continue
+
+        sfha_proj = sfha_gdf.to_crs('EPSG:5070')
+        county_geom = counties_proj[counties_proj['fips_code'] == fips].iloc[0]['geometry']
+        clipped = gpd.clip(sfha_proj, county_geom)
         sfha_area_m2 = clipped.area.sum() if not clipped.empty else 0.0
-        county_area_m2 = geom.area
+        county_area_m2 = county_geom.area
         sfha_area_sq_mi = sfha_area_m2 / 2_589_988.110336
         pct = sfha_area_m2 / county_area_m2 if county_area_m2 else None
+
         results.append({
-            "fips_code": county['fips_code'],
+            "fips_code": fips,
             "sfha_area_sq_mi": sfha_area_sq_mi,
             "sfha_pct_of_county": pct
         })
