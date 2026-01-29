@@ -100,6 +100,78 @@ def classify_confidence(policy_persistence_score: float) -> str:
         return 'fragile'
 
 
+def calculate_final_synthesis_grouping(
+    directional_class: str,
+    confidence_class: str,
+    risk_drag_score: float,
+    policy_persistence_score: float,
+    layer_scores: pd.Series,
+    classification_contested: bool = False
+) -> str:
+    """
+    Calculate final synthesis grouping for map display.
+
+    This is the PRIMARY output for the interactive map, answering:
+    "What is the structural trajectory of this place — and how reliable is that assessment?"
+
+    Groupings:
+    - emerging_tailwinds: Improving + Strong confidence + low-medium uncertainty
+    - conditional_growth: Improving + Conditional confidence OR high uncertainty
+    - stable_constrained: Stable + no severe risk drag
+    - at_risk_headwinds: At Risk OR severe risk + weak policy
+    - high_uncertainty: Fragile confidence OR contested classification OR sparse data
+
+    Args:
+        directional_class: Directional status (improving/stable/at_risk)
+        confidence_class: Confidence level (strong/conditional/fragile)
+        risk_drag_score: Risk drag score (0-1, higher = more risk)
+        policy_persistence_score: Policy persistence score (0-1)
+        layer_scores: Series of layer scores for data completeness check
+        classification_contested: Whether classification is contested by claims
+
+    Returns:
+        Final synthesis grouping name
+    """
+    # Check data completeness
+    valid_layers = layer_scores.dropna()
+    data_sparse = len(valid_layers) < 2  # Less than 2 layers = sparse
+
+    # Severe risk drag threshold
+    severe_risk_drag = pd.notna(risk_drag_score) and risk_drag_score >= 0.5
+
+    # Weak policy persistence
+    weak_policy = pd.notna(policy_persistence_score) and policy_persistence_score < 0.3
+
+    # HIGH UNCERTAINTY / CONTESTED
+    # Takes precedence - if we can't trust the assessment, say so explicitly
+    if (confidence_class == 'fragile' or
+        classification_contested or
+        data_sparse):
+        return 'high_uncertainty'
+
+    # AT RISK / HEADWINDS
+    # Structural headwinds dominate
+    if (directional_class == 'at_risk' or
+        (severe_risk_drag and weak_policy)):
+        return 'at_risk_headwinds'
+
+    # EMERGING TAILWINDS
+    # Stacked tailwinds with high confidence
+    if (directional_class == 'improving' and
+        confidence_class == 'strong'):
+        return 'emerging_tailwinds'
+
+    # CONDITIONAL GROWTH
+    # Upside exists but execution matters
+    if directional_class == 'improving':
+        # Either conditional confidence or other uncertainty factors
+        return 'conditional_growth'
+
+    # STABLE BUT CONSTRAINED
+    # Default for stable situations without severe headwinds
+    return 'stable_constrained'
+
+
 def identify_top_strengths(
     layer_scores: Dict[str, float],
     top_n: int = 2
@@ -254,7 +326,7 @@ def classify_all_counties(
         policy_df = pd.read_sql(
             policy_query,
             db.connection(),
-            params={"data_year": data_year}
+            params={"data_year": int(data_year)}
         )
 
     # Merge policy scores
@@ -290,10 +362,21 @@ def classify_all_counties(
         # Classify confidence
         confidence_class = classify_confidence(policy_score)
 
+        # Calculate final synthesis grouping (PRIMARY MAP OUTPUT)
+        synthesis_grouping = calculate_final_synthesis_grouping(
+            directional_class=directional_class,
+            confidence_class=confidence_class,
+            risk_drag_score=risk_drag,
+            policy_persistence_score=policy_score,
+            layer_scores=layer_scores,
+            classification_contested=False  # TODO: Implement claims system
+        )
+
         # Generate explainability
         row_with_classes = row.copy()
         row_with_classes['directional_class'] = directional_class
         row_with_classes['confidence_class'] = confidence_class
+        row_with_classes['synthesis_grouping'] = synthesis_grouping
 
         explainability = generate_explainability_payload(row_with_classes)
 
@@ -303,6 +386,7 @@ def classify_all_counties(
             'directional_class': directional_class,
             'composite_score': row.get('composite_normalized'),
             'confidence_class': confidence_class,
+            'synthesis_grouping': synthesis_grouping,
             'primary_strengths': explainability['primary_strengths'],
             'primary_weaknesses': explainability['primary_weaknesses'],
             'key_trends': explainability['key_trends'],
@@ -326,6 +410,15 @@ def classify_all_counties(
         f"fragile={len(classifications_df[classifications_df['confidence_class']=='fragile'])}"
     )
 
+    logger.info(
+        f"Final Synthesis Grouping (PRIMARY MAP LAYER) distribution: "
+        f"emerging_tailwinds={len(classifications_df[classifications_df['synthesis_grouping']=='emerging_tailwinds'])}, "
+        f"conditional_growth={len(classifications_df[classifications_df['synthesis_grouping']=='conditional_growth'])}, "
+        f"stable_constrained={len(classifications_df[classifications_df['synthesis_grouping']=='stable_constrained'])}, "
+        f"at_risk_headwinds={len(classifications_df[classifications_df['synthesis_grouping']=='at_risk_headwinds'])}, "
+        f"high_uncertainty={len(classifications_df[classifications_df['synthesis_grouping']=='high_uncertainty'])}"
+    )
+
     return classifications_df
 
 
@@ -343,11 +436,11 @@ def store_classifications(classifications_df: pd.DataFrame):
             sql = text("""
                 INSERT INTO county_classifications (
                     fips_code, data_year, directional_class, composite_score,
-                    confidence_class, primary_strengths, primary_weaknesses,
+                    confidence_class, synthesis_grouping, primary_strengths, primary_weaknesses,
                     key_trends, classification_method, version
                 ) VALUES (
                     :fips_code, :data_year, :directional_class, :composite_score,
-                    :confidence_class, :primary_strengths, :primary_weaknesses,
+                    :confidence_class, :synthesis_grouping, :primary_strengths, :primary_weaknesses,
                     :key_trends, :classification_method, :version
                 )
                 ON CONFLICT (fips_code, data_year)
@@ -355,6 +448,7 @@ def store_classifications(classifications_df: pd.DataFrame):
                     directional_class = EXCLUDED.directional_class,
                     composite_score = EXCLUDED.composite_score,
                     confidence_class = EXCLUDED.confidence_class,
+                    synthesis_grouping = EXCLUDED.synthesis_grouping,
                     primary_strengths = EXCLUDED.primary_strengths,
                     primary_weaknesses = EXCLUDED.primary_weaknesses,
                     key_trends = EXCLUDED.key_trends,

@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maryland Growth & Family Viability Atlas</title>
+
+    <!-- Mapbox GL JS -->
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css" rel="stylesheet">
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js"></script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            overflow: hidden;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+        }
+
+        /* Header */
+        .header {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            background: white;
+            padding: 20px 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 10;
+            max-width: 600px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 8px;
+            color: #1a1a1a;
+        }
+
+        .header p {
+            font-size: 14px;
+            color: #666;
+            line-height: 1.4;
+        }
+
+        /* Legend */
+        .legend {
+            position: absolute;
+            bottom: 30px;
+            left: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 10;
+            max-width: 280px;
+        }
+
+        .legend h3 {
+            font-size: 16px;
+            margin-bottom: 12px;
+            color: #1a1a1a;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .legend-color {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            margin-right: 10px;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+
+        .legend-label {
+            flex: 1;
+        }
+
+        .legend-description {
+            font-size: 11px;
+            color: #666;
+            margin-left: 34px;
+            margin-top: -4px;
+            margin-bottom: 8px;
+        }
+
+        /* Side Panel */
+        .side-panel {
+            position: absolute;
+            top: 0;
+            right: -400px;
+            width: 400px;
+            height: 100%;
+            background: white;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.1);
+            z-index: 20;
+            transition: right 0.3s ease;
+            overflow-y: auto;
+        }
+
+        .side-panel.open {
+            right: 0;
+        }
+
+        .panel-header {
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        .panel-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+        }
+
+        .panel-close:hover {
+            background: #e0e0e0;
+        }
+
+        .panel-title {
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #1a1a1a;
+            padding-right: 40px;
+        }
+
+        .panel-subtitle {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .panel-content {
+            padding: 30px;
+        }
+
+        .panel-section {
+            margin-bottom: 30px;
+        }
+
+        .panel-section h4 {
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #666;
+            margin-bottom: 12px;
+        }
+
+        .synthesis-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        .score-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .score-item {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+        .score-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 4px;
+        }
+
+        .score-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .score-value.null {
+            color: #ccc;
+        }
+
+        .list-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .list-item:last-child {
+            border-bottom: none;
+        }
+
+        /* Tooltip */
+        .mapboxgl-popup {
+            max-width: 300px;
+        }
+
+        .mapboxgl-popup-content {
+            padding: 12px 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+        }
+
+        .tooltip-title {
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 6px;
+            color: #1a1a1a;
+        }
+
+        .tooltip-grouping {
+            font-size: 13px;
+            color: #666;
+        }
+
+        /* Layer Controls */
+        .layer-controls {
+            position: absolute;
+            top: 140px;
+            right: 20px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 10;
+            min-width: 200px;
+        }
+
+        .layer-controls h4 {
+            font-size: 14px;
+            margin-bottom: 10px;
+            color: #1a1a1a;
+        }
+
+        .layer-option {
+            display: flex;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .layer-option input {
+            margin-right: 8px;
+        }
+
+        /* Loading Spinner */
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 30px 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+            z-index: 100;
+            text-align: center;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #333;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <p>Loading Maryland Atlas...</p>
+    </div>
+
+    <!-- Map Container -->
+    <div id="map"></div>
+
+    <!-- Header -->
+    <div class="header">
+        <h1>Maryland Growth & Family Viability Atlas</h1>
+        <p>
+            Spatial analysis of structural trajectories across Maryland counties.
+            <strong>Click a county</strong> for detailed breakdown.
+        </p>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+        <h3>Synthesis Grouping</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #2d5016;"></div>
+            <div class="legend-label">Emerging Tailwinds</div>
+        </div>
+        <div class="legend-description">Stacked growth signals, high confidence</div>
+
+        <div class="legend-item">
+            <div class="legend-color" style="background: #7cb342;"></div>
+            <div class="legend-label">Conditional Growth</div>
+        </div>
+        <div class="legend-description">Upside exists, execution matters</div>
+
+        <div class="legend-item">
+            <div class="legend-color" style="background: #fdd835;"></div>
+            <div class="legend-label">Stable Constrained</div>
+        </div>
+        <div class="legend-description">Holding steady, limited upside</div>
+
+        <div class="legend-item">
+            <div class="legend-color" style="background: #f4511e;"></div>
+            <div class="legend-label">At Risk / Headwinds</div>
+        </div>
+        <div class="legend-description">Structural challenges dominate</div>
+
+        <div class="legend-item">
+            <div class="legend-color" style="background: #757575;"></div>
+            <div class="legend-label">High Uncertainty</div>
+        </div>
+        <div class="legend-description">Insufficient data or contested</div>
+    </div>
+
+    <!-- Layer Controls -->
+    <div class="layer-controls">
+        <h4>Map Layers</h4>
+        <label class="layer-option">
+            <input type="radio" name="layer" value="synthesis" checked>
+            Synthesis Grouping
+        </label>
+        <label class="layer-option">
+            <input type="radio" name="layer" value="directional">
+            Directional Status
+        </label>
+        <label class="layer-option">
+            <input type="radio" name="layer" value="confidence">
+            Confidence Level
+        </label>
+    </div>
+
+    <!-- Side Panel -->
+    <div id="side-panel" class="side-panel">
+        <div class="panel-header">
+            <button class="panel-close" onclick="closePanel()">&times;</button>
+            <div class="panel-title" id="panel-title">County Name</div>
+            <div class="panel-subtitle" id="panel-subtitle">FIPS: 24000 | Data Year: 2021</div>
+        </div>
+        <div class="panel-content" id="panel-content">
+            <!-- Content loaded dynamically -->
+        </div>
+    </div>
+
+    <script src="map.js"></script>
+</body>
+</html>

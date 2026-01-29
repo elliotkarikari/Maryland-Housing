@@ -187,13 +187,13 @@ def ingest_bls_qcew_data(data_year: int = 2025, quarter: int = 3) -> pd.DataFram
 
     # Aggregate metrics
     county_qcew = df_county.groupby('fips_code').agg({
-        'annual_avg_wkly_wage': 'mean',
-        'annual_avg_estabs': 'sum'
+        'avg_wkly_wage': 'mean',
+        'qtrly_estabs': 'sum'
     }).reset_index()
 
     county_qcew = county_qcew.rename(columns={
-        'annual_avg_wkly_wage': 'avg_weekly_wage',
-        'annual_avg_estabs': 'qcew_total_establishments'
+        'avg_wkly_wage': 'avg_weekly_wage',
+        'qtrly_estabs': 'qcew_total_establishments'
     })
 
     logger.info(f"Processed BLS QCEW data for {len(county_qcew)} counties")
@@ -437,64 +437,119 @@ def merge_and_store(
     logger.info("Layer 1 (Employment Gravity) ingestion complete")
 
 
-def run_layer1_ingestion(data_year: int = None):
+def run_layer1_ingestion(data_year: int = None, multi_year: bool = True):
     """
     Main entry point for Layer 1 ingestion.
 
     Args:
-        data_year: Year to process (default: latest from settings)
+        data_year: Latest year to process (default: latest from settings)
+        multi_year: If True, fetch 5 years of historical data; if False, single year only
     """
-    data_year = data_year or settings.LODES_LATEST_YEAR
+    latest_year = data_year or settings.LODES_LATEST_YEAR
 
-    logger.info(f"Starting Layer 1 (Employment Gravity) ingestion for year {data_year}")
+    if multi_year:
+        # Fetch 5 years of data (e.g., 2017-2021)
+        years_to_fetch = list(range(latest_year - 4, latest_year + 1))
+        logger.info(f"Starting Layer 1 (Employment Gravity) MULTI-YEAR ingestion for years {years_to_fetch[0]}-{years_to_fetch[-1]}")
+    else:
+        # Single year ingestion (legacy mode)
+        years_to_fetch = [latest_year]
+        logger.info(f"Starting Layer 1 (Employment Gravity) single-year ingestion for {latest_year}")
 
-    try:
-        # Ingest LODES
-        lodes_df = ingest_lodes_data(data_year=data_year)
+    total_records = 0
+    failed_years = []
 
-        # Ingest BLS QCEW
-        qcew_df = ingest_bls_qcew_data(data_year=2025, quarter=3)
+    for year in years_to_fetch:
+        logger.info("=" * 70)
+        logger.info(f"Processing year {year}")
+        logger.info("=" * 70)
 
-        # Ingest USASpending (5-year window)
-        spending_df = ingest_usaspending_data(
-            start_year=data_year - 4,
-            end_year=data_year
-        )
+        try:
+            # Ingest LODES (employment by sector)
+            logger.info(f"  Fetching LODES data for {year}...")
+            lodes_df = ingest_lodes_data(data_year=year)
 
-        # Merge and store
-        merge_and_store(lodes_df, qcew_df, spending_df, data_year)
+            if lodes_df.empty:
+                logger.warning(f"  No LODES data available for {year}, skipping")
+                failed_years.append(year)
+                continue
 
-        # Log success
-        log_refresh(
-            layer_name="layer1_employment_gravity",
-            data_source="LEHD/LODES, BLS QCEW, USASpending",
-            status="success",
-            records_processed=len(lodes_df),
-            records_inserted=len(lodes_df),
-            metadata={"data_year": data_year}
-        )
+            # Ingest BLS QCEW (wages and establishments)
+            # Use Q3 as representative quarter (more stable than Q1/Q2)
+            logger.info(f"  Fetching BLS QCEW data for {year} Q3...")
+            try:
+                qcew_df = ingest_bls_qcew_data(data_year=year, quarter=3)
+            except Exception as e:
+                logger.warning(f"  BLS QCEW fetch failed for {year}: {e}")
+                qcew_df = pd.DataFrame()  # Continue without QCEW data
 
-        logger.info("Layer 1 ingestion completed successfully")
+            # Ingest USASpending (5-year rolling window ending at current year)
+            logger.info(f"  Fetching USASpending data for {year-4} to {year}...")
+            try:
+                spending_df = ingest_usaspending_data(
+                    start_year=year - 4,
+                    end_year=year
+                )
+            except Exception as e:
+                logger.warning(f"  USASpending fetch failed for {year}: {e}")
+                spending_df = pd.DataFrame()  # Continue without spending data
 
-    except Exception as e:
-        logger.error(f"Layer 1 ingestion failed: {e}", exc_info=True)
+            # Merge and store
+            logger.info(f"  Merging and storing {year} data...")
+            merge_and_store(lodes_df, qcew_df, spending_df, year)
 
-        log_refresh(
-            layer_name="layer1_employment_gravity",
-            data_source="LEHD/LODES, BLS QCEW, USASpending",
-            status="failed",
-            error_message=str(e),
-            metadata={"data_year": data_year}
-        )
+            total_records += len(lodes_df)
+            logger.info(f"✓ Year {year} complete: {len(lodes_df)} records stored")
 
-        raise
+        except Exception as e:
+            logger.error(f"✗ Year {year} ingestion failed: {e}", exc_info=True)
+            failed_years.append(year)
+            continue  # Continue with next year instead of failing entire pipeline
+
+    # Log final summary
+    logger.info("=" * 70)
+    if multi_year:
+        logger.info(f"MULTI-YEAR INGESTION SUMMARY")
+        logger.info(f"  Years requested: {years_to_fetch[0]}-{years_to_fetch[-1]} ({len(years_to_fetch)} years)")
+        logger.info(f"  Years successful: {len(years_to_fetch) - len(failed_years)}")
+        logger.info(f"  Years failed: {len(failed_years)} {failed_years if failed_years else ''}")
+        logger.info(f"  Total records stored: {total_records}")
+    else:
+        logger.info(f"Single-year ingestion {'succeeded' if not failed_years else 'failed'}")
+
+    # Log refresh
+    log_refresh(
+        layer_name="layer1_employment_gravity",
+        data_source="LEHD/LODES, BLS QCEW, USASpending",
+        status="success" if not failed_years or len(failed_years) < len(years_to_fetch) else "partial",
+        records_processed=total_records,
+        records_inserted=total_records,
+        metadata={
+            "multi_year": multi_year,
+            "years_requested": years_to_fetch,
+            "years_successful": len(years_to_fetch) - len(failed_years),
+            "years_failed": failed_years
+        }
+    )
+
+    if failed_years and len(failed_years) == len(years_to_fetch):
+        raise Exception(f"All years failed: {failed_years}")
+
+    logger.info("Layer 1 ingestion completed")
+    logger.info("=" * 70)
 
 
 if __name__ == "__main__":
     import sys
+    import argparse
     from src.utils.logging import setup_logging
 
     setup_logging("layer1_employment")
 
-    year = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    run_layer1_ingestion(data_year=year)
+    parser = argparse.ArgumentParser(description='Ingest Layer 1 Employment data')
+    parser.add_argument('--year', type=int, help='Latest year to fetch (default: 2021)')
+    parser.add_argument('--single-year', action='store_true', help='Fetch only single year (default: multi-year)')
+
+    args = parser.parse_args()
+
+    run_layer1_ingestion(data_year=args.year, multi_year=not args.single_year)

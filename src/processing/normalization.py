@@ -389,9 +389,9 @@ def store_normalized_features(
                         """)
 
                         db.execute(insert_sql, {
-                            "fips_code": fips_code,
-                            "data_year": data_year,
-                            "feature_name": feature_name,
+                            "fips_code": str(fips_code),
+                            "data_year": int(data_year),
+                            "feature_name": str(feature_name),
                             "normalized_value": float(normalized_value)
                         })
 

@@ -92,6 +92,7 @@ def fetch_latest_classifications() -> pd.DataFrame:
                 cc.directional_class,
                 cc.composite_score,
                 cc.confidence_class,
+                cc.synthesis_grouping,
                 cc.primary_strengths,
                 cc.primary_weaknesses,
                 cc.key_trends,
@@ -185,9 +186,30 @@ def prepare_geojson_properties(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         'demographic_momentum_score', 'risk_drag_score'
     ]
 
+    # Round numeric columns (only non-null values)
     for col in numeric_cols:
         if col in gdf.columns:
-            gdf[col] = gdf[col].round(4)
+            # Only round non-null values
+            mask = pd.notna(gdf[col])
+            if mask.any():
+                gdf.loc[mask, col] = gdf.loc[mask, col].round(4)
+
+    # Convert array columns to JSON strings for GeoJSON compatibility
+    import json
+    array_cols = ['primary_strengths', 'primary_weaknesses', 'key_trends']
+    for col in array_cols:
+        if col in gdf.columns:
+            def safe_json_dumps(x):
+                if x is None:
+                    return None
+                try:
+                    # Check if it's a scalar NaN
+                    if isinstance(x, float) and pd.isna(x):
+                        return None
+                    return json.dumps(x)
+                except (TypeError, ValueError):
+                    return None
+            gdf[col] = gdf[col].apply(safe_json_dumps)
 
     # Fill NaN with None (for JSON null)
     gdf = gdf.where(pd.notna(gdf), None)

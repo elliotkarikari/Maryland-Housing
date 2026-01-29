@@ -30,6 +30,7 @@ class AreaDetail(BaseModel):
     data_year: int
     directional_class: str
     confidence_class: str
+    synthesis_grouping: str  # PRIMARY MAP LAYER - Final synthesis grouping
     composite_score: Optional[float]
     layer_scores: dict
     primary_strengths: List[str]
@@ -134,6 +135,7 @@ async def get_area_detail(
                 cc.data_year,
                 cc.directional_class,
                 cc.confidence_class,
+                cc.synthesis_grouping,
                 cc.composite_score,
                 cc.primary_strengths,
                 cc.primary_weaknesses,
@@ -170,6 +172,7 @@ async def get_area_detail(
             data_year=result.data_year,
             directional_class=result.directional_class,
             confidence_class=result.confidence_class,
+            synthesis_grouping=result.synthesis_grouping,
             composite_score=result.composite_score,
             layer_scores={
                 "employment_gravity": result.employment_gravity_score,

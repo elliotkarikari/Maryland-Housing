@@ -223,8 +223,14 @@ def store_layer_scores(
                 "composite_normalized": row.get('composite_normalized')
             }
 
-            # Convert NaN to None for SQL
-            scores = {k: (None if pd.isna(v) else float(v)) for k, v in scores.items()}
+            # Convert NaN to None and ensure proper types for SQL
+            scores = {
+                k: (None if pd.isna(v) else
+                    (str(int(v)) if k == 'fips_code' else
+                     int(v) if k == 'data_year' else
+                     float(v)))
+                for k, v in scores.items()
+            }
 
             sql = text("""
                 INSERT INTO layer_scores (
