@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "project": "maryland-housing-atlas",
+  "api": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 4096,
+    "temperature": 0.7
+  },
+  "defaults": {
+    "output_format": "markdown",
+    "include_project_context": true,
+    "history_enabled": true
+  },
+  "project_context": {
+    "name": "Maryland Growth & Family Viability Atlas",
+    "type": "spatial-analytics",
+    "stack": ["python", "fastapi", "postgresql", "postgis", "mapbox"],
+    "key_directories": ["src/", "frontend/", "migrations/", "docs/"]
+  },
+  "prompts_directory": ".claude/prompts",
+  "templates_directory": ".claude/templates",
+  "history_directory": ".claude/history"
+}

@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning
+.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new
 
 help:
 	@echo "Maryland Viability Atlas - Available Commands"
@@ -21,6 +21,12 @@ help:
 	@echo "  make test           - Run test suite"
 	@echo "  make clean          - Remove temporary files"
 	@echo "  make agent-lightning - Start Agent Lightning pilot container"
+	@echo ""
+	@echo "Claude Prompt Management:"
+	@echo "  make claude-list    - List all available prompts"
+	@echo "  make claude-run PROMPT=name - Display a prompt"
+	@echo "  make claude-run PROMPT=name EXEC=1 - Execute via API"
+	@echo "  make claude-new NAME=name - Create new prompt from template"
 
 install:
 	pip install -r requirements.txt
@@ -110,3 +116,96 @@ clean:
 
 agent-lightning:
 	docker compose -f docker-compose.agent-lightning.yml up --build -d
+
+# =============================================================================
+# Claude Prompt Management
+# =============================================================================
+# Usage:
+#   make claude-list              - List all available prompts
+#   make claude-run PROMPT=name   - Display prompt (for copy-paste)
+#   make claude-run PROMPT=name EXEC=1 - Execute via API
+#   make claude-run PROMPT=name CONTEXT=1 - Include project context
+#   make claude-new NAME=name     - Create new prompt from template
+# =============================================================================
+
+# Default values for optional parameters
+PROMPT ?=
+EXEC ?= 0
+CONTEXT ?= 0
+NAME ?=
+
+claude-help:
+	@echo "Claude Prompt Management"
+	@echo ""
+	@echo "Commands:"
+	@echo "  make claude-list              - List all available prompts"
+	@echo "  make claude-run PROMPT=name   - Display a prompt (for copy-paste)"
+	@echo "  make claude-run PROMPT=name EXEC=1 - Execute prompt via API"
+	@echo "  make claude-new NAME=name     - Create new prompt from template"
+	@echo ""
+	@echo "Options:"
+	@echo "  PROMPT=name    - Prompt name (required for run)"
+	@echo "  EXEC=1         - Execute via API instead of display"
+	@echo "  CONTEXT=1      - Include project context in prompt"
+	@echo "  NAME=name      - New prompt name (for claude-new)"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make claude-run PROMPT=cleanup"
+	@echo "  make claude-run PROMPT=documentation EXEC=1"
+	@echo "  make claude-run PROMPT=code-review CONTEXT=1"
+	@echo "  make claude-new NAME=my-custom-prompt"
+
+claude-list:
+	@bash scripts/claude_list.sh
+
+claude-run:
+ifndef PROMPT
+	@echo "Error: PROMPT is required"
+	@echo "Usage: make claude-run PROMPT=<prompt_name>"
+	@echo ""
+	@bash scripts/claude_list.sh
+	@exit 1
+endif
+ifeq ($(EXEC),1)
+ifeq ($(CONTEXT),1)
+	@bash scripts/claude_run.sh $(PROMPT) --exec --context
+else
+	@bash scripts/claude_run.sh $(PROMPT) --exec
+endif
+else
+ifeq ($(CONTEXT),1)
+	@bash scripts/claude_run.sh $(PROMPT) --context
+else
+	@bash scripts/claude_run.sh $(PROMPT)
+endif
+endif
+
+claude-exec:
+ifndef PROMPT
+	@echo "Error: PROMPT is required"
+	@echo "Usage: make claude-exec PROMPT=<prompt_name>"
+	@exit 1
+endif
+ifeq ($(CONTEXT),1)
+	@bash scripts/claude_run.sh $(PROMPT) --exec --context
+else
+	@bash scripts/claude_run.sh $(PROMPT) --exec
+endif
+
+claude-new:
+ifndef NAME
+	@echo "Error: NAME is required"
+	@echo "Usage: make claude-new NAME=<new_prompt_name>"
+	@exit 1
+endif
+	@if [ -f ".claude/prompts/$(NAME).md" ]; then \
+		echo "Error: Prompt '$(NAME)' already exists"; \
+		exit 1; \
+	fi
+	@cp .claude/templates/prompt_template.md .claude/prompts/$(NAME).md
+	@echo "Created new prompt: .claude/prompts/$(NAME).md"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. Edit the prompt: code .claude/prompts/$(NAME).md"
+	@echo "  2. Test it: make claude-run PROMPT=$(NAME)"
+	@echo "  3. Commit when ready: git add .claude/prompts/$(NAME).md"

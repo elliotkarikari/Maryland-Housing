@@ -1,0 +1,3 @@
+# This directory stores prompt execution history
+# Files here are gitignored to keep execution logs local
+# Only .gitkeep is tracked

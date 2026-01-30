@@ -134,3 +134,11 @@ alembic/versions/*.pyc
 .tmp/
 *.pdf
 *.zip
+
+# -----------------------------------------------------------------------------
+# Claude Prompt System
+# -----------------------------------------------------------------------------
+# History files contain execution logs (keep local only)
+.claude/history/*.log
+.claude/history/*.json
+!.claude/history/.gitkeep
