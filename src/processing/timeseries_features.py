@@ -365,19 +365,19 @@ def compute_all_timeseries_features(
         },
         'school_trajectory': {
             'table': 'layer3_school_trajectory',
-            'metric': 'total_enrollment'  # Use total enrollment for timeseries (more reliable than momentum score)
+            'metric': 'education_opportunity_index'  # v1-v2 composite: 0.4×supply + 0.6×accessibility
         },
         'housing_elasticity': {
             'table': 'layer4_housing_elasticity',
-            'metric': 'housing_elasticity_index'
+            'metric': 'housing_opportunity_index'  # v1-v2 composite: 0.4×elasticity + 0.6×affordability
         },
         'demographic_momentum': {
             'table': 'layer5_demographic_momentum',
-            'metric': 'demographic_momentum_score'
+            'metric': 'demographic_opportunity_index'  # v1-v3 composite: 0.3×static + 0.4×equity + 0.3×migration
         },
         'risk_drag': {
             'table': 'layer6_risk_drag',
-            'metric': 'risk_drag_index'
+            'metric': 'risk_drag_index'  # v1-v2 composite: 0.4×static + 0.6×(climate+vulnerability-adaptive)
         }
     }
 

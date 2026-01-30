@@ -1,0 +1,28 @@
+{
+  "created_at": "2026-01-30T18:51:56.738802Z",
+  "metrics": {
+    "layer6": {},
+    "timeseries": {
+      "counts_by_layer": {
+        "demographic_momentum": 24,
+        "employment_gravity": 24,
+        "housing_elasticity": 24,
+        "mobility_optionality": 24,
+        "risk_drag": 0,
+        "school_trajectory": 24
+      },
+      "county_expected": 24,
+      "coverage_ratio_by_layer": {
+        "demographic_momentum": 0.0,
+        "employment_gravity": 0.0,
+        "housing_elasticity": 1.0,
+        "mobility_optionality": 0.0,
+        "risk_drag": 0.0,
+        "school_trajectory": 1.0
+      },
+      "latest_as_of_year": 2025,
+      "summary_null_rows": 0,
+      "summary_out_of_range_rows": 0
+    }
+  }
+}

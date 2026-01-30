@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 import os
 
@@ -21,6 +21,32 @@ logger = get_logger(__name__)
 
 
 # Response models
+class LayerFactor(BaseModel):
+    """Individual factor contributing to a layer score"""
+    name: str
+    value: Optional[float] = None
+    formatted_value: Optional[str] = None
+    description: str
+    weight: Optional[float] = None
+    trend: Optional[str] = None  # 'up', 'down', 'stable', None
+    trend_value: Optional[float] = None
+
+
+class LayerDetail(BaseModel):
+    """Detailed breakdown of a single layer"""
+    layer_key: str
+    display_name: str
+    score: Optional[float]
+    version: str  # 'v1', 'v2', etc.
+    formula: str
+    description: str
+    factors: List[LayerFactor]
+    momentum_slope: Optional[float] = None
+    momentum_direction: Optional[str] = None
+    data_year: int
+    coverage_years: Optional[int] = None
+
+
 class AreaDetail(BaseModel):
     """Detailed information for a single area"""
     fips_code: str
@@ -247,6 +273,236 @@ async def get_area_detail(
         raise
     except Exception as e:
         logger.error(f"Failed to fetch area detail: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        db.close()
+
+
+# Layer configuration for factor breakdown
+LAYER_CONFIGS = {
+    "employment_gravity": {
+        "table": "layer1_employment_gravity",
+        "display_name": "Economic Opportunity",
+        "description": "Measures access to high-wage jobs and economic diversification",
+        "version": "v2",
+        "formula": "0.40 × diversification + 0.60 × accessibility",
+        "factors": [
+            {"col": "economic_opportunity_index", "name": "Economic Opportunity Index", "desc": "Combined v1+v2 composite score", "weight": 1.0},
+            {"col": "economic_accessibility_score", "name": "Job Accessibility", "desc": "High-wage jobs reachable within 45 min", "weight": 0.60},
+            {"col": "employment_diversification_score", "name": "Employment Diversification", "desc": "Sector diversity and wage quality", "weight": 0.40},
+            {"col": "high_wage_jobs_accessible_45min", "name": "High-Wage Jobs (45 min)", "desc": "Jobs earning >$40k accessible", "weight": None},
+            {"col": "wage_quality_ratio", "name": "Wage Quality Ratio", "desc": "High-wage to low-wage job ratio", "weight": None},
+            {"col": "sector_diversity_shannon", "name": "Sector Diversity", "desc": "Shannon entropy across industries", "weight": None},
+        ]
+    },
+    "mobility_optionality": {
+        "table": "layer2_mobility_optionality",
+        "display_name": "Mobility Options",
+        "description": "Measures transportation accessibility and mode options",
+        "version": "v2",
+        "formula": "0.60 × transit + 0.25 × walk + 0.15 × bike",
+        "factors": [
+            {"col": "mobility_optionality_index", "name": "Mobility Index", "desc": "Combined multimodal accessibility", "weight": 1.0},
+            {"col": "transit_accessibility_score", "name": "Transit Accessibility", "desc": "Jobs reachable by transit (45 min)", "weight": 0.60},
+            {"col": "walk_accessibility_score", "name": "Walk Accessibility", "desc": "Jobs reachable by walking (30 min)", "weight": 0.25},
+            {"col": "bike_accessibility_score", "name": "Bike Accessibility", "desc": "Jobs reachable by bike (30 min)", "weight": 0.15},
+            {"col": "transit_car_accessibility_ratio", "name": "Transit vs Car Ratio", "desc": "Transit competitiveness vs driving", "weight": None},
+            {"col": "mode_count", "name": "Mode Count", "desc": "Available transportation modes", "weight": None},
+        ]
+    },
+    "school_trajectory": {
+        "table": "layer3_school_trajectory",
+        "display_name": "Education Access",
+        "description": "Measures access to quality schools and educational opportunity",
+        "version": "v2",
+        "formula": "0.40 × supply + 0.60 × accessibility",
+        "factors": [
+            {"col": "education_opportunity_index", "name": "Education Opportunity Index", "desc": "Combined v1+v2 composite score", "weight": 1.0},
+            {"col": "education_accessibility_composite", "name": "Education Accessibility", "desc": "Quality school access composite", "weight": 0.60},
+            {"col": "school_supply_score", "name": "School Supply", "desc": "Enrollment and school density", "weight": 0.40},
+            {"col": "high_quality_schools_30min", "name": "Quality Schools (30 min)", "desc": "Above-median schools accessible", "weight": None},
+            {"col": "prek_accessibility_score", "name": "Pre-K Access", "desc": "Early childhood program availability", "weight": None},
+            {"col": "avg_proficiency", "name": "Avg Proficiency", "desc": "Average ELA/Math proficiency", "weight": None},
+        ]
+    },
+    "housing_elasticity": {
+        "table": "layer4_housing_elasticity",
+        "display_name": "Housing Affordability",
+        "description": "Measures housing supply responsiveness and affordability burden",
+        "version": "v2",
+        "formula": "0.40 × elasticity + 0.60 × affordability",
+        "factors": [
+            {"col": "housing_opportunity_index", "name": "Housing Opportunity Index", "desc": "Combined v1+v2 composite score", "weight": 1.0},
+            {"col": "housing_affordability_score", "name": "Affordability Score", "desc": "Cost burden and affordable stock", "weight": 0.60},
+            {"col": "housing_elasticity_index", "name": "Supply Elasticity", "desc": "Permit activity and responsiveness", "weight": 0.40},
+            {"col": "cost_burdened_pct", "name": "Cost Burdened %", "desc": "Households paying >30% on housing", "weight": None, "invert": True},
+            {"col": "affordable_units_pct", "name": "Affordable Units %", "desc": "Units affordable to low income", "weight": None},
+            {"col": "price_to_income_ratio", "name": "Price-to-Income", "desc": "Median home value / income", "weight": None, "invert": True},
+        ]
+    },
+    "demographic_momentum": {
+        "table": "layer5_demographic_momentum",
+        "display_name": "Demographic Health",
+        "description": "Measures population dynamics, equity, and migration patterns",
+        "version": "v2",
+        "formula": "0.30 × static + 0.40 × equity + 0.30 × migration",
+        "factors": [
+            {"col": "demographic_opportunity_index", "name": "Demographic Opportunity Index", "desc": "Combined v1-v3 composite score", "weight": 1.0},
+            {"col": "equity_score", "name": "Equity Score", "desc": "Segregation and family viability", "weight": 0.40},
+            {"col": "static_demographic_score", "name": "Static Demographics", "desc": "Population structure", "weight": 0.30},
+            {"col": "migration_dynamics_score", "name": "Migration Dynamics", "desc": "Net migration and growth", "weight": 0.30},
+            {"col": "racial_diversity_index", "name": "Diversity Index", "desc": "Shannon entropy diversity", "weight": None},
+            {"col": "net_migration_rate", "name": "Net Migration Rate", "desc": "Inflow minus outflow rate", "weight": None},
+        ]
+    },
+    "risk_drag": {
+        "table": "layer6_risk_drag",
+        "display_name": "Risk & Vulnerability",
+        "description": "Measures environmental hazards, climate risk, and community vulnerability",
+        "version": "v2",
+        "formula": "0.40 × static + 0.60 × modern_vulnerability",
+        "factors": [
+            {"col": "risk_drag_index", "name": "Risk Drag Index", "desc": "Combined v1+v2 risk score", "weight": 1.0},
+            {"col": "modern_vulnerability_score", "name": "Modern Vulnerability", "desc": "Climate + social vulnerability", "weight": 0.60},
+            {"col": "static_risk_score", "name": "Static Risk", "desc": "Flood, pollution, infrastructure", "weight": 0.40},
+            {"col": "climate_projection_score", "name": "Climate Projection", "desc": "SLR + heat vulnerability", "weight": None},
+            {"col": "social_vulnerability_index", "name": "Social Vulnerability", "desc": "CDC SVI composite", "weight": None},
+            {"col": "sfha_pct_of_county", "name": "Flood Zone %", "desc": "Special Flood Hazard Area", "weight": None},
+        ]
+    }
+}
+
+
+def _get_trend_direction(slope: Optional[float]) -> Optional[str]:
+    """Convert slope to trend direction"""
+    if slope is None:
+        return None
+    if slope > 0.01:
+        return "up"
+    elif slope < -0.01:
+        return "down"
+    return "stable"
+
+
+@router.get("/areas/{geoid}/layers/{layer_key}", response_model=LayerDetail)
+async def get_layer_detail(
+    geoid: str,
+    layer_key: str,
+    db: Session = Depends(get_db_session)
+):
+    """
+    Get detailed factor breakdown for a specific layer
+
+    Args:
+        geoid: FIPS code (e.g., '24031' for Montgomery County)
+        layer_key: Layer identifier (employment_gravity, mobility_optionality, etc.)
+
+    Returns:
+        Detailed layer information with factor breakdown and trends
+    """
+    if geoid not in MD_COUNTY_FIPS:
+        raise HTTPException(status_code=404, detail=f"Unknown FIPS code: {geoid}")
+
+    if layer_key not in LAYER_CONFIGS:
+        raise HTTPException(status_code=404, detail=f"Unknown layer: {layer_key}")
+
+    config = LAYER_CONFIGS[layer_key]
+
+    try:
+        # Build column list for query
+        factor_cols = [f["col"] for f in config["factors"]]
+        col_list = ", ".join([f'"{c}"' if c != "data_year" else c for c in factor_cols + ["data_year"]])
+
+        # Query layer table
+        layer_query = text(f"""
+            SELECT {col_list}
+            FROM {config["table"]}
+            WHERE fips_code = :geoid
+            ORDER BY data_year DESC
+            LIMIT 1
+        """)
+
+        layer_result = db.execute(layer_query, {"geoid": geoid}).fetchone()
+
+        if not layer_result:
+            raise HTTPException(status_code=404, detail=f"No {layer_key} data for {geoid}")
+
+        # Query timeseries features for momentum
+        ts_query = text("""
+            SELECT
+                momentum_slope,
+                momentum_percent_change,
+                coverage_years,
+                level_latest,
+                level_baseline
+            FROM layer_timeseries_features
+            WHERE geoid = :geoid AND layer_name = :layer_name
+            ORDER BY as_of_year DESC
+            LIMIT 1
+        """)
+
+        ts_result = db.execute(ts_query, {"geoid": geoid, "layer_name": layer_key}).fetchone()
+
+        # Build factors list
+        factors = []
+        for factor_config in config["factors"]:
+            col = factor_config["col"]
+            value = getattr(layer_result, col, None) if layer_result else None
+
+            # Format the value for display
+            formatted = None
+            if value is not None:
+                if "pct" in col.lower() or "ratio" in col.lower():
+                    formatted = f"{value * 100:.1f}%" if value < 1 else f"{value:.1f}%"
+                elif "index" in col.lower() or "score" in col.lower():
+                    formatted = f"{value:.3f}"
+                elif isinstance(value, float):
+                    formatted = f"{value:,.0f}" if value > 100 else f"{value:.2f}"
+                else:
+                    formatted = str(value)
+
+            # Determine trend from timeseries if available
+            trend = None
+            trend_value = None
+            if ts_result and factor_config.get("weight") == 1.0:  # Main index
+                trend = _get_trend_direction(ts_result.momentum_slope)
+                trend_value = ts_result.momentum_percent_change
+
+            factors.append(LayerFactor(
+                name=factor_config["name"],
+                value=float(value) if value is not None else None,
+                formatted_value=formatted,
+                description=factor_config["desc"],
+                weight=factor_config.get("weight"),
+                trend=trend,
+                trend_value=float(trend_value) if trend_value is not None else None
+            ))
+
+        # Get the main score
+        main_score = None
+        for f in factors:
+            if f.weight == 1.0:
+                main_score = f.value
+                break
+
+        return LayerDetail(
+            layer_key=layer_key,
+            display_name=config["display_name"],
+            score=main_score,
+            version=config["version"],
+            formula=config["formula"],
+            description=config["description"],
+            factors=factors,
+            momentum_slope=float(ts_result.momentum_slope) if ts_result and ts_result.momentum_slope else None,
+            momentum_direction=_get_trend_direction(ts_result.momentum_slope) if ts_result else None,
+            data_year=layer_result.data_year if layer_result else 2025,
+            coverage_years=ts_result.coverage_years if ts_result else None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch layer detail: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         db.close()

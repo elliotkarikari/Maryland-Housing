@@ -198,6 +198,30 @@
             background: #f8f9fa;
             padding: 12px;
             border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 2px solid transparent;
+        }
+
+        .score-item:hover {
+            background: #e8f4e8;
+            border-color: #4caf50;
+            transform: translateY(-1px);
+        }
+
+        .score-item.clickable::after {
+            content: '→';
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0;
+            transition: opacity 0.2s;
+            color: #4caf50;
+        }
+
+        .score-item:hover.clickable::after {
+            opacity: 1;
         }
 
         .score-label {
@@ -214,6 +238,209 @@
 
         .score-value.null {
             color: #ccc;
+        }
+
+        .score-trend {
+            font-size: 11px;
+            margin-top: 4px;
+        }
+
+        .score-trend.up {
+            color: #2e7d32;
+        }
+
+        .score-trend.down {
+            color: #c62828;
+        }
+
+        .score-trend.stable {
+            color: #f57c00;
+        }
+
+        /* Layer Detail Modal */
+        .layer-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 100;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .layer-modal.open {
+            display: flex;
+        }
+
+        .layer-modal-content {
+            background: white;
+            width: 90%;
+            max-width: 550px;
+            max-height: 85vh;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .layer-modal-header {
+            padding: 20px 24px;
+            background: linear-gradient(135deg, #2d5016 0%, #4caf50 100%);
+            color: white;
+            position: relative;
+        }
+
+        .layer-modal-header h3 {
+            font-size: 20px;
+            margin-bottom: 4px;
+        }
+
+        .layer-modal-header p {
+            font-size: 13px;
+            opacity: 0.9;
+        }
+
+        .layer-modal-close {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .layer-modal-close:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .layer-modal-body {
+            padding: 24px;
+            overflow-y: auto;
+            max-height: calc(85vh - 120px);
+        }
+
+        .layer-score-main {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .layer-score-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: #1a1a1a;
+        }
+
+        .layer-score-trend {
+            text-align: right;
+        }
+
+        .layer-trend-icon {
+            font-size: 24px;
+        }
+
+        .layer-trend-icon.up { color: #2e7d32; }
+        .layer-trend-icon.down { color: #c62828; }
+        .layer-trend-icon.stable { color: #f57c00; }
+
+        .layer-trend-text {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .layer-formula {
+            background: #e3f2fd;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #1565c0;
+            margin-bottom: 20px;
+        }
+
+        .layer-factors {
+            margin-top: 16px;
+        }
+
+        .layer-factors h4 {
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #666;
+            margin-bottom: 12px;
+        }
+
+        .factor-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .factor-item:last-child {
+            border-bottom: none;
+        }
+
+        .factor-info {
+            flex: 1;
+        }
+
+        .factor-name {
+            font-size: 14px;
+            font-weight: 500;
+            color: #1a1a1a;
+            margin-bottom: 2px;
+        }
+
+        .factor-desc {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .factor-value {
+            text-align: right;
+            min-width: 80px;
+        }
+
+        .factor-value-main {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .factor-weight {
+            font-size: 11px;
+            color: #999;
+        }
+
+        .factor-trend {
+            margin-left: 12px;
+            font-size: 16px;
+        }
+
+        .layer-metadata {
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #999;
         }
 
         .list-item {
@@ -390,6 +617,20 @@
         </div>
         <div class="panel-content" id="panel-content">
             <!-- Content loaded dynamically -->
+        </div>
+    </div>
+
+    <!-- Layer Detail Modal -->
+    <div id="layer-modal" class="layer-modal" onclick="closeLayerModal(event)">
+        <div class="layer-modal-content" onclick="event.stopPropagation()">
+            <div class="layer-modal-header">
+                <button class="layer-modal-close" onclick="closeLayerModal()">&times;</button>
+                <h3 id="layer-modal-title">Layer Name</h3>
+                <p id="layer-modal-desc">Layer description</p>
+            </div>
+            <div class="layer-modal-body" id="layer-modal-body">
+                <!-- Content loaded dynamically -->
+            </div>
         </div>
     </div>
 

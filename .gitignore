@@ -1,4 +1,10 @@
- # Python
+# =============================================================================
+# Maryland Housing Atlas - .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -21,84 +27,110 @@ wheels/
 *.egg
 
 # Virtual environments
+.venv/
 venv/
 env/
 ENV/
-.venv
 
-# Environment variables
+# -----------------------------------------------------------------------------
+# Environment & Secrets
+# -----------------------------------------------------------------------------
 .env
 .env.local
 .env.*.local
+!.env.example
 
-# IDEs
+# -----------------------------------------------------------------------------
+# IDE & Editor
+# -----------------------------------------------------------------------------
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.project
+.pydevproject
+.settings/
 
-# Testing
+# -----------------------------------------------------------------------------
+# Testing & Coverage
+# -----------------------------------------------------------------------------
 .coverage
 .pytest_cache/
 htmlcov/
 .tox/
 .hypothesis/
+coverage.xml
+*.cover
+.coverage.*
 
-# Logs
+# -----------------------------------------------------------------------------
+# Logs (ALL logs belong in logs/ directory)
+# -----------------------------------------------------------------------------
 *.log
-logs/
-*.log.*
+logs/*
+!logs/.gitkeep
 
-# Exports (optional: commit versioned snapshots, ignore latest)
-exports/md_counties_latest.geojson
-exports/*.tmp
+# JVM crash logs (from R5/Java routing)
+hs_err_pid*.log
 
-# AI / Temporary data
+# -----------------------------------------------------------------------------
+# Data & Cache (regenerated on demand)
+# -----------------------------------------------------------------------------
+cache/
+data/cache/
 data/raw/
 data/temp/
 scratchpad/
-*.pdf
-*.zip
 
+# -----------------------------------------------------------------------------
+# Exports (keep versioned, ignore latest)
+# -----------------------------------------------------------------------------
+exports/md_counties_latest.geojson
+exports/*.tmp
+
+# -----------------------------------------------------------------------------
 # Database
+# -----------------------------------------------------------------------------
 *.db
 *.sqlite
+*.sqlite3
 
-# OS
+# -----------------------------------------------------------------------------
+# OS Generated
+# -----------------------------------------------------------------------------
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
+# -----------------------------------------------------------------------------
 # Jupyter
+# -----------------------------------------------------------------------------
 .ipynb_checkpoints/
 *.ipynb
 
-# Railway
+# -----------------------------------------------------------------------------
+# Build & Deploy
+# -----------------------------------------------------------------------------
 .railway/
-
-# Alembic
-alembic/versions/*.pyc
-
-# MyPy
+*.prof
+*.lprof
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
-# Profiling
-*.prof
-*.lprof
+# Alembic
+alembic/versions/*.pyc
 
-# Coverage
-.coverage.*
-coverage.xml
-*.cover
-
-# Temporary files
+# -----------------------------------------------------------------------------
+# Temporary Files
+# -----------------------------------------------------------------------------
 *.bak
-*.swp
-*~
+*.tmp
 .tmp/
-
-# Data cache (auto-downloaded, never commit)
-data/cache/
-data/cache/**/*
+*.pdf
+*.zip

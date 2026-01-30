@@ -4,6 +4,7 @@ Helper functions for accessing open data APIs with rate limiting
 """
 
 import requests
+import io
 import time
 import random
 import logging
@@ -438,43 +439,117 @@ def fetch_irs_migration(year_range: str = "2122") -> pd.DataFrame:
         raise
 
 
-def fetch_epa_ejscreen(year: int = 2023) -> pd.DataFrame:
+def _read_csv_from_bytes(content: bytes, dtype: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO(content)
+    if zipfile.is_zipfile(buffer):
+        buffer.seek(0)
+        with zipfile.ZipFile(buffer) as zf:
+            csv_candidates = [f for f in zf.namelist() if f.lower().endswith('.csv')]
+            if not csv_candidates:
+                raise ValueError("EJScreen zip did not contain a CSV file")
+            with zf.open(csv_candidates[0]) as f:
+                content = f.read()
+            try:
+                return pd.read_csv(io.BytesIO(content), dtype=dtype)
+            except Exception:
+                return pd.read_csv(io.BytesIO(content))
+
+    buffer.seek(0)
+    try:
+        return pd.read_csv(buffer, dtype=dtype)
+    except Exception:
+        buffer.seek(0)
+        return pd.read_csv(buffer)
+
+
+def _candidate_ejscreen_urls(base_url: str, year: int) -> list[str]:
+    base = base_url.rstrip("/")
+    candidates = [
+        f"{base}/{year}/EJSCREEN_{year}_StatePct_with_AS_CNMI_GU_VI.csv.zip",
+        f"{base}/{year}/EJSCREEN_{year}_StatePct_with_AS_CNMI_GU_VI.csv",
+        f"{base}/{year}/EJSCREEN_{year}_StatePct.csv.zip",
+        f"{base}/{year}/EJSCREEN_{year}_StatePct.csv",
+        f"{base}/{year}/EJSCREEN_{year}_StatePct_with_AS_CNMI_GU_VI.zip",
+        f"{base}/{year}/EJSCREEN_{year}_StatePct.zip",
+        f"{base}/EJSCREEN_{year}_StatePct_with_AS_CNMI_GU_VI.csv.zip",
+        f"{base}/EJSCREEN_{year}_StatePct_with_AS_CNMI_GU_VI.csv",
+        f"{base}/EJSCREEN_{year}_StatePct.csv.zip",
+        f"{base}/EJSCREEN_{year}_StatePct.csv",
+        f"{base}/{year}/EJSCREEN_{year}/EJSCREEN_{year}_StatePct_with_AS_CNMI_GU_VI.csv.zip",
+        f"{base}/{year}/EJSCREEN_{year}/EJSCREEN_{year}_StatePct.csv.zip",
+    ]
+    return candidates
+
+
+def _discover_ejscreen_urls(base_url: str, year: int) -> list[str]:
+    import re
+
+    base = base_url.rstrip("/")
+    listing_url = f"{base}/{year}/"
+    try:
+        resp = requests.get(listing_url, timeout=60)
+        if not resp.ok:
+            return []
+        hrefs = re.findall(r'href="([^"]+)"', resp.text, flags=re.IGNORECASE)
+        urls = []
+        for href in hrefs:
+            if "StatePct" not in href:
+                continue
+            if not (href.lower().endswith(".csv") or href.lower().endswith(".zip")):
+                continue
+            if href.startswith("http"):
+                urls.append(href)
+            else:
+                urls.append(f"{listing_url}{href}")
+        return urls
+    except Exception:
+        return []
+
+
+def fetch_epa_ejscreen(year: int = 2023, lookback_years: int = 3) -> pd.DataFrame:
     """
     Fetch EPA EJScreen data.
 
     Args:
         year: Data year (default: 2023)
+        lookback_years: How many years to look back if data missing
 
     Returns:
         DataFrame with environmental justice indicators
     """
-    # Download and extract the national CSV file
-    url = f"{settings.EPA_EJSCREEN_URL}/{year}/EJSCREEN_{year}_StatePct_with_AS_CNMI_GU_VI.csv.zip"
-
     logger.info(f"Fetching EPA EJScreen data for {year}")
 
-    try:
-        import io
-        import zipfile
+    years_to_try = [year - offset for offset in range(max(1, lookback_years) + 1) if year - offset > 0]
+    last_error = None
 
-        response = requests.get(url, timeout=120)
-        response.raise_for_status()
+    for target_year in years_to_try:
+        candidate_urls = _candidate_ejscreen_urls(settings.EPA_EJSCREEN_URL, target_year)
+        candidate_urls.extend(_discover_ejscreen_urls(settings.EPA_EJSCREEN_URL, target_year))
 
-        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
-            # Extract the CSV file
-            csv_name = [f for f in zf.namelist() if f.endswith('.csv')][0]
-            with zf.open(csv_name) as f:
-                df = pd.read_csv(f, dtype={'ID': str})
+        for url in candidate_urls:
+            try:
+                response = requests.get(url, timeout=120)
+                if response.status_code != 200:
+                    continue
+                df = _read_csv_from_bytes(response.content, dtype={'ID': str})
 
-        # Filter to Maryland (state FIPS 24)
-        df_md = df[df['ID'].str.startswith('24')].copy().reset_index(drop=True)
+                if 'ID' not in df.columns:
+                    continue
 
-        logger.info(f"Fetched {len(df_md)} Maryland EJScreen records")
-        return df_md.to_frame() if isinstance(df_md, pd.Series) else df_md
+                df_md = df[df['ID'].astype(str).str.startswith('24')].copy().reset_index(drop=True)
+                df_md['ejscreen_year'] = target_year
 
-    except Exception as e:
-        logger.error(f"Failed to fetch EPA EJScreen data: {e}")
-        raise
+                logger.info(f"Fetched {len(df_md)} Maryland EJScreen records for {target_year}")
+                return df_md.to_frame() if isinstance(df_md, pd.Series) else df_md
+            except Exception as e:
+                last_error = e
+                continue
+
+    logger.error(f"Failed to fetch EPA EJScreen data: {last_error}")
+    raise last_error if last_error else RuntimeError("EJScreen download failed")
 
 
 def download_file(url: str, save_path: str, timeout: int = 300) -> bool:

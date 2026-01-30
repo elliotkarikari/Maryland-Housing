@@ -1,14 +1,15 @@
-.PHONY: help install db-setup db-migrate ingest-all process pipeline export serve test clean
+.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning
 
 help:
 	@echo "Maryland Viability Atlas - Available Commands"
 	@echo ""
 	@echo "  make install        - Install Python dependencies"
+	@echo "  make init-db        - Initialize database with migrations"
 	@echo "  make db-setup       - Initialize PostgreSQL/PostGIS database"
 	@echo "  make db-migrate     - Run database migrations"
 	@echo "  make ingest-all     - Run all data ingestion pipelines"
-	@echo "  make ingest-layer1  - Ingest Employment Gravity data"
-	@echo "  make ingest-layer2  - Ingest Mobility Optionality data"
+	@echo "  make ingest-layer1  - Ingest Economic Opportunity (v2) data"
+	@echo "  make ingest-layer2  - Ingest Mobility Accessibility (v2) data"
 	@echo "  make ingest-layer3  - Ingest School System data"
 	@echo "  make ingest-layer4  - Ingest Housing Elasticity data"
 	@echo "  make ingest-layer5  - Ingest Demographic Momentum data"
@@ -19,9 +20,15 @@ help:
 	@echo "  make serve          - Start FastAPI development server"
 	@echo "  make test           - Run test suite"
 	@echo "  make clean          - Remove temporary files"
+	@echo "  make agent-lightning - Start Agent Lightning pilot container"
 
 install:
 	pip install -r requirements.txt
+
+init-db:
+	@echo "Initializing database..."
+	bash scripts/setup_database.sh
+	python scripts/init_db.py
 
 db-setup:
 	@echo "Setting up PostgreSQL with PostGIS..."
@@ -35,8 +42,8 @@ db-migrate:
 
 ingest-all:
 	@echo "Running all data ingestion pipelines..."
-	python -m src.ingest.layer1_employment
-	python -m src.ingest.layer2_mobility
+	python -m src.ingest.layer1_economic_accessibility
+	python -m src.ingest.layer2_accessibility
 	python -m src.ingest.layer3_schools
 	python -m src.ingest.layer4_housing
 	python -m src.ingest.layer5_demographics
@@ -44,10 +51,10 @@ ingest-all:
 	python -m src.ingest.policy_persistence
 
 ingest-layer1:
-	python -m src.ingest.layer1_employment
+	python -m src.ingest.layer1_economic_accessibility
 
 ingest-layer2:
-	python -m src.ingest.layer2_mobility
+	python -m src.ingest.layer2_accessibility
 
 ingest-layer3:
 	python -m src.ingest.layer3_schools
@@ -76,6 +83,20 @@ export:
 serve:
 	uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 
+frontend:
+	python frontend/serve.py
+
+lint:
+	@echo "Running linters..."
+	python -m black --check src/ tests/ config/
+	python -m isort --check-only src/ tests/ config/
+	python -m mypy src/ --ignore-missing-imports
+
+format:
+	@echo "Formatting code..."
+	python -m black src/ tests/ config/
+	python -m isort src/ tests/ config/
+
 test:
 	pytest tests/ -v --cov=src
 
@@ -86,3 +107,6 @@ clean:
 	find . -type f -name ".coverage" -delete
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	find . -type d -name "*.egg-info" -exec rm -rf {} +
+
+agent-lightning:
+	docker compose -f docker-compose.agent-lightning.yml up --build -d

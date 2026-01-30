@@ -163,13 +163,36 @@ def _compute_ejscreen_metrics(year: int = EJSCREEN_YEAR) -> pd.DataFrame:
 def _pick_field(fields: list[dict], candidates: list[str]) -> Optional[dict]:
     for cand in candidates:
         for field in fields:
-            if field.get('name', '').lower() == cand.lower():
+            name = field.get('name', '')
+            alias = field.get('alias', '')
+            if name.lower() == cand.lower() or alias.lower() == cand.lower():
                 return field
     for cand in candidates:
         for field in fields:
-            if cand.lower() in field.get('name', '').lower():
+            name = field.get('name', '')
+            alias = field.get('alias', '')
+            if cand.lower() in name.lower() or cand.lower() in alias.lower():
                 return field
     return None
+
+
+def _pick_fields(fields: list[dict], candidates: list[str]) -> list[str]:
+    found = []
+    for cand in candidates:
+        for field in fields:
+            name = field.get('name', '')
+            alias = field.get('alias', '')
+            if cand.lower() == name.lower() or cand.lower() == alias.lower():
+                found.append(name)
+    if found:
+        return list(dict.fromkeys(found))
+    for cand in candidates:
+        for field in fields:
+            name = field.get('name', '')
+            alias = field.get('alias', '')
+            if cand.lower() in name.lower() or cand.lower() in alias.lower():
+                found.append(name)
+    return list(dict.fromkeys(found))
 
 
 def _fetch_nbi_bridge_metrics(state_fips: str = "24", state_abbr: str = "MD") -> pd.DataFrame:
@@ -183,17 +206,34 @@ def _fetch_nbi_bridge_metrics(state_fips: str = "24", state_abbr: str = "MD") ->
     if not fields:
         return pd.DataFrame()
 
-    state_field = _pick_field(fields, ["state_fips", "state_code", "state", "state_num"])
-    county_field = _pick_field(fields, ["county_fips", "county_code", "county"])
-    deficient_field = _pick_field(fields, ["structurally_deficient", "structdef", "sd", "deficient"])
+    state_field = _pick_field(fields, [
+        "state_fips", "state_code", "state", "state_num", "statefp", "state_id"
+    ])
+    county_field = _pick_field(fields, [
+        "county_fips", "county_code", "county", "countyfp", "cnty_fips", "county_id"
+    ])
+    deficient_field = _pick_field(fields, [
+        "structurally_deficient", "structdef", "struct_def", "sd",
+        "deficient", "structural_deficiency", "structurally_deficient_ind"
+    ])
 
-    if not state_field or not county_field or not deficient_field:
-        logger.warning("NBI fields not detected for state/county/deficiency")
+    condition_fields = []
+    if not deficient_field:
+        condition_fields = _pick_fields(fields, [
+            "deck_cond", "superstructure_cond", "substructure_cond", "culvert_cond",
+            "overall_cond", "structural_eval", "structural_rating"
+        ])
+
+    if not state_field or not county_field:
+        logger.warning("NBI fields not detected for state/county")
+        return pd.DataFrame()
+    if not deficient_field and not condition_fields:
+        logger.warning("NBI fields not detected for deficiency or condition ratings")
         return pd.DataFrame()
 
     state_field_name = state_field['name']
     county_field_name = county_field['name']
-    deficient_field_name = deficient_field['name']
+    deficient_field_name = deficient_field['name'] if deficient_field else None
 
     if state_field.get("type") == "esriFieldTypeString":
         state_where = f"{state_field_name}='{state_fips}' OR {state_field_name}='{state_abbr}'"
@@ -206,7 +246,9 @@ def _fetch_nbi_bridge_metrics(state_fips: str = "24", state_abbr: str = "MD") ->
     while True:
         params = {
             "where": state_where,
-            "outFields": f"{state_field_name},{county_field_name},{deficient_field_name}",
+            "outFields": ",".join(
+                [state_field_name, county_field_name] + ([deficient_field_name] if deficient_field_name else []) + condition_fields
+            ),
             "returnGeometry": "false",
             "f": "json",
             "resultOffset": offset,
@@ -232,17 +274,22 @@ def _fetch_nbi_bridge_metrics(state_fips: str = "24", state_abbr: str = "MD") ->
     df['fips_code'] = state_fips.zfill(2) + df[county_field_name]
     df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())].copy()
 
-    def _is_deficient(val) -> bool:
-        if pd.isna(val):
-            return False
-        if isinstance(val, str):
-            return val.strip().upper() in {"Y", "YES", "1", "T", "TRUE"}
-        try:
-            return int(val) == 1
-        except Exception:
-            return False
+    if deficient_field_name:
+        def _is_deficient(val) -> bool:
+            if pd.isna(val):
+                return False
+            if isinstance(val, str):
+                return val.strip().upper() in {"Y", "YES", "1", "T", "TRUE"}
+            try:
+                return int(val) == 1
+            except Exception:
+                return False
 
-    df['is_deficient'] = df[deficient_field_name].apply(_is_deficient)
+        df['is_deficient'] = df[deficient_field_name].apply(_is_deficient)
+    else:
+        for name in condition_fields:
+            df[name] = pd.to_numeric(df[name], errors='coerce')
+        df['is_deficient'] = df[condition_fields].le(4).any(axis=1).fillna(False)
     agg = df.groupby('fips_code', as_index=False).agg(
         bridges_total=('is_deficient', 'size'),
         bridges_structurally_deficient=('is_deficient', 'sum')
@@ -254,7 +301,7 @@ def _fetch_nbi_bridge_metrics(state_fips: str = "24", state_abbr: str = "MD") ->
 def calculate_risk_indicators(data_year: int = 2025) -> pd.DataFrame:
     """Calculate risk drag indicators."""
     sfha_df = _compute_sfha_metrics()
-    ej_df = _compute_ejscreen_metrics()
+    ej_df = _compute_ejscreen_metrics(year=data_year)
     nbi_df = _fetch_nbi_bridge_metrics()
 
     if sfha_df.empty and ej_df.empty and nbi_df.empty:

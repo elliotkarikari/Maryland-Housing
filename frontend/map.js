@@ -6,6 +6,9 @@ const MAPBOX_TOKEN = 'pk.eyJ1IjoiZWxrYXJpMjMiLCJhIjoiY2tubm04b3BkMTYwcTJzcG5tZDZ
 const API_BASE_URL = 'http://localhost:8000/api/v1';
 const GEOJSON_PATH = `${API_BASE_URL}/layers/counties/latest`;  // API endpoint
 
+// Currently selected county FIPS (for layer detail lookups)
+let currentFipsCode = null;
+
 // Color schemes for different layers
 const SYNTHESIS_COLORS = {
     'emerging_tailwinds': '#2d5016',
@@ -253,6 +256,7 @@ function switchLayer(layer) {
 // Load county detail from API
 async function loadCountyDetail(fipsCode) {
     try {
+        currentFipsCode = fipsCode;
         const response = await fetch(`${API_BASE_URL}/areas/${fipsCode}`);
         const data = await response.json();
 
@@ -295,10 +299,10 @@ async function loadCountyDetail(fipsCode) {
             </div>
 
             <div class="panel-section">
-                <h4>Layer Scores</h4>
+                <h4>Layer Scores <span style="font-size: 11px; font-weight: normal; color: #999;">(click for details)</span></h4>
                 <div class="score-grid">
                     ${Object.entries(data.layer_scores).map(([key, value]) => `
-                        <div class="score-item">
+                        <div class="score-item clickable" onclick="loadLayerDetail('${key}')" title="Click to see factor breakdown">
                             <div class="score-label">${formatLayerName(key)}</div>
                             <div class="score-value ${value === null ? 'null' : ''}">
                                 ${value !== null ? parseFloat(value).toFixed(3) : 'No Data'}
@@ -339,6 +343,132 @@ async function loadCountyDetail(fipsCode) {
     }
 }
 
+// Load layer detail and show modal
+async function loadLayerDetail(layerKey) {
+    if (!currentFipsCode) {
+        console.error('No county selected');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/areas/${currentFipsCode}/layers/${layerKey}`);
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Update modal header
+        document.getElementById('layer-modal-title').textContent = data.display_name;
+        document.getElementById('layer-modal-desc').textContent = data.description;
+
+        // Get trend icon
+        const trendIcon = getTrendIcon(data.momentum_direction);
+        const trendText = getTrendText(data.momentum_direction, data.momentum_slope);
+
+        // Build factor list
+        const factorHtml = data.factors.map(f => {
+            const factorTrend = f.trend ? getTrendIcon(f.trend) : '';
+            const weightText = f.weight ? `Weight: ${(f.weight * 100).toFixed(0)}%` : '';
+
+            return `
+                <div class="factor-item">
+                    <div class="factor-info">
+                        <div class="factor-name">${f.name}</div>
+                        <div class="factor-desc">${f.description}</div>
+                    </div>
+                    <div class="factor-value">
+                        <div class="factor-value-main">${f.formatted_value || (f.value !== null ? f.value.toFixed(3) : 'N/A')}</div>
+                        <div class="factor-weight">${weightText}</div>
+                    </div>
+                    ${factorTrend ? `<div class="factor-trend ${f.trend}">${factorTrend}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+
+        // Build modal body content
+        const bodyContent = `
+            <div class="layer-score-main">
+                <div>
+                    <div style="font-size: 12px; color: #666; margin-bottom: 4px;">Overall Score</div>
+                    <div class="layer-score-value">${data.score !== null ? data.score.toFixed(3) : 'N/A'}</div>
+                </div>
+                <div class="layer-score-trend">
+                    <div class="layer-trend-icon ${data.momentum_direction || ''}">${trendIcon}</div>
+                    <div class="layer-trend-text">${trendText}</div>
+                </div>
+            </div>
+
+            <div class="layer-formula">
+                <strong>Formula:</strong> ${data.formula}
+            </div>
+
+            <div class="layer-factors">
+                <h4>Contributing Factors</h4>
+                ${factorHtml}
+            </div>
+
+            <div class="layer-metadata">
+                <span>Version: ${data.version}</span>
+                <span>Data Year: ${data.data_year}</span>
+                <span>Coverage: ${data.coverage_years || 'N/A'} years</span>
+            </div>
+        `;
+
+        document.getElementById('layer-modal-body').innerHTML = bodyContent;
+
+        // Show modal
+        document.getElementById('layer-modal').classList.add('open');
+
+    } catch (error) {
+        console.error('Error loading layer detail:', error);
+        // Show a simpler error message instead of alert
+        document.getElementById('layer-modal-title').textContent = 'Layer Details';
+        document.getElementById('layer-modal-desc').textContent = '';
+        document.getElementById('layer-modal-body').innerHTML = `
+            <div style="padding: 20px; text-align: center; color: #666;">
+                <p>Unable to load detailed factor breakdown.</p>
+                <p style="font-size: 12px; margin-top: 10px;">The data may not be available for this layer.</p>
+            </div>
+        `;
+        document.getElementById('layer-modal').classList.add('open');
+    }
+}
+
+// Get trend icon based on direction
+function getTrendIcon(direction) {
+    switch(direction) {
+        case 'up': return '↑';
+        case 'down': return '↓';
+        case 'stable': return '→';
+        default: return '';
+    }
+}
+
+// Get trend text based on direction and slope
+function getTrendText(direction, slope) {
+    if (!direction) return 'No trend data';
+
+    const pct = slope ? `${slope > 0 ? '+' : ''}${slope.toFixed(1)}%` : '';
+
+    switch(direction) {
+        case 'up': return `Improving ${pct}`;
+        case 'down': return `Declining ${pct}`;
+        case 'stable': return 'Stable';
+        default: return 'No trend data';
+    }
+}
+
+// Close layer modal
+function closeLayerModal(event) {
+    // If called from overlay click, only close if clicking the overlay itself
+    if (event && event.target !== event.currentTarget) {
+        return;
+    }
+    document.getElementById('layer-modal').classList.remove('open');
+}
+
 // Close side panel
 function closePanel() {
     document.getElementById('side-panel').classList.remove('open');
@@ -369,9 +499,15 @@ function formatLayerName(key) {
     return names[key] || key;
 }
 
-// ESC key to close panel
+// ESC key to close panels/modals
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-        closePanel();
+        // Close layer modal first if open
+        const layerModal = document.getElementById('layer-modal');
+        if (layerModal.classList.contains('open')) {
+            closeLayerModal();
+        } else {
+            closePanel();
+        }
     }
 });

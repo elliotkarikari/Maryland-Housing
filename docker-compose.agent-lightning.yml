@@ -1,0 +1,12 @@
+services:
+  agent-lightning:
+    build:
+      context: .
+      dockerfile: docker/agent_lightning/Dockerfile
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    stdin_open: true
+    tty: true
+    environment:
+      - PYTHONUNBUFFERED=1
