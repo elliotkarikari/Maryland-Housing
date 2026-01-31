@@ -1,5 +1,13 @@
 .PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new
 
+# Prefer local venv if present.
+ifeq (,$(wildcard .venv/bin/python))
+PYTHON := python
+else
+PYTHON := .venv/bin/python
+endif
+PIP := $(PYTHON) -m pip
+
 help:
 	@echo "Maryland Viability Atlas - Available Commands"
 	@echo ""
@@ -29,12 +37,12 @@ help:
 	@echo "  make claude-new NAME=name - Create new prompt from template"
 
 install:
-	pip install -r requirements.txt
+	$(PIP) install -r requirements.txt
 
 init-db:
 	@echo "Initializing database..."
 	bash scripts/setup_database.sh
-	python scripts/init_db.py
+	$(PYTHON) scripts/init_db.py
 
 db-setup:
 	@echo "Setting up PostgreSQL with PostGIS..."
@@ -48,60 +56,60 @@ db-migrate:
 
 ingest-all:
 	@echo "Running all data ingestion pipelines..."
-	python -m src.ingest.layer1_economic_accessibility
-	python -m src.ingest.layer2_accessibility
-	python -m src.ingest.layer3_schools
-	python -m src.ingest.layer4_housing
-	python -m src.ingest.layer5_demographics
-	python -m src.ingest.layer6_risk
-	python -m src.ingest.policy_persistence
+	$(PYTHON) -m src.ingest.layer1_economic_accessibility
+	$(PYTHON) -m src.ingest.layer2_accessibility
+	$(PYTHON) -m src.ingest.layer3_schools
+	$(PYTHON) -m src.ingest.layer4_housing
+	$(PYTHON) -m src.ingest.layer5_demographics
+	$(PYTHON) -m src.ingest.layer6_risk
+	$(PYTHON) -m src.ingest.policy_persistence
 
 ingest-layer1:
-	python -m src.ingest.layer1_economic_accessibility
+	$(PYTHON) -m src.ingest.layer1_economic_accessibility
 
 ingest-layer2:
-	python -m src.ingest.layer2_accessibility
+	$(PYTHON) -m src.ingest.layer2_accessibility
 
 ingest-layer3:
-	python -m src.ingest.layer3_schools
+	$(PYTHON) -m src.ingest.layer3_schools
 
 ingest-layer4:
-	python -m src.ingest.layer4_housing
+	$(PYTHON) -m src.ingest.layer4_housing
 
 ingest-layer5:
-	python -m src.ingest.layer5_demographics
+	$(PYTHON) -m src.ingest.layer5_demographics
 
 ingest-layer6:
-	python -m src.ingest.layer6_risk
+	$(PYTHON) -m src.ingest.layer6_risk
 
 process:
 	@echo "Running multi-year scoring and classification..."
-	python -m src.run_multiyear_pipeline
+	$(PYTHON) -m src.run_multiyear_pipeline
 
 pipeline:
 	@echo "Running multi-year pipeline and export..."
-	python src/run_pipeline.py
+	$(PYTHON) src/run_pipeline.py
 
 export:
 	@echo "Generating GeoJSON outputs..."
-	python -m src.export.geojson_export
+	$(PYTHON) -m src.export.geojson_export
 
 serve:
 	uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 
 frontend:
-	python frontend/serve.py
+	$(PYTHON) frontend/serve.py
 
 lint:
 	@echo "Running linters..."
-	python -m black --check src/ tests/ config/
-	python -m isort --check-only src/ tests/ config/
-	python -m mypy src/ --ignore-missing-imports
+	$(PYTHON) -m black --check src/ tests/ config/
+	$(PYTHON) -m isort --check-only src/ tests/ config/
+	$(PYTHON) -m mypy src/ --ignore-missing-imports
 
 format:
 	@echo "Formatting code..."
-	python -m black src/ tests/ config/
-	python -m isort src/ tests/ config/
+	$(PYTHON) -m black src/ tests/ config/
+	$(PYTHON) -m isort src/ tests/ config/
 
 test:
 	pytest tests/ -v --cov=src
