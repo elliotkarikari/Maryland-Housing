@@ -56,12 +56,68 @@ mapboxgl.accessToken = MAPBOX_TOKEN;
 
 const map = new mapboxgl.Map({
     container: 'map',
-    style: 'mapbox://styles/mapbox/light-v11',
+    style: 'mapbox://styles/mapbox/streets-v12',
     center: [-77.0, 39.0], // Center on Maryland
     zoom: 7,
     minZoom: 6,
-    maxZoom: 12
+    maxZoom: 16
 });
+
+const colorReveal = document.getElementById('color-reveal');
+let lastPointer = null;
+const REVEAL_START_ZOOM = 9.5;
+const REVEAL_END_ZOOM = 13.8;
+
+function updateColorReveal() {
+    if (!colorReveal) {
+        return;
+    }
+    const zoom = map.getZoom();
+    const strength = Math.max(0, Math.min(1, (zoom - REVEAL_START_ZOOM) / (REVEAL_END_ZOOM - REVEAL_START_ZOOM)));
+    const rect = map.getContainer().getBoundingClientRect();
+    const radius = Math.hypot(rect.width, rect.height) * strength * 0.95;
+    const point = lastPointer || { x: rect.width / 2, y: rect.height / 2 };
+    const xPct = Math.max(0, Math.min(100, (point.x / rect.width) * 100));
+    const yPct = Math.max(0, Math.min(100, (point.y / rect.height) * 100));
+
+    colorReveal.style.setProperty('--reveal-x', `${xPct}%`);
+    colorReveal.style.setProperty('--reveal-y', `${yPct}%`);
+    colorReveal.style.setProperty('--reveal-radius', `${radius}px`);
+    colorReveal.style.setProperty('--reveal-strength', strength.toFixed(3));
+}
+
+function setPanelOpenState(isOpen) {
+    document.body.classList.toggle('panel-open', isOpen);
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (backdrop) {
+        backdrop.classList.toggle('active', isOpen);
+    }
+
+    const panel = document.getElementById('side-panel');
+    if (panel) {
+        panel.style.willChange = 'transform';
+        panel.addEventListener('transitionend', () => {
+            panel.style.willChange = 'auto';
+        }, { once: true });
+    }
+
+    const panelWidthValue = getComputedStyle(document.documentElement).getPropertyValue('--panel-width');
+    const panelWidth = Number.parseFloat(panelWidthValue) || 400;
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    const paddingRight = isOpen && !isMobile ? panelWidth : 0;
+
+    if (map && typeof map.easeTo === 'function') {
+        map.easeTo({
+            padding: { left: 0, right: paddingRight, top: 0, bottom: 0 },
+            duration: 350,
+            easing(t) {
+                return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+            }
+        });
+    } else if (map && typeof map.resize === 'function') {
+        map.resize();
+    }
+}
 
 // Add map controls (bottom-right position)
 map.addControl(new mapboxgl.NavigationControl({
@@ -76,7 +132,8 @@ map.addControl(new mapboxgl.GeolocateControl({
     showUserHeading: false
 }), 'bottom-right');
 
-map.addControl(new mapboxgl.FullscreenControl(), 'bottom-right');
+const fullscreenContainer = document.getElementById('app') || map.getContainer();
+map.addControl(new mapboxgl.FullscreenControl({ container: fullscreenContainer }), 'bottom-right');
 
 // Popup for hover tooltips
 const popup = new mapboxgl.Popup({
@@ -97,6 +154,9 @@ function debounceHover(callback, delay = 16) {
 
 // Current layer selection
 let currentLayer = 'synthesis';
+let activeLegendFilter = null;
+const DEFAULT_FILL_OPACITY = 0.7;
+const DIMMED_FILL_OPACITY = 0.18;
 
 // Update loading status helper
 function updateLoadingStatus(text) {
@@ -108,6 +168,23 @@ function updateLoadingStatus(text) {
 map.on('load', async () => {
     try {
         updateLoadingStatus('Fetching county data...');
+
+        add3DBuildings();
+        updateColorReveal();
+
+        map.on('mousemove', (e) => {
+            lastPointer = e.point;
+        });
+
+        map.on('touchmove', (e) => {
+            if (e.points && e.points[0]) {
+                lastPointer = e.points[0];
+            }
+        });
+
+        map.on('zoom', updateColorReveal);
+        map.on('move', updateColorReveal);
+        map.on('resize', updateColorReveal);
 
         // Fetch GeoJSON data
         const response = await fetch(GEOJSON_PATH);
@@ -128,7 +205,7 @@ map.on('load', async () => {
             source: 'counties',
             paint: {
                 'fill-color': getSynthesisFillExpression(),
-                'fill-opacity': 0.7
+                'fill-opacity': DEFAULT_FILL_OPACITY
             }
         });
 
@@ -158,6 +235,7 @@ map.on('load', async () => {
 
         // Set up interactivity
         setupInteractivity();
+        setupLegendFiltering();
 
         // Hide loading screen
         document.getElementById('loading').style.display = 'none';
@@ -173,6 +251,44 @@ map.on('load', async () => {
         `;
     }
 });
+
+
+function add3DBuildings() {
+    const styleLayers = map.getStyle().layers || [];
+    const labelLayerId = styleLayers.find(
+        (layer) => layer.type === 'symbol' && layer.layout && layer.layout['text-field']
+    )?.id;
+
+    if (!map.getSource('composite') || map.getLayer('3d-buildings')) {
+        return;
+    }
+
+    map.addLayer({
+        id: '3d-buildings',
+        source: 'composite',
+        'source-layer': 'building',
+        type: 'fill-extrusion',
+        minzoom: 13.2,
+        paint: {
+            'fill-extrusion-color': '#cbd3ce',
+            'fill-extrusion-opacity': 0.8,
+            'fill-extrusion-height': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                13.2, 0,
+                14.4, ['get', 'height']
+            ],
+            'fill-extrusion-base': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                13.2, 0,
+                14.4, ['get', 'min_height']
+            ]
+        }
+    }, labelLayerId);
+}
 
 // Get fill expression for synthesis grouping
 function getSynthesisFillExpression() {
@@ -227,6 +343,10 @@ function setupInteractivity() {
 
     // Show tooltip on hover (debounced for performance)
     const handleHover = debounceHover((e) => {
+        if (!e || !e.features || e.features.length === 0) {
+            popup.remove();
+            return;
+        }
         if (e.features.length > 0) {
             const feature = e.features[0];
             const props = feature.properties;
@@ -303,6 +423,26 @@ function switchLayer(layer) {
     map.setPaintProperty('counties-fill', 'fill-color', fillExpression);
 }
 
+function clampScore(value) {
+    if (value === null || value === undefined || Number.isNaN(value)) {
+        return null;
+    }
+    return Math.max(0, Math.min(1, value));
+}
+
+function renderScoreBar(value) {
+    const clamped = clampScore(value);
+    if (clamped === null) {
+        return '';
+    }
+    const pct = (clamped * 100).toFixed(0);
+    return `
+        <div class="score-bar" aria-hidden="true">
+            <div class="score-bar-fill" style="width: ${pct}%"></div>
+        </div>
+    `;
+}
+
 // Load county detail from API
 async function loadCountyDetail(fipsCode) {
     try {
@@ -314,6 +454,19 @@ async function loadCountyDetail(fipsCode) {
         document.getElementById('panel-title').textContent = data.county_name;
         document.getElementById('panel-subtitle').textContent =
             `FIPS: ${data.fips_code} | Data Year: ${data.data_year}`;
+
+        const layerScoresContent = Object.entries(data.layer_scores).map(([key, value]) => {
+            const displayValue = value !== null ? parseFloat(value).toFixed(3) : 'No Data';
+            return `
+                <div class="score-item clickable" onclick="loadLayerDetail('${key}')" title="Click to see factor breakdown">
+                    <div class="score-label">${formatLayerName(key)}</div>
+                    <div class="score-value ${value === null ? 'null' : ''}">
+                        ${displayValue}
+                    </div>
+                    ${renderScoreBar(value)}
+                </div>
+            `;
+        }).join('');
 
         const content = `
             <div class="panel-section">
@@ -340,6 +493,7 @@ async function loadCountyDetail(fipsCode) {
                     <div class="score-item">
                         <div class="score-label">Composite Score</div>
                         <div class="score-value">${data.composite_score ? data.composite_score.toFixed(3) : 'N/A'}</div>
+                        ${renderScoreBar(data.composite_score)}
                     </div>
                     <div class="score-item">
                         <div class="score-label">Data Year</div>
@@ -348,17 +502,16 @@ async function loadCountyDetail(fipsCode) {
                 </div>
             </div>
 
-            <div class="panel-section">
-                <h4>Layer Scores <span style="font-size: 11px; font-weight: normal; color: #999;">(click for details)</span></h4>
-                <div class="score-grid">
-                    ${Object.entries(data.layer_scores).map(([key, value]) => `
-                        <div class="score-item clickable" onclick="loadLayerDetail('${key}')" title="Click to see factor breakdown">
-                            <div class="score-label">${formatLayerName(key)}</div>
-                            <div class="score-value ${value === null ? 'null' : ''}">
-                                ${value !== null ? parseFloat(value).toFixed(3) : 'No Data'}
-                            </div>
-                        </div>
-                    `).join('')}
+            <div class="panel-section layer-scores" id="layer-scores">
+                <button class="section-toggle" onclick="toggleLayerScores()" aria-expanded="false" aria-controls="layer-scores-content">
+                    <span>Layer Scores</span>
+                    <span class="section-toggle-icon">+</span>
+                </button>
+                <div class="layer-scores-content" id="layer-scores-content">
+                    <div style="font-size: 11px; color: #999; margin: 8px 0 4px;">Click a layer for details</div>
+                    <div class="score-grid">
+                        ${layerScoresContent}
+                    </div>
                 </div>
             </div>
 
@@ -386,6 +539,8 @@ async function loadCountyDetail(fipsCode) {
 
         document.getElementById('panel-content').innerHTML = content;
         document.getElementById('side-panel').classList.add('open');
+        document.getElementById('side-panel').setAttribute('data-compare-ready', 'true');
+        setPanelOpenState(true);
 
         // Show clear selection button
         document.getElementById('clear-selection').classList.add('visible');
@@ -530,6 +685,16 @@ function closeLayerModal(event) {
 // Close side panel
 function closePanel() {
     document.getElementById('side-panel').classList.remove('open');
+    setPanelOpenState(false);
+    const panel = document.getElementById('side-panel');
+    if (panel) {
+        panel.setAttribute('data-compare-ready', 'false');
+        panel.setAttribute('data-compare-mode', 'off');
+    }
+    const compareButton = document.querySelector('.compare-toggle');
+    if (compareButton) {
+        compareButton.setAttribute('aria-pressed', 'false');
+    }
     // Hide clear selection button
     document.getElementById('clear-selection').classList.remove('visible');
     // Clear map selection highlight
@@ -555,6 +720,88 @@ function toggleLegend() {
     const isExpanded = legend.classList.contains('expanded');
     toggleIcon.textContent = isExpanded ? '−' : '+';
     legendHeader.setAttribute('aria-expanded', isExpanded);
+}
+
+function setupLegendFiltering() {
+    const legendItems = document.querySelectorAll('.legend-item[data-group]');
+    legendItems.forEach((item) => {
+        item.addEventListener('click', () => {
+            const group = item.getAttribute('data-group');
+            toggleLegendFilter(group);
+        });
+    });
+}
+
+function toggleLegendFilter(group) {
+    if (activeLegendFilter === group) {
+        clearLegendFilter();
+        return;
+    }
+    activeLegendFilter = group;
+    applyLegendFilter();
+}
+
+function applyLegendFilter() {
+    const legendItems = document.querySelectorAll('.legend-item[data-group]');
+    const resetButton = document.getElementById('legend-reset');
+    const opacityExpr = activeLegendFilter
+        ? ['case',
+            ['==', ['get', 'synthesis_grouping'], activeLegendFilter],
+            DEFAULT_FILL_OPACITY,
+            DIMMED_FILL_OPACITY
+        ]
+        : DEFAULT_FILL_OPACITY;
+
+    if (map.getLayer('counties-fill')) {
+        map.setPaintProperty('counties-fill', 'fill-opacity', opacityExpr);
+    }
+    if (map.getLayer('counties-border')) {
+        map.setPaintProperty('counties-border', 'line-opacity', activeLegendFilter ? 0.25 : 0.5);
+    }
+
+    legendItems.forEach((item) => {
+        const group = item.getAttribute('data-group');
+        const isActive = activeLegendFilter === group;
+        item.classList.toggle('active', isActive);
+        item.classList.toggle('dimmed', activeLegendFilter !== null && !isActive);
+        item.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+
+    if (resetButton) {
+        resetButton.classList.toggle('hidden', activeLegendFilter === null);
+    }
+}
+
+function clearLegendFilter() {
+    activeLegendFilter = null;
+    applyLegendFilter();
+}
+
+function toggleLayerScores() {
+    const section = document.getElementById('layer-scores');
+    const content = document.getElementById('layer-scores-content');
+    const toggle = section ? section.querySelector('.section-toggle') : null;
+
+    if (!section || !content || !toggle) {
+        return;
+    }
+
+    const isExpanded = section.classList.toggle('expanded');
+    toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+}
+
+function toggleCompareMode() {
+    const panel = document.getElementById('side-panel');
+    const button = document.querySelector('.compare-toggle');
+    if (!panel || !button) {
+        return;
+    }
+    if (panel.getAttribute('data-compare-ready') !== 'true') {
+        return;
+    }
+    const isActive = panel.getAttribute('data-compare-mode') === 'active';
+    panel.setAttribute('data-compare-mode', isActive ? 'off' : 'active');
+    button.setAttribute('aria-pressed', isActive ? 'false' : 'true');
 }
 
 // Keyboard support for legend toggle

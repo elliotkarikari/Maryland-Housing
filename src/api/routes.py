@@ -292,7 +292,7 @@ LAYER_CONFIGS = {
             {"col": "employment_diversification_score", "name": "Employment Diversification", "desc": "Sector diversity and wage quality", "weight": 0.40},
             {"col": "high_wage_jobs_accessible_45min", "name": "High-Wage Jobs (45 min)", "desc": "Jobs earning >$40k accessible", "weight": None},
             {"col": "wage_quality_ratio", "name": "Wage Quality Ratio", "desc": "High-wage to low-wage job ratio", "weight": None},
-            {"col": "sector_diversity_shannon", "name": "Sector Diversity", "desc": "Shannon entropy across industries", "weight": None},
+            {"col": "sector_diversity_entropy", "name": "Sector Diversity", "desc": "Shannon entropy across industries", "weight": None},
         ]
     },
     "mobility_optionality": {
@@ -318,9 +318,9 @@ LAYER_CONFIGS = {
         "formula": "0.40 × supply + 0.60 × accessibility",
         "factors": [
             {"col": "education_opportunity_index", "name": "Education Opportunity Index", "desc": "Combined v1+v2 composite score", "weight": 1.0},
-            {"col": "education_accessibility_composite", "name": "Education Accessibility", "desc": "Quality school access composite", "weight": 0.60},
+            {"col": "education_accessibility_score", "name": "Education Accessibility", "desc": "Quality school access composite", "weight": 0.60},
             {"col": "school_supply_score", "name": "School Supply", "desc": "Enrollment and school density", "weight": 0.40},
-            {"col": "high_quality_schools_30min", "name": "Quality Schools (30 min)", "desc": "Above-median schools accessible", "weight": None},
+            {"col": "avg_high_quality_accessible_30min", "name": "Quality Schools (30 min)", "desc": "Above-median schools accessible", "weight": None},
             {"col": "prek_accessibility_score", "name": "Pre-K Access", "desc": "Early childhood program availability", "weight": None},
             {"col": "avg_proficiency", "name": "Avg Proficiency", "desc": "Average ELA/Math proficiency", "weight": None},
         ]
