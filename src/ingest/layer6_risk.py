@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 import geopandas as gpd
 import requests
+from datetime import datetime
 from sqlalchemy import text
 from typing import Optional
 
@@ -31,14 +32,17 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 NBI_SERVICE_URL = "https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services/NTAD_National_Bridge_Inventory/FeatureServer/0"
-EJSCREEN_YEAR = 2023
+# Dynamic EJScreen year (data typically lags 1 year)
+EJSCREEN_YEAR = datetime.now().year - 1
 
 
 def _fetch_md_counties() -> gpd.GeoDataFrame:
     import pygris
     from pygris import counties
 
-    md_counties = counties(state="MD", year=2023, cb=True)
+    # Use previous year for TIGER/Line data (current year not always available)
+    tiger_year = datetime.now().year - 1
+    md_counties = counties(state="MD", year=tiger_year, cb=True)
     md_counties['GEOID'] = md_counties['GEOID'].astype(str).str.zfill(5)
     md_counties = md_counties.rename(columns={'GEOID': 'fips_code', 'NAME': 'county_name'})
     md_counties = md_counties[md_counties['fips_code'].isin(MD_COUNTY_FIPS.keys())]

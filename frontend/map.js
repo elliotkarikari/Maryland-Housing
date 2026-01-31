@@ -63,22 +63,57 @@ const map = new mapboxgl.Map({
     maxZoom: 12
 });
 
+// Add map controls (bottom-right position)
+map.addControl(new mapboxgl.NavigationControl({
+    showCompass: false  // Compass not needed for 2D view
+}), 'bottom-right');
+
+map.addControl(new mapboxgl.GeolocateControl({
+    positionOptions: {
+        enableHighAccuracy: true
+    },
+    trackUserLocation: false,
+    showUserHeading: false
+}), 'bottom-right');
+
+map.addControl(new mapboxgl.FullscreenControl(), 'bottom-right');
+
 // Popup for hover tooltips
 const popup = new mapboxgl.Popup({
     closeButton: false,
     closeOnClick: false,
-    offset: 10
+    offset: 12,
+    maxWidth: '240px'
 });
+
+// Debounce helper for hover performance
+let hoverDebounceTimer = null;
+function debounceHover(callback, delay = 16) {
+    return function(...args) {
+        if (hoverDebounceTimer) cancelAnimationFrame(hoverDebounceTimer);
+        hoverDebounceTimer = requestAnimationFrame(() => callback.apply(this, args));
+    };
+}
 
 // Current layer selection
 let currentLayer = 'synthesis';
 
+// Update loading status helper
+function updateLoadingStatus(text) {
+    const statusEl = document.getElementById('loading-status');
+    if (statusEl) statusEl.textContent = text;
+}
+
 // Map load event
 map.on('load', async () => {
     try {
+        updateLoadingStatus('Fetching county data...');
+
         // Fetch GeoJSON data
         const response = await fetch(GEOJSON_PATH);
         const geojsonData = await response.json();
+
+        updateLoadingStatus('Rendering map layers...');
 
         // Add source
         map.addSource('counties', {
@@ -190,8 +225,8 @@ function setupInteractivity() {
         map.setFilter('counties-hover', ['==', 'fips_code', '']);
     });
 
-    // Show tooltip on hover
-    map.on('mousemove', 'counties-fill', (e) => {
+    // Show tooltip on hover (debounced for performance)
+    const handleHover = debounceHover((e) => {
         if (e.features.length > 0) {
             const feature = e.features[0];
             const props = feature.properties;
@@ -199,22 +234,37 @@ function setupInteractivity() {
             // Update hover highlight
             map.setFilter('counties-hover', ['==', 'fips_code', props.fips_code]);
 
-            // Show tooltip
+            // Get current layer label
             const label = currentLayer === 'synthesis'
                 ? SYNTHESIS_LABELS[props.synthesis_grouping]
                 : currentLayer === 'directional'
                 ? DIRECTIONAL_LABELS[props.directional_class]
                 : CONFIDENCE_LABELS[props.confidence_class];
 
+            // Get grouping class for color styling
+            const groupingClass = props.synthesis_grouping || 'high_uncertainty';
+
+            // Format composite score
+            const score = props.composite_score
+                ? parseFloat(props.composite_score).toFixed(2)
+                : 'N/A';
+
+            // Enhanced tooltip with score
             popup
                 .setLngLat(e.lngLat)
                 .setHTML(`
                     <div class="tooltip-title">${props.county_name}</div>
-                    <div class="tooltip-grouping">${label}</div>
+                    <div class="tooltip-score">
+                        <span class="tooltip-score-label">Score:</span>
+                        <span class="tooltip-score-value">${score}</span>
+                    </div>
+                    <div class="tooltip-grouping ${groupingClass}">${label}</div>
                 `)
                 .addTo(map);
         }
     });
+
+    map.on('mousemove', 'counties-fill', handleHover);
 
     // Click to show detail panel
     map.on('click', 'counties-fill', async (e) => {
@@ -336,6 +386,14 @@ async function loadCountyDetail(fipsCode) {
 
         document.getElementById('panel-content').innerHTML = content;
         document.getElementById('side-panel').classList.add('open');
+
+        // Show clear selection button
+        document.getElementById('clear-selection').classList.add('visible');
+
+        // Highlight selected county on map
+        if (map.getLayer('counties-selected')) {
+            map.setFilter('counties-selected', ['==', 'fips_code', fipsCode]);
+        }
 
     } catch (error) {
         console.error('Error loading county detail:', error);
@@ -472,7 +530,45 @@ function closeLayerModal(event) {
 // Close side panel
 function closePanel() {
     document.getElementById('side-panel').classList.remove('open');
+    // Hide clear selection button
+    document.getElementById('clear-selection').classList.remove('visible');
+    // Clear map selection highlight
+    if (map.getLayer('counties-hover')) {
+        map.setFilter('counties-hover', ['==', 'fips_code', '']);
+    }
+    currentFipsCode = null;
 }
+
+// Clear selection (called from header button)
+function clearSelection() {
+    closePanel();
+}
+
+// Toggle legend visibility
+function toggleLegend() {
+    const legend = document.getElementById('legend');
+    const toggleIcon = document.getElementById('legend-toggle-icon');
+    const legendHeader = legend.querySelector('.legend-header');
+
+    legend.classList.toggle('expanded');
+
+    const isExpanded = legend.classList.contains('expanded');
+    toggleIcon.textContent = isExpanded ? '−' : '+';
+    legendHeader.setAttribute('aria-expanded', isExpanded);
+}
+
+// Keyboard support for legend toggle
+document.addEventListener('DOMContentLoaded', () => {
+    const legendHeader = document.querySelector('.legend-header');
+    if (legendHeader) {
+        legendHeader.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleLegend();
+            }
+        });
+    }
+});
 
 // Get synthesis grouping description
 function getSynthesisDescription(grouping) {

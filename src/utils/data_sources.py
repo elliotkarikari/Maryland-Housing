@@ -132,10 +132,16 @@ def fetch_bls_qcew(
         logger.info(f"Fetching BLS QCEW: {year} Q{quarter}, area 24{area_code}")
 
         try:
-            df = pd.read_csv(url)
+            # Use requests with explicit timeout instead of pd.read_csv(url) which can hang
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            df = pd.read_csv(io.StringIO(response.text))
             all_data.append(df)
             time.sleep(0.5)  # Be respectful even with rate limiter
 
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout fetching QCEW for area 24{area_code} (60s limit)")
+            continue
         except Exception as e:
             logger.warning(f"Failed to fetch QCEW for area 24{area_code}: {e}")
             continue

@@ -26,6 +26,8 @@ def setup_logging(name: str = "maryland_atlas") -> logging.Logger:
 
     # Remove existing handlers
     logger.handlers = []
+    # Avoid double logging when root handlers are configured
+    logger.propagate = False
 
     # Console handler with JSON formatting
     handler = logging.StreamHandler(sys.stdout)
@@ -59,6 +61,13 @@ def setup_logging(name: str = "maryland_atlas") -> logging.Logger:
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+
+    # Configure root so module loggers without handlers also log to file/console
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logger.level)
+    root_logger.handlers = []
+    for handler in logger.handlers:
+        root_logger.addHandler(handler)
 
     return logger
 

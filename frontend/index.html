@@ -508,7 +508,7 @@
             margin-right: 8px;
         }
 
-        /* Loading Spinner */
+        /* Loading Spinner - Enhanced with skeleton pattern */
         .loading {
             position: absolute;
             top: 50%;
@@ -516,10 +516,62 @@
             transform: translate(-50%, -50%);
             background: white;
             padding: 30px 40px;
-            border-radius: 8px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.15);
             z-index: 100;
             text-align: center;
+            min-width: 280px;
+        }
+
+        .loading-icon {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 16px;
+            position: relative;
+        }
+
+        .loading-icon::before {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 3px solid #e0e0e0;
+            border-top-color: #2d5016;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .loading-text {
+            font-size: 16px;
+            font-weight: 500;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .loading-subtext {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .loading-progress {
+            margin-top: 16px;
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .loading-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #2d5016, #7cb342);
+            width: 0%;
+            animation: loading-progress 2s ease-in-out infinite;
+        }
+
+        @keyframes loading-progress {
+            0% { width: 0%; }
+            50% { width: 70%; }
+            100% { width: 100%; }
         }
 
         .spinner {
@@ -536,13 +588,251 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        /* Map Controls - Custom styling for Mapbox controls */
+        .mapboxgl-ctrl-group {
+            background: white;
+            border-radius: 8px !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1) !important;
+            overflow: hidden;
+        }
+
+        .mapboxgl-ctrl-group button {
+            width: 36px !important;
+            height: 36px !important;
+        }
+
+        .mapboxgl-ctrl-geolocate,
+        .mapboxgl-ctrl-fullscreen {
+            margin-top: 8px;
+        }
+
+        /* Legend - Collapsible */
+        .legend {
+            position: absolute;
+            bottom: 30px;
+            left: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 10;
+            max-width: 280px;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .legend-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            cursor: pointer;
+            user-select: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        .legend.expanded .legend-header {
+            border-bottom-color: #e0e0e0;
+        }
+
+        .legend-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin: 0;
+            color: #1a1a1a;
+        }
+
+        .legend-toggle {
+            background: none;
+            border: none;
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+            font-size: 18px;
+            transition: all 0.2s;
+        }
+
+        .legend-toggle:hover {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .legend-toggle:focus {
+            outline: 2px solid #2d5016;
+            outline-offset: 2px;
+        }
+
+        .legend-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, padding 0.3s ease;
+            padding: 0 16px;
+        }
+
+        .legend.expanded .legend-content {
+            max-height: 400px;
+            padding: 12px 16px 16px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            margin-right: 10px;
+            border: 1px solid rgba(0,0,0,0.1);
+            flex-shrink: 0;
+        }
+
+        .legend-label {
+            flex: 1;
+            font-weight: 500;
+            color: #333;
+        }
+
+        .legend-description {
+            font-size: 11px;
+            color: #666;
+            margin-left: 30px;
+            margin-top: -4px;
+            margin-bottom: 10px;
+        }
+
+        /* Clear Selection Button */
+        .clear-selection {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #666;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 12px;
+        }
+
+        .clear-selection:hover {
+            background: #fff;
+            border-color: #ccc;
+            color: #333;
+        }
+
+        .clear-selection:focus {
+            outline: 2px solid #2d5016;
+            outline-offset: 2px;
+        }
+
+        .clear-selection.visible {
+            display: inline-flex;
+        }
+
+        /* Enhanced Tooltip */
+        .mapboxgl-popup-content {
+            padding: 12px 16px;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            min-width: 160px;
+        }
+
+        .tooltip-title {
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 8px;
+            color: #1a1a1a;
+        }
+
+        .tooltip-score {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .tooltip-score-label {
+            color: #666;
+        }
+
+        .tooltip-score-value {
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .tooltip-grouping {
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+            font-weight: 500;
+        }
+
+        .tooltip-grouping.emerging_tailwinds { background: #e8f5e9; color: #2d5016; }
+        .tooltip-grouping.conditional_growth { background: #f1f8e9; color: #558b2f; }
+        .tooltip-grouping.stable_constrained { background: #fffde7; color: #f9a825; }
+        .tooltip-grouping.at_risk_headwinds { background: #fbe9e7; color: #d84315; }
+        .tooltip-grouping.high_uncertainty { background: #f5f5f5; color: #616161; }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .header {
+                left: 10px;
+                right: 10px;
+                top: 10px;
+                padding: 16px 20px;
+            }
+
+            .header h1 {
+                font-size: 18px;
+            }
+
+            .legend {
+                left: 10px;
+                bottom: 20px;
+                max-width: 240px;
+            }
+
+            .layer-controls {
+                top: 100px;
+                right: 10px;
+                min-width: 160px;
+            }
+
+            .side-panel {
+                width: 100%;
+                right: -100%;
+            }
+
+            .mapboxgl-ctrl-top-right {
+                top: 100px !important;
+            }
+        }
     </style>
 </head>
 <body>
-    <!-- Loading Screen -->
+    <!-- Loading Screen - Enhanced -->
     <div id="loading" class="loading">
-        <div class="spinner"></div>
-        <p>Loading Maryland Atlas...</p>
+        <div class="loading-icon"></div>
+        <div class="loading-text">Loading Maryland Atlas</div>
+        <div class="loading-subtext" id="loading-status">Initializing map...</div>
+        <div class="loading-progress">
+            <div class="loading-progress-bar"></div>
+        </div>
     </div>
 
     <!-- Map Container -->
@@ -555,40 +845,50 @@
             Spatial analysis of structural trajectories across Maryland counties.
             <strong>Click a county</strong> for detailed breakdown.
         </p>
+        <button id="clear-selection" class="clear-selection" onclick="clearSelection()" aria-label="Clear county selection">
+            <span>✕</span> Clear Selection
+        </button>
     </div>
 
-    <!-- Legend -->
-    <div class="legend">
-        <h3>Synthesis Grouping</h3>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #2d5016;"></div>
-            <div class="legend-label">Emerging Tailwinds</div>
+    <!-- Legend - Collapsible -->
+    <div id="legend" class="legend expanded" role="region" aria-label="Map legend">
+        <div class="legend-header" onclick="toggleLegend()" role="button" tabindex="0" aria-expanded="true" aria-controls="legend-content">
+            <h3>Synthesis Grouping</h3>
+            <button class="legend-toggle" aria-label="Toggle legend">
+                <span id="legend-toggle-icon">−</span>
+            </button>
         </div>
-        <div class="legend-description">Stacked growth signals, high confidence</div>
+        <div id="legend-content" class="legend-content">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #2d5016;"></div>
+                <div class="legend-label">Emerging Tailwinds</div>
+            </div>
+            <div class="legend-description">Stacked growth signals, high confidence</div>
 
-        <div class="legend-item">
-            <div class="legend-color" style="background: #7cb342;"></div>
-            <div class="legend-label">Conditional Growth</div>
-        </div>
-        <div class="legend-description">Upside exists, execution matters</div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #7cb342;"></div>
+                <div class="legend-label">Conditional Growth</div>
+            </div>
+            <div class="legend-description">Upside exists, execution matters</div>
 
-        <div class="legend-item">
-            <div class="legend-color" style="background: #fdd835;"></div>
-            <div class="legend-label">Stable Constrained</div>
-        </div>
-        <div class="legend-description">Holding steady, limited upside</div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #fdd835;"></div>
+                <div class="legend-label">Stable Constrained</div>
+            </div>
+            <div class="legend-description">Holding steady, limited upside</div>
 
-        <div class="legend-item">
-            <div class="legend-color" style="background: #f4511e;"></div>
-            <div class="legend-label">At Risk / Headwinds</div>
-        </div>
-        <div class="legend-description">Structural challenges dominate</div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #f4511e;"></div>
+                <div class="legend-label">At Risk / Headwinds</div>
+            </div>
+            <div class="legend-description">Structural challenges dominate</div>
 
-        <div class="legend-item">
-            <div class="legend-color" style="background: #757575;"></div>
-            <div class="legend-label">High Uncertainty</div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #757575;"></div>
+                <div class="legend-label">High Uncertainty</div>
+            </div>
+            <div class="legend-description">Insufficient data or contested</div>
         </div>
-        <div class="legend-description">Insufficient data or contested</div>
     </div>
 
     <!-- Layer Controls -->

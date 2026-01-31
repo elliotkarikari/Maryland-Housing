@@ -112,7 +112,7 @@ format:
 	$(PYTHON) -m isort src/ tests/ config/
 
 test:
-	pytest tests/ -v --cov=src
+	$(PYTHON) -m pytest tests/ -v --cov=src
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
