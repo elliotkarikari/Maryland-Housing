@@ -3,7 +3,7 @@
 
 // Configuration
 const MAPBOX_TOKEN = 'pk.eyJ1IjoiZWxrYXJpMjMiLCJhIjoiY2tubm04b3BkMTYwcTJzcG5tZDZ2YTV5MSJ9.S0oAvquhkkMoDGrRJ_oP-Q';
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = 'http://127.0.0.1:8000/api/v1';
 const GEOJSON_PATH = `${API_BASE_URL}/layers/counties/latest`;  // API endpoint
 
 // Currently selected county FIPS (for layer detail lookups)
