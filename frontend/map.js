@@ -65,8 +65,39 @@ const map = new mapboxgl.Map({
 
 const colorReveal = document.getElementById('color-reveal');
 let lastPointer = null;
-const REVEAL_START_ZOOM = 9.5;
-const REVEAL_END_ZOOM = 13.8;
+const REVEAL_START_ZOOM = 7.2;
+const REVEAL_END_ZOOM = 11.4;
+const PITCH_START_ZOOM = 9.5;
+const PITCH_END_ZOOM = 13.2;
+const MAX_PITCH = 45;
+const PULSE_RADIUS_MILES = 5;
+const URBAN_PULSE_ENABLED = false;
+
+const URBAN_PULSE_THEMES = {
+    live: {
+        label: 'Live',
+        color: '#4caf50',
+        classes: ['park', 'residential', 'garden', 'cemetery', 'stadium']
+    },
+    work: {
+        label: 'Work',
+        color: '#2196f3',
+        classes: ['office', 'industrial', 'commercial', 'warehouse', 'shop']
+    },
+    learn: {
+        label: 'Learn',
+        color: '#fbc02d',
+        classes: ['school', 'college', 'university', 'library']
+    },
+    transit: {
+        label: 'Transit',
+        color: '#e53935',
+        classes: ['bus', 'bus_stop', 'rail', 'railway', 'station', 'ferry']
+    }
+};
+
+const URBAN_PULSE_LAYER_IDS = Object.keys(URBAN_PULSE_THEMES).map((key) => `urban-${key}-poi`);
+let activePulse = null;
 
 function updateColorReveal() {
     if (!colorReveal) {
@@ -84,6 +115,15 @@ function updateColorReveal() {
     colorReveal.style.setProperty('--reveal-y', `${yPct}%`);
     colorReveal.style.setProperty('--reveal-radius', `${radius}px`);
     colorReveal.style.setProperty('--reveal-strength', strength.toFixed(3));
+}
+
+function updatePitch() {
+    const zoom = map.getZoom();
+    const t = Math.max(0, Math.min(1, (zoom - PITCH_START_ZOOM) / (PITCH_END_ZOOM - PITCH_START_ZOOM)));
+    const pitch = t * MAX_PITCH;
+    if (Math.abs(map.getPitch() - pitch) > 0.5) {
+        map.setPitch(pitch);
+    }
 }
 
 function setPanelOpenState(isOpen) {
@@ -182,7 +222,10 @@ map.on('load', async () => {
             }
         });
 
-        map.on('zoom', updateColorReveal);
+        map.on('zoom', () => {
+            updateColorReveal();
+            updatePitch();
+        });
         map.on('move', updateColorReveal);
         map.on('resize', updateColorReveal);
 
@@ -237,6 +280,11 @@ map.on('load', async () => {
         setupInteractivity();
         setupLegendFiltering();
 
+        // Add Urban Pulse layers above county fills (disabled by default)
+        if (URBAN_PULSE_ENABLED) {
+            addUrbanPulseLayers();
+        }
+
         // Hide loading screen
         document.getElementById('loading').style.display = 'none';
 
@@ -251,6 +299,289 @@ map.on('load', async () => {
         `;
     }
 });
+
+function addUrbanPulseLayers() {
+    if (!map.getSource('pulse-circle')) {
+        map.addSource('pulse-circle', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+    if (!map.getSource('pulse-mask')) {
+        map.addSource('pulse-mask', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+
+    if (!map.getLayer('pulse-mask')) {
+        map.addLayer({
+            id: 'pulse-mask',
+            type: 'fill',
+            source: 'pulse-mask',
+            paint: {
+                'fill-color': 'rgba(0,0,0,0.25)',
+                'fill-opacity': 0
+            }
+        });
+    }
+
+    if (!map.getLayer('pulse-fill')) {
+        map.addLayer({
+            id: 'pulse-fill',
+            type: 'fill',
+            source: 'pulse-circle',
+            paint: {
+                'fill-color': '#ffffff',
+                'fill-opacity': 0.08
+            }
+        });
+    }
+
+    if (!map.getLayer('pulse-outline')) {
+        map.addLayer({
+            id: 'pulse-outline',
+            type: 'line',
+            source: 'pulse-circle',
+            paint: {
+                'line-color': '#ffffff',
+                'line-width': 3,
+                'line-opacity': 0.7
+            }
+        });
+    }
+
+    Object.entries(URBAN_PULSE_THEMES).forEach(([key, theme]) => {
+        const layerId = `urban-${key}-poi`;
+        if (map.getLayer(layerId)) {
+            return;
+        }
+        map.addLayer({
+            id: layerId,
+            type: 'circle',
+            source: 'composite',
+            'source-layer': 'poi_label',
+            minzoom: 10,
+            filter: ['in', ['get', 'class'], ['literal', theme.classes]],
+            paint: {
+                'circle-color': theme.color,
+                'circle-radius': [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 2,
+                    14, 5
+                ],
+                'circle-opacity': [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 0,
+                    11, 0.35,
+                    14, 0.6
+                ],
+                'circle-stroke-color': '#ffffff',
+                'circle-stroke-width': 1
+            }
+        });
+
+        map.on('mouseenter', layerId, () => {
+            map.getCanvas().style.cursor = 'pointer';
+        });
+        map.on('mouseleave', layerId, () => {
+            map.getCanvas().style.cursor = '';
+        });
+    });
+}
+
+function getPulseFeatureAt(point) {
+    if (!URBAN_PULSE_ENABLED) {
+        return null;
+    }
+    const existingLayers = map.getStyle().layers || [];
+    const hasPulseLayers = URBAN_PULSE_LAYER_IDS.some((id) => existingLayers.find((layer) => layer.id === id));
+    if (!hasPulseLayers) {
+        return null;
+    }
+    const features = map.queryRenderedFeatures(point, { layers: URBAN_PULSE_LAYER_IDS });
+    if (!features.length) {
+        return null;
+    }
+    const hit = features[0];
+    const layerId = hit.layer.id;
+    const themeKey = layerId.replace('urban-', '').replace('-poi', '');
+    return { feature: hit, themeKey };
+}
+
+function buildMaskPolygon(circleFeature) {
+    const world = [
+        [-180, -90],
+        [180, -90],
+        [180, 90],
+        [-180, 90],
+        [-180, -90]
+    ];
+    const hole = circleFeature.geometry.coordinates[0].slice().reverse();
+    return {
+        type: 'Feature',
+        geometry: {
+            type: 'Polygon',
+            coordinates: [world, hole]
+        },
+        properties: {}
+    };
+}
+
+function setPulseLayerColor(color) {
+    if (map.getLayer('pulse-fill')) {
+        map.setPaintProperty('pulse-fill', 'fill-color', color);
+    }
+    if (map.getLayer('pulse-outline')) {
+        map.setPaintProperty('pulse-outline', 'line-color', color);
+    }
+}
+
+function animatePulse(center, color) {
+    if (!window.turf) {
+        return;
+    }
+    const start = performance.now();
+    const duration = 700;
+
+    setPulseLayerColor(color);
+
+    function frame(now) {
+        const t = Math.min(1, (now - start) / duration);
+        const eased = t * t * (3 - 2 * t);
+        const radius = eased * PULSE_RADIUS_MILES;
+        const circle = turf.circle(center, Math.max(radius, 0.01), { steps: 96, units: 'miles' });
+        const mask = buildMaskPolygon(circle);
+
+        map.getSource('pulse-circle').setData(circle);
+        map.getSource('pulse-mask').setData(mask);
+        map.setPaintProperty('pulse-mask', 'fill-opacity', 0.25);
+        map.setPaintProperty('pulse-fill', 'fill-opacity', 0.12);
+        map.setPaintProperty('pulse-outline', 'line-opacity', 0.9);
+
+        if (t < 1) {
+            requestAnimationFrame(frame);
+        }
+    }
+
+    requestAnimationFrame(frame);
+}
+
+function clearPulse() {
+    activePulse = null;
+    if (map.getSource('pulse-circle')) {
+        map.getSource('pulse-circle').setData({ type: 'FeatureCollection', features: [] });
+    }
+    if (map.getSource('pulse-mask')) {
+        map.getSource('pulse-mask').setData({ type: 'FeatureCollection', features: [] });
+    }
+    if (map.getLayer('pulse-mask')) {
+        map.setPaintProperty('pulse-mask', 'fill-opacity', 0);
+    }
+}
+
+function getFeatureCenter(feature) {
+    if (!window.turf) {
+        return feature.geometry.coordinates;
+    }
+    if (feature.geometry.type === 'Point') {
+        return feature.geometry.coordinates;
+    }
+    if (feature.geometry.type === 'MultiPoint') {
+        return feature.geometry.coordinates[0];
+    }
+    return turf.centerOfMass(feature).geometry.coordinates;
+}
+
+function countNearbyFeatures(themeKey, circle) {
+    const layerId = `urban-${themeKey}-poi`;
+    const candidates = map.queryRenderedFeatures({ layers: [layerId] });
+    if (!window.turf || !candidates.length) {
+        return 0;
+    }
+    let count = 0;
+    candidates.forEach((feature) => {
+        const point = getFeatureCenter(feature);
+        if (turf.booleanPointInPolygon(turf.point(point), circle)) {
+            count += 1;
+        }
+    });
+    return count;
+}
+
+function openPulsePanel(themeKey, featureName, nearbyCount) {
+    const panel = document.getElementById('side-panel');
+    const titleEl = document.getElementById('panel-title');
+    const subtitleEl = document.getElementById('panel-subtitle');
+    const contentEl = document.getElementById('panel-content');
+    if (!panel || !titleEl || !subtitleEl || !contentEl) {
+        return;
+    }
+
+    panel.classList.remove('pulse-live', 'pulse-work', 'pulse-learn', 'pulse-transit');
+    panel.classList.add(`pulse-${themeKey}`);
+
+    const theme = URBAN_PULSE_THEMES[themeKey];
+    titleEl.textContent = featureName || `${theme.label} Location`;
+    subtitleEl.textContent = `Urban Pulse • ${theme.label}`;
+
+    contentEl.innerHTML = `
+        <div class="panel-section">
+            <div class="pulse-badge">
+                <span class="pulse-dot" style="background: ${theme.color};"></span>
+                ${theme.label.toUpperCase()} SIGNAL
+            </div>
+            <p style="font-size: 14px; color: #666; line-height: 1.5;">
+                Showing nearby ${theme.label.toLowerCase()}-related places within a 5-mile pulse radius.
+            </p>
+            <div class="pulse-metric">
+                <div class="pulse-count">${nearbyCount}</div>
+                <div class="pulse-label">Nearby ${theme.label} locations</div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('side-panel').setAttribute('data-compare-ready', 'false');
+    document.getElementById('side-panel').setAttribute('data-compare-mode', 'off');
+    setPanelOpenState(true);
+    document.getElementById('side-panel').classList.add('open');
+    document.getElementById('clear-selection').classList.add('visible');
+}
+
+function handlePulseSelection(feature, themeKey) {
+    if (!window.turf || !feature || !themeKey) {
+        return;
+    }
+
+    clearPulse();
+
+    const center = getFeatureCenter(feature);
+    const circle = turf.circle(center, PULSE_RADIUS_MILES, { steps: 96, units: 'miles' });
+    const nearbyCount = countNearbyFeatures(themeKey, circle);
+    const theme = URBAN_PULSE_THEMES[themeKey];
+
+    activePulse = { themeKey, center };
+    animatePulse(center, theme.color);
+
+    const name =
+        feature.properties?.name ||
+        feature.properties?.name_en ||
+        feature.properties?.name_local ||
+        `${theme.label} location`;
+
+    openPulsePanel(themeKey, name, nearbyCount);
+
+    map.easeTo({
+        center,
+        zoom: Math.max(map.getZoom(), 15),
+        pitch: MAX_PITCH,
+        duration: 700
+    });
+}
 
 
 function add3DBuildings() {
@@ -268,7 +599,7 @@ function add3DBuildings() {
         source: 'composite',
         'source-layer': 'building',
         type: 'fill-extrusion',
-        minzoom: 13.2,
+        minzoom: 12.2,
         paint: {
             'fill-extrusion-color': '#cbd3ce',
             'fill-extrusion-opacity': 0.8,
@@ -276,15 +607,15 @@ function add3DBuildings() {
                 'interpolate',
                 ['linear'],
                 ['zoom'],
-                13.2, 0,
-                14.4, ['get', 'height']
+                12.2, 0,
+                13.4, ['get', 'height']
             ],
             'fill-extrusion-base': [
                 'interpolate',
                 ['linear'],
                 ['zoom'],
-                13.2, 0,
-                14.4, ['get', 'min_height']
+                12.2, 0,
+                13.4, ['get', 'min_height']
             ]
         }
     }, labelLayerId);
@@ -388,6 +719,11 @@ function setupInteractivity() {
 
     // Click to show detail panel
     map.on('click', 'counties-fill', async (e) => {
+        const pulseHit = getPulseFeatureAt(e.point);
+        if (pulseHit) {
+            handlePulseSelection(pulseHit.feature, pulseHit.themeKey);
+            return;
+        }
         if (e.features.length > 0) {
             const feature = e.features[0];
             const fipsCode = feature.properties.fips_code;
@@ -446,6 +782,11 @@ function renderScoreBar(value) {
 // Load county detail from API
 async function loadCountyDetail(fipsCode) {
     try {
+        clearPulse();
+        const panel = document.getElementById('side-panel');
+        if (panel) {
+            panel.classList.remove('pulse-live', 'pulse-work', 'pulse-learn', 'pulse-transit');
+        }
         currentFipsCode = fipsCode;
         const response = await fetch(`${API_BASE_URL}/areas/${fipsCode}`);
         const data = await response.json();
@@ -690,11 +1031,13 @@ function closePanel() {
     if (panel) {
         panel.setAttribute('data-compare-ready', 'false');
         panel.setAttribute('data-compare-mode', 'off');
+        panel.classList.remove('pulse-live', 'pulse-work', 'pulse-learn', 'pulse-transit');
     }
     const compareButton = document.querySelector('.compare-toggle');
     if (compareButton) {
         compareButton.setAttribute('aria-pressed', 'false');
     }
+    clearPulse();
     // Hide clear selection button
     document.getElementById('clear-selection').classList.remove('visible');
     // Clear map selection highlight

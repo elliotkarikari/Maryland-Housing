@@ -147,6 +147,68 @@
             z-index: 1;
         }
 
+        .side-panel.pulse-live .panel-header {
+            background: linear-gradient(180deg, #e8f5e9 0%, #ffffff 100%);
+            border-bottom-color: #c8e6c9;
+        }
+
+        .side-panel.pulse-work .panel-header {
+            background: linear-gradient(180deg, #e3f2fd 0%, #ffffff 100%);
+            border-bottom-color: #bbdefb;
+        }
+
+        .side-panel.pulse-learn .panel-header {
+            background: linear-gradient(180deg, #fff8e1 0%, #ffffff 100%);
+            border-bottom-color: #ffecb3;
+        }
+
+        .side-panel.pulse-transit .panel-header {
+            background: linear-gradient(180deg, #ffebee 0%, #ffffff 100%);
+            border-bottom-color: #ffcdd2;
+        }
+
+        .pulse-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            color: #555;
+            margin-bottom: 10px;
+        }
+
+        .pulse-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .pulse-metric {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-top: 16px;
+            padding: 12px 14px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+
+        .pulse-count {
+            font-size: 22px;
+            font-weight: 700;
+            color: #1a1a1a;
+        }
+
+        .pulse-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
         .panel-close {
             position: absolute;
             top: 18px;
@@ -554,7 +616,7 @@
             position: absolute;
             inset: 0;
             pointer-events: none;
-            z-index: 5;
+            z-index: 1;
             backdrop-filter: grayscale(1) saturate(0);
             -webkit-backdrop-filter: grayscale(1) saturate(0);
             mask-image: radial-gradient(
@@ -573,7 +635,7 @@
 
         .mapboxgl-control-container {
             position: absolute;
-            z-index: 12;
+            z-index: 30;
         }
 
         .layer-controls h4 {
@@ -1060,8 +1122,9 @@
         </div>
 
         <!-- Map Container -->
-        <div id="map"></div>
-        <div id="color-reveal" class="color-reveal"></div>
+        <div id="map">
+            <div id="color-reveal" class="color-reveal"></div>
+        </div>
         <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="closePanel()"></div>
 
         <!-- Header -->
@@ -1167,6 +1230,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
     <script src="map.js"></script>
 </body>
 </html>
