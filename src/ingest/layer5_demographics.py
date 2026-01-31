@@ -16,6 +16,7 @@ from datetime import datetime
 from sqlalchemy import text
 import argparse
 from typing import Optional
+import requests
 
 # Ensure project root is on sys.path when running as a script
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -80,9 +81,262 @@ def _download_irs_flow(year_range: str, flow: str) -> Path:
     return target
 
 
+def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str) -> Optional[Path]:
+    if local_path:
+        path = Path(local_path)
+        if path.exists():
+            return path
+        logger.warning(f"Provided data path not found: {local_path}")
+    if url:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / filename
+        if not target.exists():
+            ok = download_file(url, str(target))
+            if not ok:
+                logger.warning(f"Failed to download data from {url}")
+                return None
+        return target
+    return None
+
+
+def _read_census_crosswalk(path: Path) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path, sep='|', dtype=str, encoding='utf-8-sig', low_memory=False)
+    except Exception as e:
+        logger.warning(f"Failed to read Census crosswalk {path}: {e}")
+        return pd.DataFrame()
+
+    df = _normalize_columns(df)
+    if 'geoid_zcta5_20' not in df.columns or 'geoid_county_20' not in df.columns:
+        logger.warning("Census crosswalk missing expected GEOID columns")
+        return pd.DataFrame()
+
+    df = df[['geoid_zcta5_20', 'geoid_county_20', 'arealand_part']].copy()
+    df = df.rename(columns={
+        'geoid_zcta5_20': 'zip',
+        'geoid_county_20': 'county_fips',
+        'arealand_part': 'res_ratio'
+    })
+    df['zip'] = df['zip'].astype(str).str.zfill(5)
+    df['county_fips'] = df['county_fips'].astype(str).str.zfill(5)
+    df['res_ratio'] = pd.to_numeric(df['res_ratio'], errors='coerce').fillna(0)
+    total = df.groupby('zip')['res_ratio'].transform('sum')
+    df['res_ratio'] = df['res_ratio'] / total.replace({0: pd.NA})
+    df['res_ratio'] = df['res_ratio'].fillna(0)
+    return df[['zip', 'county_fips', 'res_ratio']]
+
+
+def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
+    if settings.USPS_ZIP_COUNTY_CROSSWALK_PATH:
+        try:
+            path = Path(settings.USPS_ZIP_COUNTY_CROSSWALK_PATH)
+            if path.exists():
+                if path.suffix.lower() in {'.txt', '.dat'}:
+                    return _read_census_crosswalk(path)
+                return pd.read_csv(path, dtype=str, low_memory=False)
+        except Exception as e:
+            logger.warning(f"Failed to read ZIP crosswalk {settings.USPS_ZIP_COUNTY_CROSSWALK_PATH}: {e}")
+            return pd.DataFrame()
+
+    if settings.CENSUS_ZIP_COUNTY_CROSSWALK_URL:
+        target = CACHE_DIR / "census_zcta_county20.txt"
+        if not target.exists():
+            ok = download_file(settings.CENSUS_ZIP_COUNTY_CROSSWALK_URL, str(target))
+            if ok:
+                return _read_census_crosswalk(target)
+            logger.warning("Failed to download Census ZIP→county crosswalk")
+        else:
+            return _read_census_crosswalk(target)
+
+    return pd.DataFrame()
+
+
+def _fetch_crosswalk_from_api(zip_codes: list[str]) -> pd.DataFrame:
+    crosswalk_api_url = settings.USPS_ZIP_COUNTY_CROSSWALK_URL or settings.HUD_USPS_API_URL
+    if not crosswalk_api_url:
+        return pd.DataFrame()
+    if not settings.HUD_USER_API_TOKEN:
+        logger.warning("HUD API token missing; cannot fetch USPS crosswalk API")
+        return pd.DataFrame()
+
+    base_url = crosswalk_api_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {settings.HUD_USER_API_TOKEN}"}
+    rows = []
+
+    for zip_code in zip_codes:
+        params = {"type": 3, "query": zip_code}
+        try:
+            resp = requests.get(f"{base_url}/crosswalk", headers=headers, params=params, timeout=30)
+            if resp.status_code != 200:
+                continue
+            payload = resp.json()
+            data = None
+            if isinstance(payload, dict):
+                data = payload.get("data") or payload.get("Data") or payload.get("results")
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                rows.append(item)
+        except Exception:
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    return df
+
+
+def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
+    """
+    Fetch USPS vacancy data (via HUD) and aggregate to county.
+
+    Requires either:
+    - settings.USPS_VACANCY_DATA_PATH (local CSV), or
+    - settings.USPS_VACANCY_DATA_URL (downloadable CSV)
+    and optionally settings.USPS_ZIP_COUNTY_CROSSWALK_PATH for ZIP → county mapping.
+    """
+    vacancy_url = settings.USPS_VACANCY_DATA_URL
+    if vacancy_url and not vacancy_url.lower().endswith((".csv", ".txt", ".zip", ".gz", ".xlsx")):
+        logger.warning("USPS vacancy URL is not a direct data file; skipping USPS enrichment")
+        vacancy_url = None
+
+    source_path = _resolve_data_path(
+        settings.USPS_VACANCY_DATA_PATH,
+        vacancy_url,
+        CACHE_DIR,
+        "usps_vacancy.csv"
+    )
+
+    if source_path is None:
+        logger.warning("USPS vacancy data source not configured; skipping USPS enrichment")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(source_path, dtype=str, low_memory=False)
+    except Exception as e:
+        logger.warning(f"Failed to read USPS vacancy data {source_path}: {e}")
+        return pd.DataFrame()
+
+    df = _normalize_columns(df)
+    columns = list(df.columns)
+
+    year_col = _find_col(columns, ["year", "yr", "time"])
+    data_year = max(target_years) if target_years else datetime.utcnow().year
+    if year_col:
+        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        if (df[year_col] == data_year).any():
+            df = df[df[year_col] == data_year]
+        elif df[year_col].notna().any():
+            data_year = int(df[year_col].max())
+            df = df[df[year_col] == data_year]
+
+    total_col = _find_col(columns, ["total_units", "total", "total_addresses", "tot"])
+    vacant_col = _find_col(columns, ["vacant", "vacant_units", "vacant_addresses"])
+    if not total_col or not vacant_col:
+        logger.warning("USPS vacancy data missing total/vacant columns; skipping USPS enrichment")
+        return pd.DataFrame()
+
+    total_col = total_col
+    vacant_col = vacant_col
+    df[total_col] = pd.to_numeric(df[total_col], errors='coerce')
+    df[vacant_col] = pd.to_numeric(df[vacant_col], errors='coerce')
+
+    fips_col = _find_col(columns, ["fips", "fips_code", "county_fips", "geoid"])
+    if fips_col:
+        df['fips_code'] = df[fips_col].astype(str).str.zfill(5)
+    else:
+        zip_col = _find_col(columns, ["zip", "zipcode", "zip5"])
+        if not zip_col:
+            logger.warning("USPS vacancy data missing ZIP codes and FIPS; skipping USPS enrichment")
+            return pd.DataFrame()
+
+        crosswalk = _load_zip_crosswalk(df[zip_col].astype(str).str.zfill(5).unique().tolist())
+        if crosswalk is None or crosswalk.empty:
+            if settings.HUD_USER_API_TOKEN and (settings.USPS_ZIP_COUNTY_CROSSWALK_URL or settings.HUD_USPS_API_URL):
+                crosswalk = _fetch_crosswalk_from_api(df[zip_col].astype(str).str.zfill(5).unique().tolist())
+            if crosswalk is None or crosswalk.empty:
+                logger.warning("USPS ZIP→county crosswalk not configured; skipping USPS enrichment")
+                return pd.DataFrame()
+
+        if crosswalk is None or crosswalk.empty:
+            logger.warning("USPS ZIP→county crosswalk empty; skipping USPS enrichment")
+            return pd.DataFrame()
+
+        crosswalk = _normalize_columns(crosswalk)
+        cw_cols = list(crosswalk.columns)
+        cw_zip = _find_col(cw_cols, ["zip", "zipcode", "zip5"])
+        cw_fips = _find_col(cw_cols, ["county_fips", "fips", "fips_code", "geoid"])
+        if not cw_zip or not cw_fips:
+            logger.warning("Crosswalk missing ZIP or county FIPS columns; skipping USPS enrichment")
+            return pd.DataFrame()
+
+        ratio_col = _find_col(cw_cols, ["tot_ratio", "res_ratio", "ratio", "weight"])
+        crosswalk[cw_zip] = crosswalk[cw_zip].astype(str).str.zfill(5)
+        crosswalk[cw_fips] = crosswalk[cw_fips].astype(str).str.zfill(5)
+
+        df[zip_col] = df[zip_col].astype(str).str.zfill(5)
+        df = df.merge(crosswalk[[cw_zip, cw_fips] + ([ratio_col] if ratio_col else [])],
+                      left_on=zip_col, right_on=cw_zip, how='left')
+
+        df['fips_code'] = df[cw_fips]
+        if ratio_col:
+            df['zip_weight'] = pd.to_numeric(df[ratio_col], errors='coerce')
+        else:
+            df['zip_weight'] = 1.0
+        df['zip_weight'] = df['zip_weight'].fillna(1.0)
+
+        df[total_col] = df[total_col] * df['zip_weight']
+        df[vacant_col] = df[vacant_col] * df['zip_weight']
+
+    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    if df.empty:
+        logger.warning("USPS vacancy data contains no Maryland counties after filtering")
+        return pd.DataFrame()
+
+    agg = df.groupby('fips_code', as_index=False)[[total_col, vacant_col]].sum(min_count=1)
+    agg = agg.rename(columns={
+        total_col: 'total_addresses',
+        vacant_col: 'vacant_addresses'
+    })
+    agg['vacancy_rate'] = np.where(
+        agg['total_addresses'] > 0,
+        agg['vacant_addresses'] / agg['total_addresses'],
+        pd.NA
+    )
+    agg['data_year'] = data_year
+    return agg
+
+
+def merge_usps_vacancy(combined: pd.DataFrame, usps_df: pd.DataFrame) -> pd.DataFrame:
+    if usps_df.empty:
+        combined['total_addresses'] = pd.NA
+        combined['vacant_addresses'] = pd.NA
+        combined['vacancy_rate'] = pd.NA
+        return combined
+
+    latest = usps_df.sort_values('data_year').groupby('fips_code', as_index=False).tail(1)
+
+    merged = combined.merge(usps_df, on=['fips_code', 'data_year'], how='left')
+    merged = merged.merge(latest, on='fips_code', how='left', suffixes=('', '_latest'))
+
+    for col in ['total_addresses', 'vacant_addresses', 'vacancy_rate']:
+        latest_col = f"{col}_latest"
+        if latest_col in merged.columns:
+            merged[col] = merged[col].fillna(merged[latest_col])
+
+    merged = merged.drop(columns=[c for c in merged.columns if c.endswith('_latest')])
+    return merged
+
+
 def _load_irs_flow(year_range: str, flow: str) -> pd.DataFrame:
     path = _download_irs_flow(year_range, flow)
-    df = pd.read_csv(path, dtype=str)
+    try:
+        df = pd.read_csv(path, dtype=str)
+    except UnicodeDecodeError:
+        df = pd.read_csv(path, dtype=str, encoding="latin1")
     return _normalize_columns(df)
 
 
@@ -238,6 +492,12 @@ def main():
 
         current_year = datetime.utcnow().year
         latest_year = args.year or min(settings.ACS_LATEST_YEAR, current_year)
+        if latest_year > settings.ACS_LATEST_YEAR:
+            logger.warning(
+                f"Requested year {latest_year} exceeds ACS latest year {settings.ACS_LATEST_YEAR}. "
+                f"Using {settings.ACS_LATEST_YEAR}."
+            )
+            latest_year = settings.ACS_LATEST_YEAR
         if args.single_year:
             years_to_fetch = [latest_year]
         else:
@@ -329,10 +589,9 @@ def main():
             if components:
                 combined.loc[year_mask, 'demographic_momentum_score'] = pd.concat(components, axis=1).mean(axis=1)
 
-        # USPS vacancy fields are not programmatically accessible; keep nulls
-        combined['total_addresses'] = pd.NA
-        combined['vacant_addresses'] = pd.NA
-        combined['vacancy_rate'] = pd.NA
+        # USPS vacancy (if configured)
+        usps_df = fetch_usps_vacancy_by_county(years_to_fetch)
+        combined = merge_usps_vacancy(combined, usps_df)
         combined.replace([np.inf, -np.inf], pd.NA, inplace=True)
 
         store_demographic_data(combined)

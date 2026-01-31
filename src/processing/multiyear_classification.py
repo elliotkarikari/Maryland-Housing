@@ -239,8 +239,9 @@ def compute_composite_score(row: pd.Series) -> float:
     # Apply risk drag as multiplicative penalty
     risk_score = row.get('risk_drag_score')
     if pd.notna(risk_score):
-        # Risk drag reduces ceiling: higher risk = lower multiplier
-        risk_multiplier = 1.0 - float(risk_score)
+        # Risk drag reduces ceiling with a floor to prevent over-penalization
+        risk_score = min(max(float(risk_score), 0.0), 1.0)
+        risk_multiplier = max(1.0 - risk_score, settings.RISK_DRAG_PENALTY_FLOOR)
         composite_adjusted = composite_raw * risk_multiplier
     else:
         composite_adjusted = composite_raw

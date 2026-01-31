@@ -24,6 +24,9 @@ import warnings
 import pandas as pd
 import numpy as np
 from sqlalchemy import text
+import zipfile
+import io
+import requests
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.data_sources import download_file
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -83,10 +87,436 @@ DEFAULT_WINDOW_YEARS = 5
 # ACS sentinel values for missing data
 ACS_MISSING_SENTINELS = {-999999999, -888888888, -666666666}
 
+# External enrichment blend weight (HUD FMR + LIHTC)
+EXTERNAL_AFFORDABILITY_BLEND_WEIGHT = 0.15
+
 
 # =============================================================================
 # DATA ACQUISITION
 # =============================================================================
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+    return df
+
+
+def _find_col(columns: List[str], candidates: List[str]) -> Optional[str]:
+    for cand in candidates:
+        if cand in columns:
+            return cand
+    for cand in candidates:
+        for col in columns:
+            if cand in col:
+                return col
+    return None
+
+
+def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str) -> Optional[Path]:
+    if local_path:
+        path = Path(local_path)
+        if path.exists():
+            return path
+        logger.warning(f"Provided data path not found: {local_path}")
+    if url:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / filename
+        if not target.exists():
+            ok = download_file(url, str(target))
+            if not ok:
+                logger.warning(f"Failed to download data from {url}")
+                return None
+        return target
+    return None
+
+
+def _map_county_name_to_fips(name_series: pd.Series) -> pd.Series:
+    name_to_fips = {v.lower().replace(" county", "").strip(): k for k, v in MD_COUNTY_FIPS.items()}
+    cleaned = name_series.astype(str).str.lower().str.replace("county", "", regex=False).str.strip()
+    return cleaned.map(name_to_fips)
+
+
+def _fetch_hud_fmr_api(data_year: int) -> pd.DataFrame:
+    if not settings.HUD_FMR_DATA_URL:
+        return pd.DataFrame()
+    if not settings.HUD_USER_API_TOKEN:
+        logger.warning("HUD API token missing; cannot fetch FMR API")
+        return pd.DataFrame()
+
+    base_url = settings.HUD_FMR_DATA_URL.rstrip("/")
+    headers = {"Authorization": f"Bearer {settings.HUD_USER_API_TOKEN}"}
+
+    for year in range(data_year, data_year - 5, -1):
+        url = f"{base_url}/statedata/MD"
+        try:
+            resp = requests.get(url, headers=headers, params={"year": year}, timeout=30)
+            if resp.status_code != 200:
+                continue
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                continue
+            data_block = payload.get("data", {})
+            counties = []
+            if isinstance(data_block, dict):
+                counties = data_block.get("counties", [])
+            if not isinstance(counties, list) or not counties:
+                continue
+
+            df = pd.DataFrame(counties)
+            if df.empty:
+                continue
+            df = _normalize_columns(df)
+            df['hud_fmr_year'] = year
+            # Normalize fips_code to county FIPS (first 5 digits)
+            if 'fips_code' in df.columns:
+                df['fips_code'] = df['fips_code'].astype(str).str.zfill(10).str[:5]
+            return df
+        except Exception:
+            continue
+
+    logger.warning("HUD FMR API returned no data for requested years")
+    return pd.DataFrame()
+
+
+def _read_census_crosswalk(path: Path) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path, sep='|', dtype=str, encoding='utf-8-sig', low_memory=False)
+    except Exception as e:
+        logger.warning(f"Failed to read Census crosswalk {path}: {e}")
+        return pd.DataFrame()
+
+    df = _normalize_columns(df)
+    if 'geoid_zcta5_20' not in df.columns or 'geoid_county_20' not in df.columns:
+        logger.warning("Census crosswalk missing expected GEOID columns")
+        return pd.DataFrame()
+
+    df = df[['geoid_zcta5_20', 'geoid_county_20', 'arealand_part']].copy()
+    df = df.rename(columns={
+        'geoid_zcta5_20': 'zip',
+        'geoid_county_20': 'county_fips',
+        'arealand_part': 'weight'
+    })
+    df['zip'] = df['zip'].astype(str).str.zfill(5)
+    df['county_fips'] = df['county_fips'].astype(str).str.zfill(5)
+    df['weight'] = pd.to_numeric(df['weight'], errors='coerce').fillna(0)
+
+    # Normalize weights per ZIP
+    total = df.groupby('zip')['weight'].transform('sum')
+    df['res_ratio'] = df['weight'] / total.replace({0: pd.NA})
+    df['res_ratio'] = df['res_ratio'].fillna(0)
+    return df[['zip', 'county_fips', 'res_ratio']]
+
+
+def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
+    if settings.USPS_ZIP_COUNTY_CROSSWALK_PATH:
+        try:
+            path = Path(settings.USPS_ZIP_COUNTY_CROSSWALK_PATH)
+            if path.exists():
+                if path.suffix.lower() in {'.txt', '.dat'}:
+                    return _read_census_crosswalk(path)
+                return pd.read_csv(path, dtype=str, low_memory=False)
+        except Exception as e:
+            logger.warning(f"Failed to read ZIP crosswalk {settings.USPS_ZIP_COUNTY_CROSSWALK_PATH}: {e}")
+            return pd.DataFrame()
+
+    if settings.CENSUS_ZIP_COUNTY_CROSSWALK_URL:
+        target = CACHE_DIR / "census_zcta_county20.txt"
+        if not target.exists():
+            ok = download_file(settings.CENSUS_ZIP_COUNTY_CROSSWALK_URL, str(target))
+            if not ok:
+                logger.warning("Failed to download Census ZIP→county crosswalk")
+            else:
+                return _read_census_crosswalk(target)
+        else:
+            return _read_census_crosswalk(target)
+
+    crosswalk_api_url = settings.USPS_ZIP_COUNTY_CROSSWALK_URL or settings.HUD_USPS_API_URL
+    if crosswalk_api_url and settings.HUD_USER_API_TOKEN:
+        base_url = crosswalk_api_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {settings.HUD_USER_API_TOKEN}"}
+        rows = []
+        if len(zip_codes) > 50:
+            logger.warning("ZIP crosswalk API requested for large ZIP set; provide a local crosswalk file instead")
+            return pd.DataFrame()
+        for zip_code in zip_codes:
+            params = {"type": 3, "query": zip_code}
+            try:
+                resp = requests.get(f"{base_url}/crosswalk", headers=headers, params=params, timeout=30)
+                if resp.status_code != 200:
+                    continue
+                payload = resp.json()
+                data = None
+                if isinstance(payload, dict):
+                    data = payload.get("data") or payload.get("Data") or payload.get("results")
+                if not isinstance(data, list):
+                    continue
+                for item in data:
+                    if isinstance(item, dict):
+                        rows.append(item)
+            except Exception:
+                continue
+        if rows:
+            return pd.DataFrame(rows)
+
+    return pd.DataFrame()
+
+
+def fetch_hud_fmr_by_county(data_year: int) -> pd.DataFrame:
+    """
+    Fetch HUD Fair Market Rents (FMR) by county.
+
+    Supports either a local CSV (settings.HUD_FMR_DATA_PATH) or a URL
+    (settings.HUD_FMR_DATA_URL).
+    """
+    if settings.HUD_FMR_DATA_URL and "hudapi" in settings.HUD_FMR_DATA_URL:
+        api_df = _fetch_hud_fmr_api(data_year)
+        if api_df.empty:
+            return pd.DataFrame()
+        df = api_df
+    else:
+        source_path = _resolve_data_path(
+            settings.HUD_FMR_DATA_PATH,
+            settings.HUD_FMR_DATA_URL,
+            CACHE_DIR,
+            f"hud_fmr_{data_year}.csv"
+        )
+
+        if source_path is None:
+            logger.warning("HUD FMR data source not configured; skipping FMR enrichment")
+            return pd.DataFrame()
+
+        try:
+            df = pd.read_csv(source_path, dtype=str, compression='infer', low_memory=False)
+        except Exception as e:
+            logger.warning(f"Failed to read HUD FMR data {source_path}: {e}")
+            return pd.DataFrame()
+
+        df = _normalize_columns(df)
+    columns = list(df.columns)
+
+    year_col = _find_col(columns, ["year", "fmr_year", "fy", "fiscal_year"])
+    fmr_year = data_year
+    if year_col:
+        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        if (df[year_col] == data_year).any():
+            fmr_year = data_year
+            df = df[df[year_col] == data_year]
+        elif df[year_col].notna().any():
+            fmr_year = int(df[year_col].max())
+            df = df[df[year_col] == fmr_year]
+
+    fips_col = _find_col(columns, ["fips", "fips_code", "county_fips", "geoid", "fips2020", "fips2010"])
+    if fips_col:
+        df['fips_code'] = df[fips_col].astype(str).str.zfill(5).str[:5]
+    else:
+        state_col = _find_col(columns, ["st2020", "state_fips", "state"])
+        county_col = _find_col(columns, ["cnty2020", "county_fips", "county"])
+        if state_col and county_col:
+            df['fips_code'] = (
+                df[state_col].astype(str).str.zfill(2) +
+                df[county_col].astype(str).str.zfill(3)
+            )
+        else:
+            name_col = _find_col(columns, ["countyname", "county_name", "county"])
+            if name_col:
+                df['fips_code'] = _map_county_name_to_fips(df[name_col])
+
+    if 'fips_code' not in df.columns:
+        logger.warning("HUD FMR data missing FIPS columns; skipping FMR enrichment")
+        return pd.DataFrame()
+
+    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    if df.empty:
+        logger.warning("HUD FMR data contains no Maryland counties after filtering")
+        return pd.DataFrame()
+
+    fmr_col = _find_col(columns, ["fmr_2br", "fmr2", "fmr_2", "fmr_2br_rent", "fmr2br", "two-bedroom", "two_bedroom"])
+    if not fmr_col:
+        logger.warning("HUD FMR data missing 2-bedroom FMR column; skipping FMR enrichment")
+        return pd.DataFrame()
+
+    df[fmr_col] = pd.to_numeric(df[fmr_col], errors='coerce')
+    df = df[['fips_code', fmr_col]].copy()
+    df = df.rename(columns={fmr_col: 'fmr_2br'})
+    df['hud_fmr_year'] = fmr_year
+    return df
+
+
+def fetch_lihtc_by_county(data_year: int) -> pd.DataFrame:
+    """
+    Fetch HUD LIHTC project data aggregated to county.
+
+    Supports either a local CSV (settings.HUD_LIHTC_DATA_PATH) or a URL
+    (settings.HUD_LIHTC_DATA_URL).
+    """
+    default_name = "hud_lihtc.zip" if (settings.HUD_LIHTC_DATA_URL or "").lower().endswith(".zip") else "hud_lihtc.csv"
+    source_path = _resolve_data_path(
+        settings.HUD_LIHTC_DATA_PATH,
+        settings.HUD_LIHTC_DATA_URL,
+        CACHE_DIR,
+        default_name
+    )
+
+    if source_path is None:
+        logger.warning("HUD LIHTC data source not configured; skipping LIHTC enrichment")
+        return pd.DataFrame()
+
+    try:
+        if source_path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(source_path, "r") as zf:
+                candidates = [n for n in zf.namelist() if n.lower().endswith((".csv", ".txt"))]
+                if not candidates:
+                    logger.warning("LIHTC ZIP contains no CSV/TXT files")
+                    return pd.DataFrame()
+                preferred = None
+                for name in candidates:
+                    lower_name = name.lower()
+                    if "lihtc" in lower_name and "pub" in lower_name:
+                        preferred = name
+                        break
+                if preferred is None:
+                    preferred = candidates[0]
+                with zf.open(preferred) as fh:
+                    df = pd.read_csv(fh, dtype=str, low_memory=False)
+        else:
+            df = pd.read_csv(source_path, dtype=str, compression='infer', low_memory=False)
+    except Exception as e:
+        logger.warning(f"Failed to read HUD LIHTC data {source_path}: {e}")
+        return pd.DataFrame()
+
+    df = _normalize_columns(df)
+    columns = list(df.columns)
+
+    fips_col = _find_col(columns, ["fips", "fips_code", "county_fips", "geoid", "fips2020", "fips2010"])
+    if fips_col:
+        df['fips_code'] = df[fips_col].astype(str).str.zfill(5).str[:5]
+    else:
+        state_col = _find_col(columns, ["st2020", "state_fips", "state"])
+        county_col = _find_col(columns, ["cnty2020", "county_fips", "county"])
+        if state_col and county_col:
+            df['fips_code'] = (
+                df[state_col].astype(str).str.zfill(2) +
+                df[county_col].astype(str).str.zfill(3)
+            )
+        else:
+            name_col = _find_col(columns, ["countyname", "county_name", "county"])
+            if name_col:
+                df['fips_code'] = _map_county_name_to_fips(df[name_col])
+
+    if 'fips_code' in df.columns:
+        df['fips_code'] = df['fips_code'].where(df['fips_code'].str.match(r'^\\d{5}$'), pd.NA)
+
+    units_col = _find_col(columns, ["lihtc_units", "low_income_units", "li_units", "n_units", "total_units", "units"])
+    if not units_col:
+        logger.warning("HUD LIHTC data missing unit counts; skipping LIHTC enrichment")
+        return pd.DataFrame()
+
+    # If FIPS are missing/masked, attempt ZIP -> county crosswalk
+    if 'fips_code' not in df.columns or df['fips_code'].isin(MD_COUNTY_FIPS.keys()).sum() < 3:
+        zip_col = _find_col(columns, ["proj_zip", "zip", "zipcode", "zip5"])
+        if zip_col:
+            crosswalk = _load_zip_crosswalk(df[zip_col].astype(str).str.zfill(5).unique().tolist())
+            if crosswalk is not None and not crosswalk.empty:
+                crosswalk = _normalize_columns(crosswalk)
+                cw_cols = list(crosswalk.columns)
+                cw_zip = _find_col(cw_cols, ["zip", "zipcode", "zip5"])
+                cw_fips = _find_col(cw_cols, ["county_fips", "fips", "fips_code", "geoid"])
+                ratio_col = _find_col(cw_cols, ["res_ratio", "tot_ratio", "ratio", "weight"])
+                if cw_zip and cw_fips:
+                    df[zip_col] = df[zip_col].astype(str).str.zfill(5)
+                    crosswalk[cw_zip] = crosswalk[cw_zip].astype(str).str.zfill(5)
+                    crosswalk[cw_fips] = crosswalk[cw_fips].astype(str).str.zfill(5)
+                    df = df.merge(
+                        crosswalk[[cw_zip, cw_fips] + ([ratio_col] if ratio_col else [])],
+                        left_on=zip_col,
+                        right_on=cw_zip,
+                        how='left'
+                    )
+                    df['fips_code'] = df[cw_fips]
+                    df['zip_weight'] = pd.to_numeric(df[ratio_col], errors='coerce') if ratio_col else 1.0
+                    df['zip_weight'] = df['zip_weight'].fillna(1.0)
+                else:
+                    logger.warning("LIHTC crosswalk missing ZIP or FIPS columns")
+        else:
+            logger.warning("LIHTC data missing ZIP column and valid FIPS; skipping LIHTC enrichment")
+            return pd.DataFrame()
+
+    if 'fips_code' not in df.columns:
+        logger.warning("HUD LIHTC data missing FIPS columns; skipping LIHTC enrichment")
+        return pd.DataFrame()
+
+    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    if df.empty:
+        logger.warning("HUD LIHTC data contains no Maryland counties after filtering")
+        return pd.DataFrame()
+
+    year_col = _find_col(columns, ["placed_in_service_year", "pis_year", "year", "placed_in_service"])
+    if year_col:
+        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        df = df[df[year_col].notna() & (df[year_col] <= data_year)]
+        lihtc_year = int(df[year_col].max()) if df[year_col].notna().any() else data_year
+    else:
+        lihtc_year = data_year
+
+    df[units_col] = pd.to_numeric(df[units_col], errors='coerce')
+    if 'zip_weight' in df.columns:
+        df[units_col] = df[units_col] * df['zip_weight']
+    agg = df.groupby('fips_code', as_index=False)[units_col].sum(min_count=1)
+    agg = agg.rename(columns={units_col: 'lihtc_units'})
+    agg['lihtc_year'] = lihtc_year
+    return agg
+
+
+def enrich_county_with_external_sources(county_df: pd.DataFrame, data_year: int) -> pd.DataFrame:
+    """
+    Enrich county housing affordability data with HUD FMR and LIHTC.
+    """
+    df = county_df.copy()
+
+    fmr_df = fetch_hud_fmr_by_county(data_year)
+    if not fmr_df.empty:
+        df = df.merge(fmr_df, on='fips_code', how='left')
+        df['fmr_2br_to_income'] = np.where(
+            df['median_household_income'].fillna(0) > 0,
+            (df['fmr_2br'] * 12) / df['median_household_income'],
+            pd.NA
+        )
+
+    lihtc_df = fetch_lihtc_by_county(data_year)
+    if not lihtc_df.empty:
+        df = df.merge(lihtc_df, on='fips_code', how='left')
+        df['lihtc_units_per_1000_households'] = np.where(
+            df['total_households'].fillna(0) > 0,
+            (df['lihtc_units'] / df['total_households']) * 1000,
+            pd.NA
+        )
+
+    extra_scores = []
+    if 'fmr_2br_to_income' in df.columns and df['fmr_2br_to_income'].notna().sum() >= 3:
+        fmr_score = 1 - df['fmr_2br_to_income'].rank(pct=True)
+        df['fmr_affordability_score'] = fmr_score
+        extra_scores.append(fmr_score)
+
+    if 'lihtc_units_per_1000_households' in df.columns and df['lihtc_units_per_1000_households'].notna().sum() >= 3:
+        lihtc_score = df['lihtc_units_per_1000_households'].rank(pct=True)
+        df['lihtc_supply_score'] = lihtc_score
+        extra_scores.append(lihtc_score)
+
+    if extra_scores:
+        blended_extra = pd.concat(extra_scores, axis=1).mean(axis=1)
+        base_score = df['housing_affordability_score']
+        df['housing_affordability_score'] = np.where(
+            base_score.notna(),
+            (1 - EXTERNAL_AFFORDABILITY_BLEND_WEIGHT) * base_score +
+            EXTERNAL_AFFORDABILITY_BLEND_WEIGHT * blended_extra,
+            blended_extra
+        )
+        df['housing_affordability_score'] = df['housing_affordability_score'].clip(0, 1)
+        df['affordability_version'] = 'v2-affordability+hud'
+    else:
+        df['affordability_version'] = 'v2-affordability'
+
+    return df
 
 def download_acs_housing_data(year: int) -> pd.DataFrame:
     """
@@ -980,9 +1410,15 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
                     affordability_burden_score = :burden_score,
                     affordable_stock_score = :stock_score,
                     housing_affordability_score = :affordability_score,
+                    fmr_2br = :fmr_2br,
+                    fmr_2br_to_income = :fmr_2br_to_income,
+                    hud_fmr_year = :hud_fmr_year,
+                    lihtc_units = :lihtc_units,
+                    lihtc_units_per_1000_households = :lihtc_units_per_1000_households,
+                    lihtc_year = :lihtc_year,
                     housing_opportunity_index = :opportunity_index,
                     acs_year = :acs_year,
-                    affordability_version = 'v2-affordability',
+                    affordability_version = :affordability_version,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE fips_code = :fips_code AND data_year = :data_year
             """), {
@@ -1005,8 +1441,15 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
                 'burden_score': float(row.get('affordability_burden_score', 0)),
                 'stock_score': float(row.get('affordable_stock_score', 0)),
                 'affordability_score': float(row.get('housing_affordability_score', 0)),
+                'fmr_2br': int(row.get('fmr_2br')) if pd.notna(row.get('fmr_2br')) else None,
+                'fmr_2br_to_income': safe_float(row.get('fmr_2br_to_income'), min_value=0, max_value=10),
+                'hud_fmr_year': int(row.get('hud_fmr_year')) if pd.notna(row.get('hud_fmr_year')) else None,
+                'lihtc_units': int(row.get('lihtc_units')) if pd.notna(row.get('lihtc_units')) else None,
+                'lihtc_units_per_1000_households': safe_float(row.get('lihtc_units_per_1000_households'), min_value=0, max_value=1000),
+                'lihtc_year': int(row.get('lihtc_year')) if pd.notna(row.get('lihtc_year')) else None,
                 'opportunity_index': opportunity_index,
-                'acs_year': acs_year
+                'acs_year': acs_year,
+                'affordability_version': row.get('affordability_version', 'v2-affordability')
             })
 
         db.commit()
@@ -1073,6 +1516,9 @@ def calculate_housing_affordability_indicators(
 
     # Aggregate to county
     county_df = aggregate_to_county(tract_df)
+
+    # Enrich with HUD FMR + LIHTC if available
+    county_df = enrich_county_with_external_sources(county_df, data_year)
 
     # Summary
     logger.info("\n" + "=" * 60)

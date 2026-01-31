@@ -177,11 +177,11 @@ def calculate_composite_score(
 
     # Apply risk drag penalty
     if include_risk_drag and "risk_drag_score" in layer_scores_df.columns:
-        risk_drag = layer_scores_df["risk_drag_score"]
+        risk_drag = layer_scores_df["risk_drag_score"].clip(lower=0.0, upper=1.0)
 
-        # Risk drag is a penalty: composite_adjusted = composite * (1 - risk_drag)
-        # This means high risk drag (closer to 1) reduces the composite score
-        composite_adjusted = composite * (1 - risk_drag)
+        # Risk drag is a penalty with a floor to prevent over-penalization
+        risk_multiplier = (1 - risk_drag).clip(lower=settings.RISK_DRAG_PENALTY_FLOOR)
+        composite_adjusted = composite * risk_multiplier
 
         logger.info(
             f"Applied risk drag penalty: "

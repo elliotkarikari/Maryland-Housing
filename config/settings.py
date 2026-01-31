@@ -62,6 +62,20 @@ class Settings(BaseSettings):
     FEMA_NFHL_URL_FALLBACK: str = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
     FEMA_NFHL_FEATURE_URL: str = "https://services.arcgis.com/2gdL2gxYNFY2TOUb/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/FeatureServer/0"
     EPA_EJSCREEN_URL: str = "https://gaftp.epa.gov/EJSCREEN"
+    HUD_USER_API_TOKEN: Optional[str] = None
+    HUD_FMR_DATA_URL: Optional[str] = None
+    HUD_FMR_DATA_PATH: Optional[str] = None
+    HUD_LIHTC_DATA_URL: Optional[str] = None
+    HUD_LIHTC_DATA_PATH: Optional[str] = None
+    USPS_VACANCY_DATA_URL: Optional[str] = None
+    USPS_VACANCY_DATA_PATH: Optional[str] = None
+    USPS_ZIP_COUNTY_CROSSWALK_URL: Optional[str] = None
+    USPS_ZIP_COUNTY_CROSSWALK_PATH: Optional[str] = None
+    CENSUS_ZIP_COUNTY_CROSSWALK_URL: Optional[str] = None
+    HUD_USPS_API_URL: Optional[str] = None
+    CENSUS_QWI_DATA_URL: Optional[str] = None
+    CENSUS_QWI_DATA_PATH: Optional[str] = None
+    CENSUS_QWI_DATASET: str = "timeseries/qwi/sa"
 
     # Maryland state FIPS code
     MD_STATE_FIPS: str = "24"
@@ -82,6 +96,9 @@ class Settings(BaseSettings):
     THRESHOLD_AT_RISK_COUNT: int = 2  # Layers below low threshold
     THRESHOLD_AT_RISK_LOW: float = 0.3
     THRESHOLD_AT_RISK_WITH_DRAG: float = 0.4  # If severe risk drag present
+
+    # Risk drag penalty floor (caps over-penalization)
+    RISK_DRAG_PENALTY_FLOOR: float = 0.5
 
     # Confidence thresholds (policy persistence)
     CONFIDENCE_STRONG_MIN: float = 0.67

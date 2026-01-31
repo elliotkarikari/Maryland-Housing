@@ -47,6 +47,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.data_sources import download_file
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -64,6 +65,9 @@ LODES_CACHE_DIR.mkdir(exist_ok=True)
 ACS_CACHE_DIR = CACHE_DIR / "acs"
 ACS_CACHE_DIR.mkdir(exist_ok=True)
 
+QWI_CACHE_DIR = CACHE_DIR / "qwi"
+QWI_CACHE_DIR.mkdir(exist_ok=True)
+
 # LODES wage segments
 # SE01: $1,250/month or less (~$15k/year)
 # SE02: $1,251/month to $3,333/month (~$15k-$40k/year)
@@ -79,6 +83,7 @@ WAGE_SEGMENTS = {
 # Regional access = v2 economic accessibility score
 LOCAL_STRENGTH_WEIGHT = 0.4
 REGIONAL_ACCESS_WEIGHT = 0.6
+QWI_BLEND_WEIGHT = 0.15
 
 # Sectors for diversity analysis (NAICS 2-digit via CNS codes)
 NAICS_SECTORS = {
@@ -110,6 +115,264 @@ HIGH_WAGE_SECTORS = ['CNS09', 'CNS10', 'CNS11', 'CNS12', 'CNS13', 'CNS20']
 # =============================================================================
 # DATA ACQUISITION
 # =============================================================================
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+    return df
+
+
+def _find_col(columns: List[str], candidates: List[str]) -> Optional[str]:
+    for cand in candidates:
+        if cand in columns:
+            return cand
+    for cand in candidates:
+        for col in columns:
+            if cand in col:
+                return col
+    return None
+
+
+def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str) -> Optional[Path]:
+    if local_path:
+        path = Path(local_path)
+        if path.exists():
+            return path
+        logger.warning(f"Provided data path not found: {local_path}")
+    if url:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / filename
+        if not target.exists():
+            ok = download_file(url, str(target))
+            if not ok:
+                logger.warning(f"Failed to download data from {url}")
+                return None
+        return target
+    return None
+
+
+def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
+    if not settings.CENSUS_QWI_DATA_URL:
+        return pd.DataFrame()
+    if not settings.CENSUS_API_KEY:
+        logger.warning("Census API key missing; cannot fetch QWI API")
+        return pd.DataFrame()
+
+    base_url = settings.CENSUS_QWI_DATA_URL
+    target_years = list(range(data_year, max(data_year - 8, 1990), -1))
+
+    get_variants = ["Emp,HirA,SepA", "Emp,HirA,Sep"]
+
+    for year in target_years:
+        for quarter in [4, 3, 2, 1]:
+            for get_fields in get_variants:
+                params = {
+                    "get": get_fields,
+                    "for": "county:*",
+                    "in": "state:24",
+                    "year": str(year),
+                    "quarter": str(quarter),
+                    "key": settings.CENSUS_API_KEY
+                }
+                try:
+                    resp = requests.get(base_url, params=params, timeout=30)
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    if not data or len(data) < 2:
+                        continue
+                    df = pd.DataFrame(data[1:], columns=data[0])
+                    df = _normalize_columns(df)
+                    df['fips_code'] = (
+                        df['state'].astype(str).str.zfill(2) +
+                        df['county'].astype(str).str.zfill(3)
+                    )
+                    df['emp'] = pd.to_numeric(df.get('emp'), errors='coerce')
+                    df['hira'] = pd.to_numeric(df.get('hira'), errors='coerce')
+                    sep_col = df.get('sep')
+                    if sep_col is None:
+                        sep_col = df.get('sepa')
+                    df['sep'] = pd.to_numeric(sep_col, errors='coerce')
+                    df['qwi_year'] = year
+                    df['qwi_quarter'] = quarter
+
+                    cache_path = QWI_CACHE_DIR / f"qwi_{year}_q{quarter}.csv"
+                    try:
+                        df.to_csv(cache_path, index=False)
+                    except Exception:
+                        pass
+
+                    logger.info(f"Fetched QWI API data for {year} Q{quarter} ({get_fields})")
+                    return df
+                except Exception:
+                    continue
+
+    logger.warning("QWI API returned no data for requested years")
+    return pd.DataFrame()
+
+
+def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
+    """
+    Fetch Census QWI data and aggregate to Maryland counties.
+
+    Supports either a local CSV (settings.CENSUS_QWI_DATA_PATH) or a URL
+    (settings.CENSUS_QWI_DATA_URL). Expected columns are flexible; common
+    variants for hires/separations/turnover are detected.
+    """
+    if settings.CENSUS_QWI_DATA_URL and "api.census.gov" in settings.CENSUS_QWI_DATA_URL:
+        api_df = _fetch_qwi_api(data_year)
+        if api_df.empty:
+            return pd.DataFrame()
+        df = api_df
+    else:
+        source_path = _resolve_data_path(
+            settings.CENSUS_QWI_DATA_PATH,
+            settings.CENSUS_QWI_DATA_URL,
+            QWI_CACHE_DIR,
+            f"qwi_{data_year}.csv"
+        )
+
+        if source_path is None:
+            logger.warning("QWI data source not configured; skipping QWI enrichment")
+            return pd.DataFrame()
+
+        try:
+            df = pd.read_csv(source_path, dtype=str, low_memory=False)
+        except Exception as e:
+            logger.warning(f"Failed to read QWI data {source_path}: {e}")
+            return pd.DataFrame()
+
+        df = _normalize_columns(df)
+    columns = list(df.columns)
+
+    year_col = _find_col(columns, ["year", "yr", "time"])
+    qwi_year = data_year
+    if year_col:
+        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        if df[year_col].notna().any():
+            if (df[year_col] == data_year).any():
+                qwi_year = data_year
+                df = df[df[year_col] == data_year]
+            else:
+                qwi_year = int(df[year_col].max())
+                df = df[df[year_col] == qwi_year]
+
+    fips_col = _find_col(columns, ["fips_code", "fips", "county_fips", "geoid", "geo_id"])
+    if fips_col:
+        df['fips_code'] = df[fips_col].astype(str).str.zfill(5)
+    else:
+        state_col = _find_col(columns, ["state", "state_fips", "st"])
+        county_col = _find_col(columns, ["county", "county_fips", "cnty"])
+        if state_col and county_col:
+            df['fips_code'] = (
+                df[state_col].astype(str).str.zfill(2) +
+                df[county_col].astype(str).str.zfill(3)
+            )
+        else:
+            logger.warning("QWI data missing FIPS columns; skipping QWI enrichment")
+            return pd.DataFrame()
+
+    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    if df.empty:
+        logger.warning("QWI data contains no Maryland counties after filtering")
+        return pd.DataFrame()
+
+    emp_col = _find_col(columns, ["emp", "employment", "emp_total", "employed"])
+    hires_col = _find_col(columns, ["hira", "hires", "hire"])
+    seps_col = _find_col(columns, ["sep", "sepa", "separations", "separation"])
+    hire_rate_col = _find_col(columns, ["hire_rate", "hira_rate", "hire_rt"])
+    sep_rate_col = _find_col(columns, ["separation_rate", "sepa_rate", "sep_rate"])
+    turnover_col = _find_col(columns, ["turnover", "turnovr", "turnover_rate", "turno"])
+
+    if emp_col:
+        df[emp_col] = pd.to_numeric(df[emp_col], errors='coerce')
+    if hires_col:
+        df[hires_col] = pd.to_numeric(df[hires_col], errors='coerce')
+    if seps_col:
+        df[seps_col] = pd.to_numeric(df[seps_col], errors='coerce')
+    if hire_rate_col:
+        df[hire_rate_col] = pd.to_numeric(df[hire_rate_col], errors='coerce')
+    if sep_rate_col:
+        df[sep_rate_col] = pd.to_numeric(df[sep_rate_col], errors='coerce')
+    if turnover_col:
+        df[turnover_col] = pd.to_numeric(df[turnover_col], errors='coerce')
+
+    # Derive rates if needed
+    df['qwi_emp_total'] = df[emp_col] if emp_col else pd.NA
+    df['qwi_hires'] = df[hires_col] if hires_col else pd.NA
+    df['qwi_separations'] = df[seps_col] if seps_col else pd.NA
+
+    if hire_rate_col:
+        df['qwi_hire_rate'] = df[hire_rate_col]
+    elif emp_col and hires_col:
+        df['qwi_hire_rate'] = df['qwi_hires'] / df['qwi_emp_total']
+    else:
+        df['qwi_hire_rate'] = pd.NA
+
+    if sep_rate_col:
+        df['qwi_separation_rate'] = df[sep_rate_col]
+    elif emp_col and seps_col:
+        df['qwi_separation_rate'] = df['qwi_separations'] / df['qwi_emp_total']
+    else:
+        df['qwi_separation_rate'] = pd.NA
+
+    if turnover_col:
+        df['qwi_turnover_rate'] = df[turnover_col]
+    elif df['qwi_hire_rate'].notna().any() and df['qwi_separation_rate'].notna().any():
+        df['qwi_turnover_rate'] = df['qwi_hire_rate'] + df['qwi_separation_rate']
+    else:
+        df['qwi_turnover_rate'] = pd.NA
+
+    df['qwi_net_job_growth_rate'] = pd.NA
+    if df['qwi_hire_rate'].notna().any() and df['qwi_separation_rate'].notna().any():
+        df['qwi_net_job_growth_rate'] = df['qwi_hire_rate'] - df['qwi_separation_rate']
+    elif emp_col and hires_col and seps_col:
+        df['qwi_net_job_growth_rate'] = (
+            (df['qwi_hires'] - df['qwi_separations']) / df['qwi_emp_total']
+        )
+
+    def _weighted_mean(values: pd.Series, weights: pd.Series) -> float:
+        mask = values.notna() & weights.notna() & (weights > 0)
+        if not mask.any():
+            return np.nan
+        return float((values[mask] * weights[mask]).sum() / weights[mask].sum())
+
+    grouped = []
+    for fips_code, sub in df.groupby('fips_code'):
+        emp_total = sub['qwi_emp_total'].sum(min_count=1)
+        hires_total = sub['qwi_hires'].sum(min_count=1)
+        seps_total = sub['qwi_separations'].sum(min_count=1)
+
+        if emp_col and emp_total and emp_total > 0:
+            hire_rate = _weighted_mean(sub['qwi_hire_rate'], sub['qwi_emp_total'])
+            sep_rate = _weighted_mean(sub['qwi_separation_rate'], sub['qwi_emp_total'])
+            turnover_rate = _weighted_mean(sub['qwi_turnover_rate'], sub['qwi_emp_total'])
+        else:
+            hire_rate = sub['qwi_hire_rate'].mean()
+            sep_rate = sub['qwi_separation_rate'].mean()
+            turnover_rate = sub['qwi_turnover_rate'].mean()
+
+        net_growth = np.nan
+        if pd.notna(hire_rate) and pd.notna(sep_rate):
+            net_growth = hire_rate - sep_rate
+        elif pd.notna(emp_total) and emp_total and pd.notna(hires_total) and pd.notna(seps_total):
+            net_growth = (hires_total - seps_total) / emp_total
+
+        grouped.append({
+            'fips_code': fips_code,
+            'qwi_emp_total': int(emp_total) if pd.notna(emp_total) else None,
+            'qwi_hires': int(hires_total) if pd.notna(hires_total) else None,
+            'qwi_separations': int(seps_total) if pd.notna(seps_total) else None,
+            'qwi_hire_rate': hire_rate,
+            'qwi_separation_rate': sep_rate,
+            'qwi_turnover_rate': turnover_rate,
+            'qwi_net_job_growth_rate': net_growth,
+            'qwi_year': qwi_year
+        })
+
+    qwi_df = pd.DataFrame(grouped)
+    logger.info(f"Loaded QWI records for {len(qwi_df)} counties (year={qwi_year})")
+    return qwi_df
 
 def download_lodes_wac_segments(year: int) -> pd.DataFrame:
     """
@@ -863,6 +1126,15 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
             local_strength_scores[fips_code] = local_strength
 
         for _, row in df.iterrows():
+            db.execute(text("""
+                INSERT INTO layer1_employment_gravity (fips_code, data_year)
+                VALUES (:fips_code, :data_year)
+                ON CONFLICT (fips_code, data_year) DO NOTHING
+            """), {
+                'fips_code': row['fips_code'],
+                'data_year': data_year
+            })
+
             local_strength = local_strength_scores.get(row['fips_code'])
             if local_strength is not None and pd.isna(local_strength):
                 local_strength = None
@@ -875,16 +1147,32 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
             elif econ_score is not None:
                 econ_score = float(econ_score)
 
+            qwi_score = row.get('qwi_net_job_growth_score', None)
+            if qwi_score is not None and pd.isna(qwi_score):
+                qwi_score = None
+            elif qwi_score is not None:
+                qwi_score = float(qwi_score)
+
             if local_strength is None and econ_score is None:
-                opportunity_index = None
+                base_index = None
             elif local_strength is None:
-                opportunity_index = econ_score
+                base_index = econ_score
             elif econ_score is None:
-                opportunity_index = local_strength
+                base_index = local_strength
             else:
-                opportunity_index = (
+                base_index = (
                     LOCAL_STRENGTH_WEIGHT * local_strength +
                     REGIONAL_ACCESS_WEIGHT * econ_score
+                )
+
+            if qwi_score is None:
+                opportunity_index = base_index
+            elif base_index is None:
+                opportunity_index = qwi_score
+            else:
+                opportunity_index = (
+                    (1 - QWI_BLEND_WEIGHT) * base_index +
+                    QWI_BLEND_WEIGHT * qwi_score
                 )
 
             # Update existing records with new accessibility columns
@@ -906,6 +1194,14 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
                     high_wage_sector_concentration = :concentration,
                     upward_mobility_score = :mobility,
                     job_quality_index = :quality,
+                    qwi_emp_total = :qwi_emp_total,
+                    qwi_hires = :qwi_hires,
+                    qwi_separations = :qwi_separations,
+                    qwi_hire_rate = :qwi_hire_rate,
+                    qwi_separation_rate = :qwi_separation_rate,
+                    qwi_turnover_rate = :qwi_turnover_rate,
+                    qwi_net_job_growth_rate = :qwi_net_job_growth_rate,
+                    qwi_year = :qwi_year,
                     employment_diversification_score = COALESCE(:local_strength, employment_diversification_score),
                     economic_opportunity_index = :opportunity_index,
                     working_age_pop = :working_age,
@@ -935,6 +1231,14 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
                 'quality': float(row.get('job_quality_index', 0)),
                 'local_strength': local_strength,
                 'opportunity_index': opportunity_index,
+                'qwi_emp_total': int(row.get('qwi_emp_total')) if pd.notna(row.get('qwi_emp_total')) else None,
+                'qwi_hires': int(row.get('qwi_hires')) if pd.notna(row.get('qwi_hires')) else None,
+                'qwi_separations': int(row.get('qwi_separations')) if pd.notna(row.get('qwi_separations')) else None,
+                'qwi_hire_rate': float(row.get('qwi_hire_rate')) if pd.notna(row.get('qwi_hire_rate')) else None,
+                'qwi_separation_rate': float(row.get('qwi_separation_rate')) if pd.notna(row.get('qwi_separation_rate')) else None,
+                'qwi_turnover_rate': float(row.get('qwi_turnover_rate')) if pd.notna(row.get('qwi_turnover_rate')) else None,
+                'qwi_net_job_growth_rate': float(row.get('qwi_net_job_growth_rate')) if pd.notna(row.get('qwi_net_job_growth_rate')) else None,
+                'qwi_year': int(row.get('qwi_year')) if pd.notna(row.get('qwi_year')) else None,
                 'working_age': int(row.get('working_age_pop', 0)),
                 'lfp': float(row.get('labor_force_participation', 0)),
                 'lodes_year': lodes_year,
@@ -1017,6 +1321,17 @@ def calculate_economic_opportunity_indicators(
 
     # Aggregate to county
     county_df = aggregate_to_county(tract_df)
+
+    # Optional: QWI enrichment for job dynamics
+    qwi_df = fetch_qwi_by_county(data_year)
+    if not qwi_df.empty:
+        county_df = county_df.merge(qwi_df, on='fips_code', how='left')
+        if 'qwi_net_job_growth_rate' in county_df.columns:
+            growth = county_df['qwi_net_job_growth_rate']
+            valid_mask = growth.notna()
+            county_df['qwi_net_job_growth_score'] = pd.NA
+            if valid_mask.sum() >= 3:
+                county_df.loc[valid_mask, 'qwi_net_job_growth_score'] = growth[valid_mask].rank(pct=True)
 
     # Summary
     logger.info("\n" + "=" * 60)

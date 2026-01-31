@@ -106,6 +106,17 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         unit="Composite score (0-1)",
         description="Composite of local strength (v1) + regional accessibility (v2)",
         weight=2.2  # Primary Layer 1 signal
+    ),
+    FeatureDefinition(
+        name="qwi_net_job_growth_rate",
+        layer="employment_gravity",
+        source_table="layer1_employment_gravity",
+        source_column="qwi_net_job_growth_rate",
+        directionality=Directionality.POSITIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Rate (0-1)",
+        description="Net job growth rate from Census QWI (hires minus separations)",
+        weight=0.7
     )
 ]
 
@@ -226,6 +237,28 @@ LAYER4_FEATURES: List[FeatureDefinition] = [
         unit="Composite score",
         description="Housing supply elasticity composite",
         weight=2.0
+    ),
+    FeatureDefinition(
+        name="fmr_2br_to_income",
+        layer="housing_elasticity",
+        source_table="layer4_housing_elasticity",
+        source_column="fmr_2br_to_income",
+        directionality=Directionality.NEGATIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Ratio (annual rent / income)",
+        description="HUD Fair Market Rent (2BR) as share of median income",
+        weight=0.6
+    ),
+    FeatureDefinition(
+        name="lihtc_units_per_1000_households",
+        layer="housing_elasticity",
+        source_table="layer4_housing_elasticity",
+        source_column="lihtc_units_per_1000_households",
+        directionality=Directionality.POSITIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Units per 1000 households",
+        description="LIHTC affordable unit supply intensity",
+        weight=0.6
     )
 ]
 
