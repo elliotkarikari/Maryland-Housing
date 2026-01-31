@@ -44,6 +44,13 @@
             width: 100%;
         }
 
+        #map-controls {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 14;
+        }
+
 
         /* Header */
         .header {
@@ -635,7 +642,7 @@
 
         .mapboxgl-control-container {
             position: absolute;
-            z-index: 30;
+            z-index: 1;
         }
 
         .layer-controls h4 {
@@ -1125,6 +1132,7 @@
         <div id="map">
             <div id="color-reveal" class="color-reveal"></div>
         </div>
+        <div id="map-controls"></div>
         <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="closePanel()"></div>
 
         <!-- Header -->

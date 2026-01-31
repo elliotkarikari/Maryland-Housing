@@ -63,6 +63,13 @@ const map = new mapboxgl.Map({
     maxZoom: 16
 });
 
+const mapControlsHost = document.getElementById('map-controls');
+const mapContainer = map.getContainer();
+const controlContainer = mapContainer.querySelector('.mapboxgl-control-container');
+if (mapControlsHost && controlContainer && !mapControlsHost.contains(controlContainer)) {
+    mapControlsHost.appendChild(controlContainer);
+}
+
 const colorReveal = document.getElementById('color-reveal');
 let lastPointer = null;
 const REVEAL_START_ZOOM = 7.2;
