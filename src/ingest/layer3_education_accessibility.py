@@ -47,6 +47,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.prediction_utils import apply_predictions_to_table
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -1255,7 +1256,8 @@ def run_layer3_v2_ingestion(
     data_year: int = None,
     multi_year: bool = True,
     store_data: bool = True,
-    window_years: int = DEFAULT_WINDOW_YEARS
+    window_years: int = DEFAULT_WINDOW_YEARS,
+    predict_to_year: Optional[int] = None
 ):
     """
     Run complete Layer 3 v2 ingestion pipeline.
@@ -1340,6 +1342,15 @@ def run_layer3_v2_ingestion(
         if failed_years and len(failed_years) == len(years_to_fetch):
             raise Exception(f"All years failed: {failed_years}")
 
+        if store_data:
+            target_year = predict_to_year or settings.PREDICT_TO_YEAR
+            apply_predictions_to_table(
+                table="layer3_school_trajectory",
+                metric_col="education_opportunity_index",
+                target_year=target_year,
+                clip=(0.0, 1.0)
+            )
+
         logger.info("✓ Layer 3 v2 ingestion complete")
 
     except Exception as e:
@@ -1372,13 +1383,18 @@ def main():
         '--dry-run', action='store_true',
         help='Calculate but do not store results'
     )
+    parser.add_argument(
+        '--predict-to-year', type=int, default=None,
+        help='Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)'
+    )
 
     args = parser.parse_args()
 
     run_layer3_v2_ingestion(
         data_year=args.year,
         multi_year=not args.single_year,
-        store_data=not args.dry_run
+        store_data=not args.dry_run,
+        predict_to_year=args.predict_to_year
     )
 
 

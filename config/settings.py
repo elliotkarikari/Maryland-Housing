@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     USPS_ZIP_COUNTY_CROSSWALK_PATH: Optional[str] = None
     CENSUS_ZIP_COUNTY_CROSSWALK_URL: Optional[str] = None
     HUD_USPS_API_URL: Optional[str] = None
+    LOW_VACANCY_COUNTIES_URL: Optional[str] = None
+    LOW_VACANCY_COUNTIES_PATH: Optional[str] = None
     CENSUS_QWI_DATA_URL: Optional[str] = None
     CENSUS_QWI_DATA_PATH: Optional[str] = None
     CENSUS_QWI_DATASET: str = "timeseries/qwi/sa"
@@ -83,6 +85,12 @@ class Settings(BaseSettings):
     # Data years (current defaults - will be dynamic in production)
     LODES_LATEST_YEAR: int = 2021
     ACS_LATEST_YEAR: int = 2023
+
+    # Prediction alignment settings
+    PREDICT_TO_YEAR: int = 2025
+    PREDICTION_MIN_YEARS: int = 3
+    PREDICTION_MAX_EXTRAP_YEARS: int = 2
+    USE_EFFECTIVE_VALUES: bool = False
 
     # File storage
     EXPORT_DIR: str = "exports"

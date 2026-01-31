@@ -47,6 +47,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.prediction_utils import apply_predictions_to_table
 from src.utils.data_sources import download_file
 
 logger = get_logger(__name__)
@@ -1350,7 +1351,8 @@ def run_layer1_v2_ingestion(
     data_year: int = None,
     multi_year: bool = True,
     store_data: bool = True,
-    window_years: int = 5
+    window_years: int = 5,
+    predict_to_year: Optional[int] = None
 ):
     """
     Run complete Layer 1 v2 ingestion pipeline.
@@ -1454,6 +1456,15 @@ def run_layer1_v2_ingestion(
         if failed_years and len(failed_years) == len(years_to_fetch):
             raise Exception(f"All years failed: {failed_years}")
 
+        if store_data:
+            target_year = predict_to_year or settings.PREDICT_TO_YEAR
+            apply_predictions_to_table(
+                table="layer1_employment_gravity",
+                metric_col="economic_opportunity_index",
+                target_year=target_year,
+                clip=(0.0, 1.0)
+            )
+
         logger.info("✓ Layer 1 v2 ingestion complete")
         return last_tract_df, last_county_df
 
@@ -1487,13 +1498,18 @@ def main():
         '--dry-run', action='store_true',
         help='Calculate but do not store results'
     )
+    parser.add_argument(
+        '--predict-to-year', type=int, default=None,
+        help='Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)'
+    )
 
     args = parser.parse_args()
 
     run_layer1_v2_ingestion(
         data_year=args.year,
         multi_year=not args.single_year,
-        store_data=not args.dry_run
+        store_data=not args.dry_run,
+        predict_to_year=args.predict_to_year
     )
 
 

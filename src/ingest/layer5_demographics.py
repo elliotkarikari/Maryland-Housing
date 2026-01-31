@@ -33,6 +33,8 @@ settings = get_settings()
 
 CACHE_DIR = Path("data/cache/demographics")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+LOW_VACANCY_CACHE_DIR = CACHE_DIR / "low_vacancy"
+LOW_VACANCY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 ACS_DEMOGRAPHIC_VARIABLES = {
     "B01001_001E": "pop_total",
@@ -149,6 +151,142 @@ def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
             return _read_census_crosswalk(target)
 
     return pd.DataFrame()
+
+
+def _parse_low_vacancy_year(path: Path) -> Optional[int]:
+    name = path.name
+    for token in name.replace("_", "-").split("-"):
+        if token.isdigit() and len(token) == 4:
+            return int(token)
+    digits = "".join(ch for ch in name if ch.isdigit())
+    if len(digits) >= 4:
+        return int(digits[:4])
+    return None
+
+
+def fetch_low_vacancy_counties() -> pd.DataFrame:
+    """
+    Fetch HUD low-vacancy county list (FY Excel).
+    Returns county-level low vacancy indicator and unit counts.
+    """
+    source_path = _resolve_data_path(
+        settings.LOW_VACANCY_COUNTIES_PATH,
+        settings.LOW_VACANCY_COUNTIES_URL,
+        LOW_VACANCY_CACHE_DIR,
+        "low_vacancy_counties.xlsx"
+    )
+
+    if source_path is None:
+        logger.warning("Low vacancy county source not configured; skipping")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_excel(source_path)
+    except Exception as e:
+        logger.warning(f"Failed to read low vacancy file {source_path}: {e}")
+        return pd.DataFrame()
+
+    df = _normalize_columns(df)
+    columns = list(df.columns)
+    fips_col = _find_col(columns, ["county fips", "county_fips", "fips", "fips_code"])
+    units_col = _find_col(columns, ["number units", "number_units", "units"])
+    occupied_col = _find_col(columns, ["occupied units", "occupied_units"])
+    percent_col = _find_col(columns, ["percent occupied", "percent_occupied", "pct_occupied"])
+
+    if not fips_col:
+        logger.warning("Low vacancy file missing county FIPS column")
+        return pd.DataFrame()
+
+    fy_year = _parse_low_vacancy_year(Path(source_path)) or datetime.utcnow().year
+
+    df['fips_code'] = pd.to_numeric(df[fips_col], errors='coerce')
+    df['fips_code'] = df['fips_code'].dropna().astype(int).astype(str).str.zfill(5)
+    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    if df.empty:
+        return pd.DataFrame()
+
+    df['low_vacancy_units'] = pd.to_numeric(df[units_col], errors='coerce') if units_col else pd.NA
+    df['low_vacancy_occupied_units'] = pd.to_numeric(df[occupied_col], errors='coerce') if occupied_col else pd.NA
+    df['low_vacancy_percent_occupied'] = pd.to_numeric(df[percent_col], errors='coerce') if percent_col else pd.NA
+    df['low_vacancy_fy'] = fy_year
+    df['low_vacancy_county_flag'] = True
+
+    return df[[
+        'fips_code', 'low_vacancy_county_flag', 'low_vacancy_units',
+        'low_vacancy_occupied_units', 'low_vacancy_percent_occupied', 'low_vacancy_fy'
+    ]].drop_duplicates()
+
+
+def merge_low_vacancy_counts(combined: pd.DataFrame, low_vacancy_df: pd.DataFrame) -> pd.DataFrame:
+    if low_vacancy_df.empty:
+        combined['low_vacancy_county_flag'] = pd.NA
+        combined['low_vacancy_units'] = pd.NA
+        combined['low_vacancy_occupied_units'] = pd.NA
+        combined['low_vacancy_percent_occupied'] = pd.NA
+        combined['low_vacancy_fy'] = pd.NA
+        return combined
+
+    merged = combined.merge(
+        low_vacancy_df,
+        left_on=['fips_code', 'data_year'],
+        right_on=['fips_code', 'low_vacancy_fy'],
+        how='left'
+    )
+
+    missing_vacancy = merged['vacancy_rate'].isna()
+    if missing_vacancy.any():
+        percent = merged['low_vacancy_percent_occupied']
+        derived_rate = (1 - (percent / 100)).clip(lower=0, upper=1)
+        derived_vacant = merged['low_vacancy_units'] - merged['low_vacancy_occupied_units']
+
+        merged.loc[missing_vacancy, 'vacancy_rate'] = derived_rate
+        merged.loc[missing_vacancy, 'total_addresses'] = merged.loc[missing_vacancy, 'low_vacancy_units']
+        merged.loc[missing_vacancy, 'vacant_addresses'] = derived_vacant
+        merged.loc[missing_vacancy, 'vacancy_source'] = 'lowvactpv'
+
+    return merged
+
+
+def apply_vacancy_predictions(combined: pd.DataFrame) -> pd.DataFrame:
+    combined = combined.copy()
+    combined['vacancy_rate_pred'] = pd.NA
+    combined['vacancy_predicted'] = False
+    combined['vacancy_pred_method'] = pd.NA
+    combined['vacancy_pred_years'] = pd.NA
+
+    for fips in combined['fips_code'].unique():
+        sub = combined[combined['fips_code'] == fips].copy()
+        history = sub[sub['vacancy_rate'].notna()]
+        if len(history) < 3:
+            continue
+
+        years = history['data_year'].astype(float).values
+        rates = history['vacancy_rate'].astype(float).values
+
+        try:
+            slope, intercept = np.polyfit(years, rates, 1)
+        except Exception:
+            continue
+
+        min_year = years.min()
+        max_year = years.max()
+
+        for idx, row in sub.iterrows():
+            if pd.notna(row.get('vacancy_rate')):
+                continue
+            target_year = float(row['data_year'])
+            if target_year > max_year + 2 or target_year < min_year - 2:
+                continue
+            pred = slope * target_year + intercept
+            pred = float(max(0.0, min(1.0, pred)))
+            combined.loc[idx, 'vacancy_rate_pred'] = pred
+            combined.loc[idx, 'vacancy_predicted'] = True
+            combined.loc[idx, 'vacancy_pred_method'] = 'linear_trend'
+            combined.loc[idx, 'vacancy_pred_years'] = len(history)
+            if pd.isna(combined.loc[idx, 'vacancy_source']):
+                combined.loc[idx, 'vacancy_source'] = 'predicted'
+
+    return combined
 
 
 def _fetch_crosswalk_from_api(zip_codes: list[str]) -> pd.DataFrame:
@@ -315,19 +453,12 @@ def merge_usps_vacancy(combined: pd.DataFrame, usps_df: pd.DataFrame) -> pd.Data
         combined['total_addresses'] = pd.NA
         combined['vacant_addresses'] = pd.NA
         combined['vacancy_rate'] = pd.NA
+        combined['vacancy_source'] = pd.NA
         return combined
 
-    latest = usps_df.sort_values('data_year').groupby('fips_code', as_index=False).tail(1)
-
     merged = combined.merge(usps_df, on=['fips_code', 'data_year'], how='left')
-    merged = merged.merge(latest, on='fips_code', how='left', suffixes=('', '_latest'))
-
-    for col in ['total_addresses', 'vacant_addresses', 'vacancy_rate']:
-        latest_col = f"{col}_latest"
-        if latest_col in merged.columns:
-            merged[col] = merged[col].fillna(merged[latest_col])
-
-    merged = merged.drop(columns=[c for c in merged.columns if c.endswith('_latest')])
+    merged['vacancy_source'] = merged['vacancy_source'] if 'vacancy_source' in merged.columns else pd.NA
+    merged.loc[merged['vacancy_rate'].notna(), 'vacancy_source'] = 'usps'
     return merged
 
 
@@ -454,7 +585,10 @@ def store_demographic_data(df: pd.DataFrame):
                 households_total, households_family, households_family_with_children,
                 inflow_households, outflow_households, net_migration_households,
                 inflow_exemptions, outflow_exemptions, net_migration_persons,
-                total_addresses, vacant_addresses, vacancy_rate,
+                total_addresses, vacant_addresses, vacancy_rate, vacancy_source,
+                vacancy_rate_pred, vacancy_predicted, vacancy_pred_method, vacancy_pred_years,
+                low_vacancy_county_flag, low_vacancy_units, low_vacancy_occupied_units,
+                low_vacancy_percent_occupied, low_vacancy_fy,
                 family_household_inflow_rate, working_age_momentum,
                 household_formation_change, demographic_momentum_score
             ) VALUES (
@@ -463,7 +597,10 @@ def store_demographic_data(df: pd.DataFrame):
                 :households_total, :households_family, :households_family_with_children,
                 :inflow_households, :outflow_households, :net_migration_households,
                 :inflow_exemptions, :outflow_exemptions, :net_migration_persons,
-                :total_addresses, :vacant_addresses, :vacancy_rate,
+                :total_addresses, :vacant_addresses, :vacancy_rate, :vacancy_source,
+                :vacancy_rate_pred, :vacancy_predicted, :vacancy_pred_method, :vacancy_pred_years,
+                :low_vacancy_county_flag, :low_vacancy_units, :low_vacancy_occupied_units,
+                :low_vacancy_percent_occupied, :low_vacancy_fy,
                 :family_household_inflow_rate, :working_age_momentum,
                 :household_formation_change, :demographic_momentum_score
             )
@@ -592,6 +729,9 @@ def main():
         # USPS vacancy (if configured)
         usps_df = fetch_usps_vacancy_by_county(years_to_fetch)
         combined = merge_usps_vacancy(combined, usps_df)
+        low_vacancy_df = fetch_low_vacancy_counties()
+        combined = merge_low_vacancy_counts(combined, low_vacancy_df)
+        combined = apply_vacancy_predictions(combined)
         combined.replace([np.inf, -np.inf], pd.NA, inplace=True)
 
         store_demographic_data(combined)

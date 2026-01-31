@@ -354,30 +354,33 @@ def compute_all_timeseries_features(
 
     # Define layer configurations
     # Each layer specifies: table name, primary metric column
+    def _metric_name(base_metric: str) -> str:
+        return f"{base_metric}_effective" if settings.USE_EFFECTIVE_VALUES else base_metric
+
     layer_configs = {
         'employment_gravity': {
             'table': 'layer1_employment_gravity',
-            'metric': 'economic_opportunity_index'
+            'metric': _metric_name('economic_opportunity_index')
         },
         'mobility_optionality': {
             'table': 'layer2_mobility_optionality',
-            'metric': 'mobility_optionality_index'
+            'metric': _metric_name('mobility_optionality_index')
         },
         'school_trajectory': {
             'table': 'layer3_school_trajectory',
-            'metric': 'education_opportunity_index'  # v1-v2 composite: 0.4×supply + 0.6×accessibility
+            'metric': _metric_name('education_opportunity_index')  # v1-v2 composite: 0.4×supply + 0.6×accessibility
         },
         'housing_elasticity': {
             'table': 'layer4_housing_elasticity',
-            'metric': 'housing_opportunity_index'  # v1-v2 composite: 0.4×elasticity + 0.6×affordability
+            'metric': _metric_name('housing_opportunity_index')  # v1-v2 composite: 0.4×elasticity + 0.6×affordability
         },
         'demographic_momentum': {
             'table': 'layer5_demographic_momentum',
-            'metric': 'demographic_opportunity_index'  # v1-v3 composite: 0.3×static + 0.4×equity + 0.3×migration
+            'metric': _metric_name('demographic_opportunity_index')  # v1-v3 composite: 0.3×static + 0.4×equity + 0.3×migration
         },
         'risk_drag': {
             'table': 'layer6_risk_drag',
-            'metric': 'risk_drag_index'  # v1-v2 composite: 0.4×static + 0.6×(climate+vulnerability-adaptive)
+            'metric': _metric_name('risk_drag_index')  # v1-v2 composite: 0.4×static + 0.6×(climate+vulnerability-adaptive)
         }
     }
 

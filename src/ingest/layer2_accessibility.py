@@ -53,6 +53,7 @@ from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
+from src.utils.prediction_utils import apply_predictions_to_table
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -1316,7 +1317,8 @@ def calculate_accessibility_indicators(
 def run_layer2_v2_ingestion(
     data_year: int = None,
     use_r5: bool = True,
-    store_data: bool = True
+    store_data: bool = True,
+    predict_to_year: Optional[int] = None
 ):
     """
     Run complete Layer 2 v2 ingestion pipeline.
@@ -1374,6 +1376,15 @@ def run_layer2_v2_ingestion(
                 }
             )
 
+        if store_data:
+            target_year = predict_to_year or settings.PREDICT_TO_YEAR
+            apply_predictions_to_table(
+                table="layer2_mobility_optionality",
+                metric_col="mobility_optionality_index",
+                target_year=target_year,
+                clip=(0.0, 1.0)
+            )
+
         logger.info("✓ Layer 2 v2 ingestion complete")
         return tract_df, county_df
 
@@ -1407,13 +1418,18 @@ def main():
         '--dry-run', action='store_true',
         help='Calculate but do not store results'
     )
+    parser.add_argument(
+        '--predict-to-year', type=int, default=None,
+        help='Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)'
+    )
 
     args = parser.parse_args()
 
     run_layer2_v2_ingestion(
         data_year=args.year,
         use_r5=not args.no_r5,
-        store_data=not args.dry_run
+        store_data=not args.dry_run,
+        predict_to_year=args.predict_to_year
     )
 
 
