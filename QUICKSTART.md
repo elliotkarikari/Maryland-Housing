@@ -21,7 +21,7 @@ Get the Maryland Viability Atlas running locally in under 15 minutes.
 
 | Requirement | Version | Get It |
 |-------------|---------|--------|
-| Python | 3.10+ | [python.org](https://www.python.org/downloads/) |
+| Python | 3.12+ | [python.org](https://www.python.org/downloads/) |
 | PostgreSQL | 15+ | [postgresql.org](https://www.postgresql.org/download/) |
 | PostGIS | 3.3+ | [postgis.net](https://postgis.net/install/) |
 | Census API Key | - | [api.census.gov](https://api.census.gov/data/key_signup.html) (free) |

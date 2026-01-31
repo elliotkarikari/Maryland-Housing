@@ -17,6 +17,12 @@ from sqlalchemy import text
 import argparse
 from typing import Optional
 import requests
+import re
+from urllib.parse import urljoin, urlparse
+try:
+    from scipy.stats import theilslopes
+except Exception:  # pragma: no cover - optional dependency
+    theilslopes = None
 
 # Ensure project root is on sys.path when running as a script
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -164,6 +170,23 @@ def _parse_low_vacancy_year(path: Path) -> Optional[int]:
     return None
 
 
+def _extract_low_vacancy_link(html_path: Path, base_url: str) -> Optional[str]:
+    try:
+        html = html_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    matches = re.findall(r'href=[\"\\\']([^\"\\\']+\\.(?:xlsx?|csv))', html, flags=re.IGNORECASE)
+    if not matches:
+        return None
+
+    # Prefer links that look like low vacancy dataset
+    for link in matches:
+        if "lowvac" in link.lower() or "vac" in link.lower():
+            return urljoin(base_url, link)
+    return urljoin(base_url, matches[0])
+
+
 def fetch_low_vacancy_counties() -> pd.DataFrame:
     """
     Fetch HUD low-vacancy county list (FY Excel).
@@ -183,8 +206,29 @@ def fetch_low_vacancy_counties() -> pd.DataFrame:
     try:
         df = pd.read_excel(source_path)
     except Exception as e:
-        logger.warning(f"Failed to read low vacancy file {source_path}: {e}")
-        return pd.DataFrame()
+        source_url = settings.LOW_VACANCY_COUNTIES_URL
+        if source_url and source_url.lower().endswith(".html"):
+            link = _extract_low_vacancy_link(source_path, source_url)
+            if link:
+                filename = Path(urlparse(link).path).name or "low_vacancy_counties.xlsx"
+                target = LOW_VACANCY_CACHE_DIR / filename
+                if not target.exists():
+                    ok = download_file(link, str(target))
+                    if not ok:
+                        logger.warning("Failed to download low vacancy dataset from link")
+                        return pd.DataFrame()
+                try:
+                    df = pd.read_excel(target)
+                    source_path = target
+                except Exception as e2:
+                    logger.warning(f"Failed to read low vacancy file {target}: {e2}")
+                    return pd.DataFrame()
+            else:
+                logger.warning("Could not find dataset link on low vacancy HTML page")
+                return pd.DataFrame()
+        else:
+            logger.warning(f"Failed to read low vacancy file {source_path}: {e}")
+            return pd.DataFrame()
 
     df = _normalize_columns(df)
     columns = list(df.columns)
@@ -254,35 +298,46 @@ def apply_vacancy_predictions(combined: pd.DataFrame) -> pd.DataFrame:
     combined['vacancy_pred_method'] = pd.NA
     combined['vacancy_pred_years'] = pd.NA
 
+    target_year = settings.PREDICT_TO_YEAR
+    min_years = settings.PREDICTION_MIN_YEARS
+    max_extrap = settings.PREDICTION_MAX_EXTRAP_YEARS
+
     for fips in combined['fips_code'].unique():
         sub = combined[combined['fips_code'] == fips].copy()
         history = sub[sub['vacancy_rate'].notna()]
-        if len(history) < 3:
+        if len(history) < min_years:
             continue
 
         years = history['data_year'].astype(float).values
         rates = history['vacancy_rate'].astype(float).values
 
         try:
-            slope, intercept = np.polyfit(years, rates, 1)
+            if theilslopes is not None:
+                slope, intercept, *_ = theilslopes(rates, years)
+                method = 'theil_sen'
+            else:
+                slope, intercept = np.polyfit(years, rates, 1)
+                method = 'linear_trend'
         except Exception:
             continue
 
-        min_year = years.min()
-        max_year = years.max()
+        max_year = float(np.max(years))
+        if max_year >= target_year:
+            continue
 
+        end_year = min(target_year, max_year + max_extrap)
         for idx, row in sub.iterrows():
             if pd.notna(row.get('vacancy_rate')):
                 continue
-            target_year = float(row['data_year'])
-            if target_year > max_year + 2 or target_year < min_year - 2:
+            year = float(row['data_year'])
+            if year <= max_year or year > end_year:
                 continue
-            pred = slope * target_year + intercept
+            pred = float(slope * year + intercept)
             pred = float(max(0.0, min(1.0, pred)))
             combined.loc[idx, 'vacancy_rate_pred'] = pred
             combined.loc[idx, 'vacancy_predicted'] = True
-            combined.loc[idx, 'vacancy_pred_method'] = 'linear_trend'
-            combined.loc[idx, 'vacancy_pred_years'] = len(history)
+            combined.loc[idx, 'vacancy_pred_method'] = method
+            combined.loc[idx, 'vacancy_pred_years'] = int(year - max_year)
             if pd.isna(combined.loc[idx, 'vacancy_source']):
                 combined.loc[idx, 'vacancy_source'] = 'predicted'
 

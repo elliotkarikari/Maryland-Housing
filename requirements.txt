@@ -21,12 +21,12 @@ rtree==1.1.0
 requests==2.31.0
 pandas==2.1.4
 numpy==1.26.3
+scipy==1.11.4
 openpyxl==3.1.2  # For Excel files from some gov sources
 lxml==5.1.0  # For XML parsing (GTFS, etc.)
 
 # Census & Government APIs
 census==0.8.22  # Census API wrapper
-us==3.1.1  # US state metadata
 
 # HTTP & Scraping (defensive, for public data only)
 httpx==0.26.0

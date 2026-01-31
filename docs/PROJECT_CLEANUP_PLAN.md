@@ -316,7 +316,7 @@ Each layer follows the pattern:
 name = "maryland-housing-atlas"
 version = "1.0.0"
 description = "Spatial analysis of structural trajectories across Maryland counties"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 [tool.black]
 line-length = 100
@@ -332,7 +332,7 @@ python_files = "test_*.py"
 addopts = "-v --tb=short"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_ignores = true
 ```
@@ -374,7 +374,7 @@ across Maryland's 24 counties using multi-year evidence synthesis.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12+
 - PostgreSQL 14+
 - 4GB RAM minimum
 - Mapbox API token (for frontend)
@@ -410,7 +410,7 @@ Add these sections:
 ```markdown
 ## Prerequisites Checklist
 
-- [ ] Python 3.10+ installed
+- [ ] Python 3.12+ installed
 - [ ] PostgreSQL 14+ running
 - [ ] Git installed
 - [ ] Census API key (free at census.gov)

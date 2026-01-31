@@ -6,7 +6,7 @@ Thank you for your interest in contributing to the Maryland Growth & Family Viab
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - PostgreSQL 14+
 - Git
 - Census API key (free at [census.gov](https://api.census.gov/data/key_signup.html))

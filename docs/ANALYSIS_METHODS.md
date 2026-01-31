@@ -1,11 +1,11 @@
-Maryland Growth & Family Viability Atlas — Analysis Methods
+Maryland Growth & Family Viability Atlas - Analysis Methods
 
 Prediction Alignment (2025)
-- Goal: Align layer outputs to a “current” year (2025) without copy-forward.
+- Goal: Align layer outputs to a "current" year (2025) without copy-forward.
 - Eligibility: Minimum 3 observed years per county/tract.
 - Extrapolation limit: Maximum 2 years beyond the observed range.
-- Default method: Theil–Sen linear trend (robust to outliers); fallback to OLS if SciPy is unavailable.
-- Constraints: Rate metrics are clipped to valid bounds (e.g., 0–1).
+- Default method: Theil-Sen linear trend (robust to outliers); fallback to OLS if SciPy is unavailable.
+- Constraints: Rate metrics are clipped to valid bounds (e.g., 0-1).
 - Provenance: Predicted values are stored in separate *_pred fields with explicit flags and method metadata.
 - No copy-forward: Past observations are never reused as-is for newer years.
 - Optional effective values: If enabled, *_effective = COALESCE(original, predicted).

@@ -1,6 +1,6 @@
 # Maryland Growth & Family Viability Atlas
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PostgreSQL 15+](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -91,7 +91,7 @@ This system uses **exclusively verifiable open data** from government sources to
 | API Framework | FastAPI 0.109+ |
 | Database | PostgreSQL 15+ with PostGIS 3.3+ |
 | ORM | SQLAlchemy 2.0 + GeoAlchemy2 |
-| Python | 3.10+ |
+| Python | 3.12+ |
 
 ### Data Processing
 | Component | Technology |
@@ -122,7 +122,7 @@ This system uses **exclusively verifiable open data** from government sources to
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - PostgreSQL 15+ with PostGIS 3.3+
 - Census API key (free): [api.census.gov](https://api.census.gov/data/key_signup.html)
 - Mapbox token: [mapbox.com](https://www.mapbox.com/)

@@ -153,16 +153,25 @@ def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir:
 
 
 def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
-    if not settings.CENSUS_QWI_DATA_URL:
-        return pd.DataFrame()
+    base_url = settings.CENSUS_QWI_DATA_URL
+    if not base_url:
+        base_url = f"{settings.CENSUS_API_BASE_URL.rstrip('/')}/{settings.CENSUS_QWI_DATASET}"
     if not settings.CENSUS_API_KEY:
         logger.warning("Census API key missing; cannot fetch QWI API")
         return pd.DataFrame()
 
-    base_url = settings.CENSUS_QWI_DATA_URL
-    target_years = list(range(data_year, max(data_year - 8, 1990), -1))
+    current_year = datetime.utcnow().year
+    start_year = min(data_year, current_year - 1)
+    target_years = list(range(start_year, max(start_year - 3, 1990) - 1, -1))
 
-    get_variants = ["Emp,HirA,SepA", "Emp,HirA,Sep"]
+    get_variants = ["Emp,HirA,Sep", "Emp,HirA,SepA"]
+    base_params = {
+        # Explicit defaults to avoid overly large queries and missing required predicates.
+        "sex": "0",        # both sexes
+        "agegrp": "A00",   # all ages
+        "ownercode": "A00",  # all ownership
+        "seasonadj": "U"   # unadjusted
+    }
 
     for year in target_years:
         for quarter in [4, 3, 2, 1]:
@@ -173,11 +182,27 @@ def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
                     "in": "state:24",
                     "year": str(year),
                     "quarter": str(quarter),
-                    "key": settings.CENSUS_API_KEY
+                    "key": settings.CENSUS_API_KEY,
+                    **base_params
                 }
                 try:
                     resp = requests.get(base_url, params=params, timeout=30)
                     if resp.status_code != 200:
+                        warn = False
+                        if resp.status_code in (401, 403):
+                            warn = True
+                        elif resp.status_code == 400 and get_fields == "Emp,HirA,Sep":
+                            warn = True
+                        if warn:
+                            logger.warning(
+                                "QWI API request failed",
+                                extra={
+                                    "status_code": resp.status_code,
+                                    "year": year,
+                                    "quarter": quarter,
+                                    "url": resp.url
+                                }
+                            )
                         continue
                     data = resp.json()
                     if not data or len(data) < 2:
