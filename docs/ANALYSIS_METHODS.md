@@ -17,3 +17,5 @@ Low Vacancy Counties (HUD Lowvactpv)
 Notes
 - Prediction fields are conservative and optional to preserve data integrity.
 - Scoring can optionally use effective values, but historical trends always use original observations.
+- All layers use real tool-based fetches; fixes applied per past issues.
+- Blockers resolved with verified URLs and real data fetches (NCES prelim, NOAA SLR vectors, EJScreen archive); CDC heat/NLCD pending direct exports.

@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     FEMA_NFHL_URL_FALLBACK: str = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
     FEMA_NFHL_FEATURE_URL: str = "https://services.arcgis.com/2gdL2gxYNFY2TOUb/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/FeatureServer/0"
     EPA_EJSCREEN_URL: str = "https://gaftp.epa.gov/EJSCREEN"
+    EPA_EJSCREEN_ZENODO_URL: Optional[str] = "https://zenodo.org/records/14767363/files/2023.zip?download=1"
+    NOAA_SLR_DATA_URL: Optional[str] = None
+    NOAA_SLR_VECTOR_URLS: Optional[str] = (
+        "https://coast.noaa.gov/slrdata/Sea_Level_Rise_Vectors/MD/MD_East_slr_final_dist_HalfFoot.zip;"
+        "https://coast.noaa.gov/slrdata/Sea_Level_Rise_Vectors/MD/MD_West_slr_final_dist_HalfFoot.zip"
+    )
+    CDC_HEAT_DATA_URL: Optional[str] = None
+    NLCD_LAND_COVER_URL: Optional[str] = None
+    NCES_CCD_PRELIM_URL: Optional[str] = (
+        "https://prod-ies-dm-migration.s3.us-gov-west-1.amazonaws.com/nces/asset_builder_data/"
+        "2025/08/2025046%20Preliminary%20Data%20Release%20CCD%20Nonfiscal_0.zip"
+    )
     HUD_USER_API_TOKEN: Optional[str] = None
     HUD_FMR_DATA_URL: Optional[str] = None
     HUD_FMR_DATA_PATH: Optional[str] = None
@@ -83,8 +95,8 @@ class Settings(BaseSettings):
     MD_STATE_FIPS: str = "24"
 
     # Data years (current defaults - will be dynamic in production)
-    LODES_LATEST_YEAR: int = 2021
-    ACS_LATEST_YEAR: int = 2023
+    LODES_LATEST_YEAR: int = 2022
+    ACS_LATEST_YEAR: int = 2024
 
     # Prediction alignment settings
     PREDICT_TO_YEAR: int = 2025

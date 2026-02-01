@@ -141,6 +141,9 @@ def fetch_acs_housing_data(data_year: int = 2021) -> pd.DataFrame:
 
         # Select final columns
         cols_to_keep = ['fips_code'] + list(ACS_HOUSING_VARIABLES.values())
+        for col in ['source_url', 'fetch_date', 'is_real']:
+            if col in df.columns:
+                cols_to_keep.append(col)
         df = df[[c for c in cols_to_keep if c in df.columns]]
 
         logger.info(f"Fetched ACS housing data for {len(df)} counties")

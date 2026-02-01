@@ -8,6 +8,7 @@ import io
 import time
 import random
 import logging
+from datetime import datetime
 import pandas as pd
 from typing import Optional, Dict, Any, Tuple, List
 from functools import wraps
@@ -16,6 +17,17 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+
+def attach_source_metadata(df: pd.DataFrame, source_url: str) -> pd.DataFrame:
+    """Attach source metadata fields required for real-data provenance."""
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    df["source_url"] = source_url
+    df["fetch_date"] = datetime.utcnow().date().isoformat()
+    df["is_real"] = True
+    return df
 
 
 class RateLimiter:
@@ -92,6 +104,7 @@ def fetch_census_data(
 
         # First row is headers
         df = pd.DataFrame(data[1:], columns=data[0])
+        df = attach_source_metadata(df, response.url)
 
         logger.info(f"Fetched {len(df)} records from Census API")
         return df
@@ -134,6 +147,10 @@ def fetch_bls_qcew(
         try:
             # Use requests with explicit timeout instead of pd.read_csv(url) which can hang
             response = requests.get(url, timeout=60)
+            if response.status_code == 404 and year > 2000:
+                fallback_url = f"https://data.bls.gov/cew/data/api/{year - 1}/{quarter}/area/24{area_code}.csv"
+                logger.warning(f"QCEW {year} Q{quarter} not found; trying {year - 1} Q{quarter}")
+                response = requests.get(fallback_url, timeout=60)
             response.raise_for_status()
             df = pd.read_csv(io.StringIO(response.text))
             all_data.append(df)
@@ -148,6 +165,10 @@ def fetch_bls_qcew(
 
     if all_data:
         combined = pd.concat(all_data, ignore_index=True)
+        combined = attach_source_metadata(
+            combined,
+            f"https://data.bls.gov/cew/data/api/{year}/{quarter}/area/24XXX.csv"
+        )
         logger.info(f"Fetched {len(combined)} QCEW records")
         return combined
     else:
@@ -196,6 +217,7 @@ def fetch_usaspending_county(
             return pd.DataFrame()
 
         df = pd.DataFrame(data["results"])
+        df = attach_source_metadata(df, url)
         logger.info(f"Fetched {len(df)} USASpending records")
         return df
 
@@ -225,6 +247,7 @@ def fetch_lodes_wac(state: str = "md", year: Optional[int] = None, job_type: str
 
     try:
         df = pd.read_csv(url, compression='gzip', dtype={'w_geocode': str})
+        df = attach_source_metadata(df, url)
         logger.info(f"Fetched {len(df)} LODES records")
         return df
 
@@ -418,7 +441,9 @@ def fetch_fema_nfhl(
         return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 
     local_logger.info(f"Total FEMA NFHL features fetched: {len(all_features)}")
-    return gpd.GeoDataFrame.from_features(all_features, crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame.from_features(all_features, crs="EPSG:4326")
+    gdf = attach_source_metadata(gdf, base_url)
+    return gdf
 
 
 def fetch_irs_migration(year_range: str = "2122") -> pd.DataFrame:
@@ -437,6 +462,7 @@ def fetch_irs_migration(year_range: str = "2122") -> pd.DataFrame:
 
     try:
         df = pd.read_csv(url, dtype={'y1_countyfips': str, 'y2_countyfips': str})
+        df = attach_source_metadata(df, url)
         logger.info(f"Fetched {len(df)} IRS migration records")
         return df
 
@@ -490,6 +516,25 @@ def _candidate_ejscreen_urls(base_url: str, year: int) -> list[str]:
     return candidates
 
 
+def _ejscreen_base_urls(base_url: str) -> list[str]:
+    candidates = [
+        base_url,
+        "https://gaftp.epa.gov/EJSCREEN",
+        "https://newftp.epa.gov/EJSCREEN",
+    ]
+    seen = set()
+    ordered = []
+    for url in candidates:
+        if not url:
+            continue
+        key = url.rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
 def _discover_ejscreen_urls(base_url: str, year: int) -> list[str]:
     import re
 
@@ -531,28 +576,44 @@ def fetch_epa_ejscreen(year: int = 2023, lookback_years: int = 3) -> pd.DataFram
     years_to_try = [year - offset for offset in range(max(1, lookback_years) + 1) if year - offset > 0]
     last_error = None
 
-    for target_year in years_to_try:
-        candidate_urls = _candidate_ejscreen_urls(settings.EPA_EJSCREEN_URL, target_year)
-        candidate_urls.extend(_discover_ejscreen_urls(settings.EPA_EJSCREEN_URL, target_year))
-
-        for url in candidate_urls:
-            try:
-                response = requests.get(url, timeout=120)
-                if response.status_code != 200:
-                    continue
+    if settings.EPA_EJSCREEN_ZENODO_URL:
+        try:
+            response = requests.get(settings.EPA_EJSCREEN_ZENODO_URL, timeout=180)
+            if response.status_code == 200:
                 df = _read_csv_from_bytes(response.content, dtype={'ID': str})
+                if 'ID' in df.columns:
+                    df_md = df[df['ID'].astype(str).str.startswith('24')].copy().reset_index(drop=True)
+                    df_md['ejscreen_year'] = year
+                    df_md = attach_source_metadata(df_md, settings.EPA_EJSCREEN_ZENODO_URL)
+                    logger.info(f"Fetched {len(df_md)} Maryland EJScreen records from Zenodo archive")
+                    return df_md
+        except Exception as e:
+            logger.warning(f"Zenodo EJScreen fetch failed: {e}")
 
-                if 'ID' not in df.columns:
+    for target_year in years_to_try:
+        for base_url in _ejscreen_base_urls(settings.EPA_EJSCREEN_URL):
+            candidate_urls = _candidate_ejscreen_urls(base_url, target_year)
+            candidate_urls.extend(_discover_ejscreen_urls(base_url, target_year))
+
+            for url in candidate_urls:
+                try:
+                    response = requests.get(url, timeout=120)
+                    if response.status_code != 200:
+                        continue
+                    df = _read_csv_from_bytes(response.content, dtype={'ID': str})
+
+                    if 'ID' not in df.columns:
+                        continue
+
+                    df_md = df[df['ID'].astype(str).str.startswith('24')].copy().reset_index(drop=True)
+                    df_md['ejscreen_year'] = target_year
+                    df_md = attach_source_metadata(df_md, url)
+
+                    logger.info(f"Fetched {len(df_md)} Maryland EJScreen records for {target_year}")
+                    return df_md.to_frame() if isinstance(df_md, pd.Series) else df_md
+                except Exception as e:
+                    last_error = e
                     continue
-
-                df_md = df[df['ID'].astype(str).str.startswith('24')].copy().reset_index(drop=True)
-                df_md['ejscreen_year'] = target_year
-
-                logger.info(f"Fetched {len(df_md)} Maryland EJScreen records for {target_year}")
-                return df_md.to_frame() if isinstance(df_md, pd.Series) else df_md
-            except Exception as e:
-                last_error = e
-                continue
 
     logger.error(f"Failed to fetch EPA EJScreen data: {last_error}")
     raise last_error if last_error else RuntimeError("EJScreen download failed")

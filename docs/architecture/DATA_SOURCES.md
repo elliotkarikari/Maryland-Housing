@@ -1,10 +1,62 @@
 # Data Sources Documentation
 
-**Last Updated:** 2026-01-28
+**Last Updated:** 2026-01-31
 
 This document catalogs all data sources used in the Maryland Growth & Family Viability Atlas. Every source listed is **programmatically accessible** and **verifiable**.
 
 ---
+
+## Operational Issues & Fixes (2026-01)
+
+This section records data-ingest issues encountered and the remediation implemented.
+
+### Census QWI (Layer 1)
+- **Issue:** QWI API returned empty or 204 responses when required predicates were missing.
+- **Fix:** Added required parameters (`sex=0`, `agegrp=A00`, `ownercode=A00`, `seasonadj=U`), limited year probing to `current_year - 1`, and tried multiple quarters/field variants.
+- **Progressive fix:** Initial requests returned 204/400; after adding required predicates and narrowing year search, data returned consistently.
+
+### HUD Low-Vacancy (Layer 5)
+- **Issue:** `lowvactpv` is distributed as an HTML page with a linked Excel file, not a direct file.
+- **Fix:** Added HTML link extraction to download the actual dataset; only applies to the exact FY (no backfill).
+- **Progressive fix:** HTML page fetched but no data; added link extraction and FY parsing to align to exact year.
+
+### USPS Vacancy (Layer 5)
+- **Issue:** USPS Vacancy data is restricted and not directly downloadable via API.
+- **Fix:** Kept ingestion optional; use low-vacancy FY list for binary flags and Census ZCTA→county crosswalk when needed.
+- **Status:** Still blocked without HUD USPS restricted access.
+
+### Risk Layer Schema Mismatch (Layer 6)
+- **Issue:** `sea_level_rise_exposure` stored as boolean but computed numeric values caused type mismatch.
+- **Fix:** Cast to boolean (True if `slr_exposure_2ft` > 0).
+
+### Risk Layer Numeric Overflow (Layer 6)
+- **Issue:** `traffic_proximity_score` values exceeded NUMERIC(5,4) precision.
+- **Fix:** Normalize to 0-1 (percentile rank if source values exceed unit range); synthetic generator adjusted to bounded values.
+- **Progressive fix:** Initial synthetic values overflowed; constrained generator and normalized live values.
+
+### EJScreen / SVI / SFHA Availability (Layer 6)
+- **Issue:** Some external sources intermittently failed (EJScreen download, CDC SVI fetch, FEMA SFHA 404).
+- **Fix:** Continue ingestion with synthetic fallbacks (flagged), log failures, and preserve pipeline continuity.
+- **Status:** Repeated attempts still fail; data remains synthetic or missing until source access stabilizes.
+
+### Environment Compatibility (Ingestion Runtime)
+- **Issue:** Python 3.14 caused pandas build failures; `us` dependency pulled Rust-only `jellyfish`.
+- **Fix:** Pinned runtime to Python 3.12+ and removed unused `us` dependency.
+
+### FY Alignment for Low-Vacancy (Layer 5)
+- **Issue:** FY dataset year did not match latest observed county year (2023), so no flags applied for 2023 rows.
+- **Fix:** Enforced exact FY alignment (no backfill). Requires a FY-matched dataset to populate flags.
+
+---
+
+## Issues Without Data Improvements (Repeated Attempts)
+
+These items were attempted multiple times but did not improve data availability:
+- **CDC SVI fetch:** repeated failures; ingestion falls back to synthetic SVI (flagged).
+- **EPA EJScreen download:** repeated failures; synthetic pollution metrics used (flagged).
+- **FEMA NFHL / SFHA metrics:** repeated 404 errors; flood metrics missing in v2 until endpoint stabilizes.
+- **USPS Vacancy counts:** restricted access; no programmatic ingestion without HUD USPS approval.
+- **Low-vacancy FY mismatch:** FY 2024 list does not populate 2023 rows; requires FY-matched file.
 
 ## Layer 1: Employment Gravity
 

@@ -169,6 +169,9 @@ class GTFSFeedInfo:
     agency: str
     feed_date: date
     file_hash: str
+    source_url: str
+    fetch_date: str
+    is_real: bool = True
 
 
 # =============================================================================
@@ -269,7 +272,10 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
             path=feed_path,
             agency=feed_info['agency'],
             feed_date=feed_date,
-            file_hash=file_hash
+            file_hash=file_hash,
+            source_url=feed_info['url'],
+            fetch_date=datetime.utcnow().date().isoformat(),
+            is_real=True
         ))
 
     return downloaded

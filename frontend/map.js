@@ -40,15 +40,15 @@ const SYNTHESIS_LABELS = {
 };
 
 const DIRECTIONAL_LABELS = {
-    'improving': 'Improving',
-    'stable': 'Stable',
-    'at_risk': 'At Risk'
+    'improving': 'Improving Trajectory',
+    'stable': 'Stable Trajectory',
+    'at_risk': 'At-Risk Trajectory'
 };
 
 const CONFIDENCE_LABELS = {
-    'strong': 'Strong',
-    'conditional': 'Conditional',
-    'fragile': 'Fragile'
+    'strong': 'Strong Evidence',
+    'conditional': 'Conditional Evidence',
+    'fragile': 'Fragile Evidence'
 };
 
 // Initialize Mapbox
@@ -713,7 +713,7 @@ function setupInteractivity() {
                 .setHTML(`
                     <div class="tooltip-title">${props.county_name}</div>
                     <div class="tooltip-score">
-                        <span class="tooltip-score-label">Score:</span>
+                        <span class="tooltip-score-label">Composite score (0-1):</span>
                         <span class="tooltip-score-value">${score}</span>
                     </div>
                     <div class="tooltip-grouping ${groupingClass}">${label}</div>
@@ -818,12 +818,15 @@ async function loadCountyDetail(fipsCode) {
 
         const content = `
             <div class="panel-section">
-                <h4>Final Synthesis Grouping</h4>
+                <h4>County Growth Synthesis</h4>
                 <div class="synthesis-badge" style="background: ${SYNTHESIS_COLORS[data.synthesis_grouping]}; color: white;">
                     ${SYNTHESIS_LABELS[data.synthesis_grouping]}
                 </div>
                 <p style="font-size: 14px; color: #666; margin-top: 12px; line-height: 1.5;">
                     ${getSynthesisDescription(data.synthesis_grouping)}
+                </p>
+                <p style="font-size: 12px; color: #8b8b8b; margin-top: 10px;">
+                    Based on real-data layers available for this county and year.
                 </p>
             </div>
 
@@ -831,11 +834,11 @@ async function loadCountyDetail(fipsCode) {
                 <h4>Classification Details</h4>
                 <div class="score-grid">
                     <div class="score-item">
-                        <div class="score-label">Directional Status</div>
+                        <div class="score-label">Directional Trajectory</div>
                         <div class="score-value">${DIRECTIONAL_LABELS[data.directional_class]}</div>
                     </div>
                     <div class="score-item">
-                        <div class="score-label">Confidence Level</div>
+                        <div class="score-label">Evidence Confidence</div>
                         <div class="score-value">${CONFIDENCE_LABELS[data.confidence_class]}</div>
                     </div>
                     <div class="score-item">
@@ -856,7 +859,7 @@ async function loadCountyDetail(fipsCode) {
                     <span class="section-toggle-icon">+</span>
                 </button>
                 <div class="layer-scores-content" id="layer-scores-content">
-                    <div style="font-size: 11px; color: #999; margin: 8px 0 4px;">Click a layer for details</div>
+                    <div style="font-size: 11px; color: #999; margin: 8px 0 4px;">Click a layer for factor detail</div>
                     <div class="score-grid">
                         ${layerScoresContent}
                     </div>
@@ -1170,11 +1173,11 @@ document.addEventListener('DOMContentLoaded', () => {
 // Get synthesis grouping description
 function getSynthesisDescription(grouping) {
     const descriptions = {
-        'emerging_tailwinds': 'Multiple reinforcing structural tailwinds are present with high confidence. Strong likelihood of persistence if current trends hold.',
-        'conditional_growth': 'Growth signals exist, but execution and local context matter significantly. Outcomes depend on policy delivery and external factors.',
-        'stable_constrained': 'Systems are holding steady with balanced pressures, but limited upside potential under current conditions.',
+        'emerging_tailwinds': 'Multiple reinforcing tailwinds are present across available real-data layers. Persistence is likely if current conditions hold.',
+        'conditional_growth': 'Upside exists, but delivery risk and local context drive outcomes. Signals are mixed across layers.',
+        'stable_constrained': 'Systems are steady with balanced pressures, but upside is limited under current conditions.',
         'at_risk_headwinds': 'Structural headwinds dominate, creating challenges for growth capacity and resilience.',
-        'high_uncertainty': 'Model confidence is low due to sparse data, contested classifications, or fragile policy persistence. Priority area for local knowledge and ground-truthing.'
+        'high_uncertainty': 'Coverage is thin or inconsistent across layers; interpret cautiously and prioritize local validation.'
     };
     return descriptions[grouping] || 'No description available.';
 }

@@ -105,7 +105,11 @@ def download_acs_demographic_data(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached ACS demographics: {cache_path}")
-        return pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        df = pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        df['source_url'] = f"https://api.census.gov/data/{geo_year}/acs/acs5"
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
+        return df
 
     logger.info(f"Downloading ACS demographic data for {geo_year}...")
 
@@ -232,6 +236,10 @@ def download_acs_demographic_data(year: int) -> pd.DataFrame:
         ]
         df = df[[c for c in keep_cols if c in df.columns]].copy()
 
+        df['source_url'] = f"https://api.census.gov/data/{geo_year}/acs/acs5"
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
+
         # Cache
         df.to_csv(cache_path, index=False)
 
@@ -302,6 +310,16 @@ def download_irs_migration_data(year: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
             outflow_df = _parse_irs_flow(df, "outflow")
         except Exception as e:
             logger.warning(f"Failed to parse IRS outflow: {e}")
+
+    source_url = (
+        f"https://www.irs.gov/pub/irs-soi/countyinflow{year_range}.csv; "
+        f"https://www.irs.gov/pub/irs-soi/countyoutflow{year_range}.csv"
+    )
+    for frame in [inflow_df, outflow_df]:
+        if frame is not None and not frame.empty:
+            frame['source_url'] = source_url
+            frame['fetch_date'] = datetime.utcnow().date().isoformat()
+            frame['is_real'] = True
 
     return inflow_df, outflow_df
 

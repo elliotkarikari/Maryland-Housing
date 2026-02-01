@@ -1139,7 +1139,7 @@
         <div class="header">
             <h1>Maryland Growth & Family Viability Atlas</h1>
             <p>
-                Spatial analysis of structural trajectories across Maryland counties.
+                Real-data structural trajectories across Maryland counties.
                 <strong>Click a county</strong> for detailed breakdown.
             </p>
             <button id="clear-selection" class="clear-selection" onclick="clearSelection()" aria-label="Clear county selection">
@@ -1150,7 +1150,7 @@
         <!-- Legend - Collapsible -->
         <div id="legend" class="legend expanded" role="region" aria-label="Map legend">
             <div class="legend-header" onclick="toggleLegend()" role="button" tabindex="0" aria-expanded="true" aria-controls="legend-content">
-                <h3>Synthesis Grouping</h3>
+                <h3>County Growth Synthesis</h3>
                 <button class="legend-toggle" aria-label="Toggle legend">
                     <span id="legend-toggle-icon">−</span>
                 </button>
@@ -1160,31 +1160,31 @@
                 <span class="legend-color" style="background: #2d5016;"></span>
                 <span class="legend-label">Emerging Tailwinds</span>
             </button>
-            <div class="legend-description">Stacked growth signals, high confidence</div>
+            <div class="legend-description">Reinforcing tailwinds across real-data layers</div>
 
             <button class="legend-item" data-group="conditional_growth" type="button" aria-pressed="false">
                 <span class="legend-color" style="background: #7cb342;"></span>
                 <span class="legend-label">Conditional Growth</span>
             </button>
-            <div class="legend-description">Upside exists, execution matters</div>
+            <div class="legend-description">Upside exists; delivery risk matters</div>
 
             <button class="legend-item" data-group="stable_constrained" type="button" aria-pressed="false">
                 <span class="legend-color" style="background: #fdd835;"></span>
                 <span class="legend-label">Stable Constrained</span>
             </button>
-            <div class="legend-description">Holding steady, limited upside</div>
+            <div class="legend-description">Steady pressures, limited upside</div>
 
             <button class="legend-item" data-group="at_risk_headwinds" type="button" aria-pressed="false">
                 <span class="legend-color" style="background: #f4511e;"></span>
                 <span class="legend-label">At Risk / Headwinds</span>
             </button>
-            <div class="legend-description">Structural challenges dominate</div>
+            <div class="legend-description">Headwinds dominate outcomes</div>
 
             <button class="legend-item" data-group="high_uncertainty" type="button" aria-pressed="false">
                 <span class="legend-color" style="background: #757575;"></span>
                 <span class="legend-label">High Uncertainty</span>
             </button>
-            <div class="legend-description">Insufficient data or contested</div>
+            <div class="legend-description">Thin coverage; interpret cautiously</div>
 
             <div class="legend-filter-actions">
                 <span style="font-size: 11px; color: #777;">Legend filter</span>
@@ -1198,15 +1198,15 @@
             <h4>Map Layers</h4>
             <label class="layer-option">
                 <input type="radio" name="layer" value="synthesis" checked>
-                Synthesis Grouping
+                Growth Synthesis
             </label>
             <label class="layer-option">
                 <input type="radio" name="layer" value="directional">
-                Directional Status
+                Directional Trajectory
             </label>
             <label class="layer-option">
                 <input type="radio" name="layer" value="confidence">
-                Confidence Level
+                Evidence Confidence
             </label>
         </div>
 

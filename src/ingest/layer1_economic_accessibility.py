@@ -425,6 +425,9 @@ def download_lodes_wac_segments(year: int) -> pd.DataFrame:
         if 'tract_geoid' in df.columns:
             df['tract_geoid'] = df['tract_geoid'].astype(str)
             df['fips_code'] = df['fips_code'].astype(str)
+        df['source_url'] = "https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/"
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
         return df
 
     logger.info(f"Downloading LODES WAC with wage segments for {year}...")
@@ -470,6 +473,16 @@ def download_lodes_wac_segments(year: int) -> pd.DataFrame:
         # Filter to Maryland (state FIPS 24)
         df = df[df['fips_code'].str.startswith('24')]
 
+        df['source_url'] = (
+            f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/"
+            f"md_wac_S000_JT00_{year}.csv.gz; "
+            f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE01_JT00_{year}.csv.gz; "
+            f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE02_JT00_{year}.csv.gz; "
+            f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE03_JT00_{year}.csv.gz"
+        )
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
+
         # Cache
         df.to_csv(cache_path, index=False)
 
@@ -498,7 +511,11 @@ def download_lodes_rac(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached LODES RAC: {cache_path}")
-        return pd.read_csv(cache_path, dtype={'h_geocode': str})
+        df = pd.read_csv(cache_path, dtype={'h_geocode': str})
+        df['source_url'] = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
+        return df
 
     url = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
 
@@ -518,6 +535,10 @@ def download_lodes_rac(year: int) -> pd.DataFrame:
 
         # Filter to Maryland
         df = df[df['fips_code'].str.startswith('24')]
+
+        df['source_url'] = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
 
         # Cache
         df.to_csv(cache_path, index=False)

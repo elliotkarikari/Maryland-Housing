@@ -254,10 +254,14 @@ def fetch_low_vacancy_counties() -> pd.DataFrame:
     df['low_vacancy_percent_occupied'] = pd.to_numeric(df[percent_col], errors='coerce') if percent_col else pd.NA
     df['low_vacancy_fy'] = fy_year
     df['low_vacancy_county_flag'] = True
+    df['source_url'] = settings.LOW_VACANCY_COUNTIES_URL or str(source_path)
+    df['fetch_date'] = datetime.utcnow().date().isoformat()
+    df['is_real'] = True
 
     return df[[
         'fips_code', 'low_vacancy_county_flag', 'low_vacancy_units',
-        'low_vacancy_occupied_units', 'low_vacancy_percent_occupied', 'low_vacancy_fy'
+        'low_vacancy_occupied_units', 'low_vacancy_percent_occupied', 'low_vacancy_fy',
+        'source_url', 'fetch_date', 'is_real'
     ]].drop_duplicates()
 
 
@@ -500,6 +504,9 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
         pd.NA
     )
     agg['data_year'] = data_year
+    agg['source_url'] = vacancy_url or str(source_path)
+    agg['fetch_date'] = datetime.utcnow().date().isoformat()
+    agg['is_real'] = True
     return agg
 
 
@@ -574,6 +581,12 @@ def fetch_irs_migration_by_year() -> dict[int, pd.DataFrame]:
 
             data_year = 2000 + int(year_range[2:])
             df['data_year'] = data_year
+            df['source_url'] = (
+                f"https://www.irs.gov/pub/irs-soi/countyinflow{year_range}.csv; "
+                f"https://www.irs.gov/pub/irs-soi/countyoutflow{year_range}.csv"
+            )
+            df['fetch_date'] = datetime.utcnow().date().isoformat()
+            df['is_real'] = True
             results[data_year] = df
             logger.info(f"Loaded IRS migration data for {year_range} ({data_year})")
         except Exception as e:
@@ -602,6 +615,9 @@ def fetch_acs_demographic_data(data_year: int) -> pd.DataFrame:
 
     df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
     cols_to_keep = ['fips_code'] + list(ACS_DEMOGRAPHIC_VARIABLES.values())
+    for col in ['source_url', 'fetch_date', 'is_real']:
+        if col in df.columns:
+            cols_to_keep.append(col)
     return df[[c for c in cols_to_keep if c in df.columns]]
 
 

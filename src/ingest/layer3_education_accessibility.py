@@ -125,9 +125,41 @@ def download_nces_school_directory(year: int) -> pd.DataFrame:
         )
         if 'tract_geoid' in df.columns:
             df['tract_geoid'] = df['tract_geoid'].astype(str).str.zfill(11)
+        df['source_url'] = NCES_SCHOOL_DIR_URL
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
         return df
 
     logger.info(f"Downloading NCES school directory for {year}...")
+
+    # Prefer NCES preliminary CCD directory if configured
+    if settings.NCES_CCD_PRELIM_URL:
+        try:
+            zip_url = settings.NCES_CCD_PRELIM_URL
+            logger.info(f"Using NCES preliminary CCD directory: {zip_url}")
+            zip_path = NCES_CACHE_DIR / f"ccd_prelim_{year}.zip"
+            resp = requests.get(zip_url, timeout=120)
+            resp.raise_for_status()
+            zip_path.write_bytes(resp.content)
+
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                csv_files = [n for n in zf.namelist() if n.lower().endswith('.csv')]
+                if csv_files:
+                    with zf.open(csv_files[0]) as f:
+                        df = pd.read_csv(f, dtype=str, low_memory=False)
+
+            state_cols = [c for c in df.columns if c.upper() in ['ST', 'STABBR', 'STATE', 'STATENAME']]
+            if state_cols:
+                df = df[df[state_cols[0]].str.upper() == 'MD'].copy()
+
+            df.to_csv(cache_path, index=False)
+            df['source_url'] = zip_url
+            df['fetch_date'] = datetime.utcnow().date().isoformat()
+            df['is_real'] = True
+            logger.info(f"✓ Downloaded {len(df)} Maryland schools (preliminary CCD)")
+            return df
+        except Exception as e:
+            logger.warning(f"Failed to download NCES preliminary CCD directory: {e}")
 
     # Try direct download from NCES
     # School directory uses different year format
@@ -165,15 +197,17 @@ def download_nces_school_directory(year: int) -> pd.DataFrame:
 
             # Cache
             df.to_csv(cache_path, index=False)
+            df['source_url'] = zip_url
+            df['fetch_date'] = datetime.utcnow().date().isoformat()
+            df['is_real'] = True
             logger.info(f"✓ Downloaded {len(df)} Maryland schools")
             return df
 
     except Exception as e:
         logger.warning(f"Failed to download NCES directory: {e}")
 
-    # Fallback: generate synthetic school data from existing Layer 3 data
-    logger.warning("Using fallback school directory generation")
-    return _generate_fallback_school_directory(year)
+    logger.warning("NCES directory download failed; returning empty dataframe (no synthetic fallback).")
+    return pd.DataFrame()
 
 
 def _generate_fallback_school_directory(year: int) -> pd.DataFrame:
@@ -181,7 +215,8 @@ def _generate_fallback_school_directory(year: int) -> pd.DataFrame:
     Generate fallback school directory from county-level data.
     Uses tract centroids and distributes schools based on enrollment.
     """
-    logger.info("Generating fallback school directory from county data...")
+    logger.warning("Synthetic school directory generation disabled; returning empty dataframe.")
+    return pd.DataFrame()
 
     # Get tract centroids
     tracts_df = _fetch_tract_centroids(year)
@@ -274,7 +309,7 @@ def download_msde_proficiency_data(year: int) -> pd.DataFrame:
     """
     Download MSDE Report Card proficiency data.
 
-    Falls back to synthetic data if MSDE API is not accessible.
+    Returns empty data if MSDE exports are not available.
 
     Args:
         year: School year end
@@ -286,20 +321,18 @@ def download_msde_proficiency_data(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached MSDE proficiency data: {cache_path}")
-        return pd.read_csv(cache_path, dtype={'school_id': str})
+        df = pd.read_csv(cache_path, dtype={'school_id': str})
+        df['source_url'] = MSDE_REPORT_CARD_URL
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
+        return df
 
     logger.info(f"Downloading MSDE proficiency data for {year}...")
 
-    # MSDE Report Card data is typically available via their data portal
-    # For now, we'll generate synthetic data based on school characteristics
-    # In production, this would connect to MSDE's Open Data portal
-
-    logger.warning("MSDE direct download not implemented - using synthetic proficiency data")
-
-    # This will be populated when we have school directory
-    df = pd.DataFrame()
-
-    return df
+    # MSDE Report Card data is typically available via their data portal, but
+    # automated exports are not yet wired in here.
+    logger.warning("MSDE direct download not implemented - returning empty dataframe (no synthetic fallback).")
+    return pd.DataFrame()
 
 
 def download_acs_school_age_population(year: int) -> pd.DataFrame:
@@ -320,7 +353,11 @@ def download_acs_school_age_population(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached ACS school-age population: {cache_path}")
-        return pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        df = pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        df['source_url'] = f"https://api.census.gov/data/{geo_year}/acs/acs5"
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
+        return df
 
     logger.info(f"Downloading ACS school-age population for {geo_year}...")
 
@@ -375,6 +412,10 @@ def download_acs_school_age_population(year: int) -> pd.DataFrame:
         # Keep only relevant columns
         df = df[['tract_geoid', 'fips_code', 'NAME', 'total_population',
                  'school_age_pop_under_5', 'school_age_pop_5_17']].copy()
+
+        df['source_url'] = f"https://api.census.gov/data/{geo_year}/acs/acs5"
+        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['is_real'] = True
 
         # Cache
         df.to_csv(cache_path, index=False)
