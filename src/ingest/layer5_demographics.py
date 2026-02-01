@@ -274,6 +274,10 @@ def merge_low_vacancy_counts(combined: pd.DataFrame, low_vacancy_df: pd.DataFram
         combined['low_vacancy_fy'] = pd.NA
         return combined
 
+    low_vacancy_df = low_vacancy_df.drop(columns=[
+        col for col in ['source_url', 'fetch_date', 'is_real'] if col in low_vacancy_df.columns
+    ])
+
     merged = combined.merge(
         low_vacancy_df,
         left_on=['fips_code', 'data_year'],

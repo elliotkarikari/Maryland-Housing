@@ -262,7 +262,8 @@ class FEMAAPIError(RuntimeError):
 
 def fetch_fema_nfhl(
     state_fips: str = "MD",
-    geometry: Optional[Tuple[float, float, float, float]] = None
+    geometry: Optional[Tuple[float, float, float, float]] = None,
+    max_attempts: int = 10
 ):
     """
     Fetch FEMA National Flood Hazard Layer (NFHL) flood hazard polygons.
@@ -302,7 +303,7 @@ def fetch_fema_nfhl(
 
     def _request_with_retries(params: Dict[str, Any]) -> Dict[str, Any]:
         last_error: Optional[Exception] = None
-        for attempt in range(1, 11):
+        for attempt in range(1, max_attempts + 1):
             try:
                 local_logger.info(f"FEMA NFHL request attempt {attempt} offset={params.get('resultOffset')}")
                 response = session.get(base_url, params=params, timeout=60)
@@ -560,7 +561,11 @@ def _discover_ejscreen_urls(base_url: str, year: int) -> list[str]:
         return []
 
 
-def fetch_epa_ejscreen(year: int = 2023, lookback_years: int = 3) -> pd.DataFrame:
+def fetch_epa_ejscreen(
+    year: int = 2023,
+    lookback_years: int = 3,
+    prefer_zenodo: bool = False
+) -> pd.DataFrame:
     """
     Fetch EPA EJScreen data.
 
@@ -576,7 +581,7 @@ def fetch_epa_ejscreen(year: int = 2023, lookback_years: int = 3) -> pd.DataFram
     years_to_try = [year - offset for offset in range(max(1, lookback_years) + 1) if year - offset > 0]
     last_error = None
 
-    if settings.EPA_EJSCREEN_ZENODO_URL:
+    if prefer_zenodo and settings.EPA_EJSCREEN_ZENODO_URL:
         try:
             response = requests.get(settings.EPA_EJSCREEN_ZENODO_URL, timeout=180)
             if response.status_code == 200:

@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     FEMA_NFHL_URL: str = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer"
     FEMA_NFHL_URL_FALLBACK: str = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
     FEMA_NFHL_FEATURE_URL: str = "https://services.arcgis.com/2gdL2gxYNFY2TOUb/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/FeatureServer/0"
+    FEMA_SKIP_NFHL: bool = True
     EPA_EJSCREEN_URL: str = "https://gaftp.epa.gov/EJSCREEN"
     EPA_EJSCREEN_ZENODO_URL: Optional[str] = "https://zenodo.org/records/14767363/files/2023.zip?download=1"
     NOAA_SLR_DATA_URL: Optional[str] = None

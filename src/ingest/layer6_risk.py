@@ -42,10 +42,30 @@ def _fetch_md_counties() -> gpd.GeoDataFrame:
 
     # Use previous year for TIGER/Line data (current year not always available)
     tiger_year = datetime.now().year - 1
-    md_counties = counties(state="MD", year=tiger_year, cb=True)
-    md_counties['GEOID'] = md_counties['GEOID'].astype(str).str.zfill(5)
-    md_counties = md_counties.rename(columns={'GEOID': 'fips_code', 'NAME': 'county_name'})
-    md_counties = md_counties[md_counties['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    try:
+        md_counties = counties(state="MD", year=tiger_year, cb=True)
+        md_counties['GEOID'] = md_counties['GEOID'].astype(str).str.zfill(5)
+        md_counties = md_counties.rename(columns={'GEOID': 'fips_code', 'NAME': 'county_name'})
+        md_counties = md_counties[md_counties['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+        if md_counties.crs != 'EPSG:4326':
+            md_counties = md_counties.to_crs('EPSG:4326')
+        return md_counties[['fips_code', 'county_name', 'geometry']]
+    except Exception as e:
+        logger.warning(f"pygris TIGER fetch failed: {e}. Falling back to local county GeoJSON.")
+
+    # Fallback to local GeoJSON exports
+    export_dir = Path("exports")
+    candidates = sorted(export_dir.glob("md_counties_*.geojson"))
+    fallback_path = candidates[-1] if candidates else Path("frontend/md_counties_latest.geojson")
+    if not fallback_path.exists():
+        raise RuntimeError("No local county GeoJSON available for fallback.")
+
+    md_counties = gpd.read_file(fallback_path)
+    if 'fips_code' not in md_counties.columns:
+        raise RuntimeError("Fallback GeoJSON missing fips_code column.")
+    md_counties['fips_code'] = md_counties['fips_code'].astype(str).str.zfill(5)
+    if 'county_name' not in md_counties.columns and 'NAME' in md_counties.columns:
+        md_counties = md_counties.rename(columns={'NAME': 'county_name'})
     if md_counties.crs != 'EPSG:4326':
         md_counties = md_counties.to_crs('EPSG:4326')
     return md_counties[['fips_code', 'county_name', 'geometry']]
@@ -66,6 +86,9 @@ def _pick_env_column(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
 
 def _compute_sfha_metrics() -> pd.DataFrame:
     logger.info("Fetching FEMA NFHL SFHA polygons")
+    if settings.FEMA_SKIP_NFHL:
+        logger.warning("FEMA NFHL fetch disabled; skipping SFHA metrics")
+        return pd.DataFrame(columns=["fips_code", "sfha_area_sq_mi", "sfha_pct_of_county"])
     counties = _fetch_md_counties()
     if counties.empty:
         return pd.DataFrame()
@@ -79,7 +102,7 @@ def _compute_sfha_metrics() -> pd.DataFrame:
         minx, miny, maxx, maxy = geom.bounds
 
         try:
-            geojson = fetch_fema_nfhl("MD", geometry=(minx, miny, maxx, maxy))
+            geojson = fetch_fema_nfhl("MD", geometry=(minx, miny, maxx, maxy), max_attempts=2)
             features = geojson.get("features", [])
         except Exception as e:
             logger.warning(f"FEMA NFHL failed for {fips}: {e}")
@@ -122,9 +145,13 @@ def _compute_sfha_metrics() -> pd.DataFrame:
 
 def _compute_ejscreen_metrics(year: int = EJSCREEN_YEAR) -> pd.DataFrame:
     logger.info(f"Fetching EPA EJScreen data for {year}")
-    df = fetch_epa_ejscreen(year=year)
+    try:
+        df = fetch_epa_ejscreen(year=year, prefer_zenodo=False)
+    except Exception as e:
+        logger.warning(f"EJScreen fetch failed; skipping pollution metrics: {e}")
+        return pd.DataFrame(columns=["fips_code"])
     if df.empty or 'ID' not in df.columns:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["fips_code"])
 
     df['county_fips'] = df['ID'].astype(str).str[:5]
     df = df[df['county_fips'].isin(MD_COUNTY_FIPS.keys())]
@@ -319,6 +346,21 @@ def calculate_risk_indicators(data_year: int = 2025) -> pd.DataFrame:
     df['data_year'] = data_year
     df['sea_level_rise_exposure'] = pd.NA
     df['extreme_heat_days_annual'] = pd.NA
+
+    required_cols = [
+        'sfha_area_sq_mi',
+        'sfha_pct_of_county',
+        'pm25_avg',
+        'ozone_avg',
+        'proximity_hazwaste_score',
+        'traffic_proximity_score',
+        'bridges_total',
+        'bridges_structurally_deficient',
+        'bridges_deficient_pct'
+    ]
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = pd.NA
 
     risk_fields = [
         'sfha_pct_of_county',
