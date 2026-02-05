@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maryland Housing Ingest"
+  short_description: "Fix and run Maryland Housing ingest pipeline"
+  default_prompt: "Use $maryland-housing-ingest to keep the Maryland Housing Atlas ingest pipeline deterministic and green."
