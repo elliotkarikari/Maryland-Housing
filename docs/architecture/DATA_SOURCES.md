@@ -1,10 +1,20 @@
 # Data Sources Documentation
 
-**Last Updated:** 2026-01-31
+**Last Updated:** 2026-02-05
 
 This document catalogs all data sources used in the Maryland Growth & Family Viability Atlas. Every source listed is **programmatically accessible** and **verifiable**.
 
+Decision log for current source strategy: `docs/architecture/ETL_DECISIONS_2026-02-05.md`
+
 ---
+
+## Current Deterministic Source Order (2026-02)
+
+- Layer 3 (schools): MSDE enrollment exports (`Enrollment_By_Race_*.csv`) from cache/local/manifest first; NCES 052 membership as fallback.
+- Layer 5 (vacancy): USPS vacancy API (if configured) first, then direct file URL/local file, then ZIP->county crosswalk aggregation.
+- Layer 6 (flood): local Maryland floodplain file (`FEMA_NFHL_LOCAL_PATH`) first, then FEMA NFHL API.
+- Policy persistence (CIP): AI evidence tables first, optional local fallback file (`CIP_AI_EXTRACTED_PATH`) second.
+- Accessibility (Layer 2): existing cached/access feeds are preferred over recomputation when available.
 
 ## Operational Issues & Fixes (2026-01)
 
@@ -459,9 +469,11 @@ url = "https://www.irs.gov/pub/irs-soi/countymigration2122.csv"
 - `no_stat` - No-stat (likely demolished)
 
 **Access Status:** ⚠️ **Conditional**
-HUD USPS data requires registration; unclear if API access available.
+HUD USPS data requires registration.
 
-**V1 Decision:** Include if programmatically accessible via HUD API; otherwise exclude.
+**Current Pipeline:** dual path
+- API source if `USPS_VACANCY_API_URL` is configured
+- direct file source if `USPS_VACANCY_DATA_PATH`/`USPS_VACANCY_DATA_URL` is configured
 
 ---
 
@@ -470,7 +482,7 @@ HUD USPS data requires registration; unclear if API access available.
 ### 6.1 FEMA National Flood Hazard Layer
 **Source:** Flood Insurance Rate Maps (FIRM)
 **Agency:** Federal Emergency Management Agency
-**URL:** https://msc.fema.gov/
+**URL:** https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query
 **API:** FEMA National Flood Hazard Layer (NFHL) Web Services
 **Geography:** Polygon geometries
 **Frequency:** Updated on rolling basis per county
@@ -480,10 +492,10 @@ HUD USPS data requires registration; unclear if API access available.
 
 **Usage:**
 ```python
-# FEMA Map Service Center API
-url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
+# FEMA NFHL API
+url = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
 params = {
-    "where": "STATE_CODE='MD'",
+    "where": "1=1",
     "outFields": "*",
     "f": "geojson"
 }
@@ -492,6 +504,7 @@ params = {
 **Limitations:**
 - Some counties have outdated maps
 - Does not reflect future climate change (see 6.2)
+- Optional local fallback supported via `FEMA_NFHL_LOCAL_PATH`
 
 ---
 

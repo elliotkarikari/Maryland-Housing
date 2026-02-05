@@ -11,6 +11,9 @@ Signals Produced:
 import sys
 import pandas as pd
 import numpy as np
+import io
+import json
+import zipfile
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy import text
@@ -74,6 +77,19 @@ def _find_col(columns: list[str], candidates: list[str]) -> Optional[str]:
         for col in columns:
             if cand in col:
                 return col
+    return None
+
+
+def _parse_json_setting(value: Optional[str], label: str) -> Optional[dict]:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, dict):
+            return parsed
+        logger.warning(f"{label} must be a JSON object; ignoring")
+    except Exception as e:
+        logger.warning(f"Failed to parse {label}: {e}")
     return None
 
 
@@ -141,7 +157,7 @@ def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
             if path.exists():
                 if path.suffix.lower() in {'.txt', '.dat'}:
                     return _read_census_crosswalk(path)
-                return pd.read_csv(path, dtype=str, low_memory=False)
+                return _read_tabular_file(path)
         except Exception as e:
             logger.warning(f"Failed to read ZIP crosswalk {settings.USPS_ZIP_COUNTY_CROSSWALK_PATH}: {e}")
             return pd.DataFrame()
@@ -157,6 +173,20 @@ def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
             return _read_census_crosswalk(target)
 
     return pd.DataFrame()
+
+
+def _read_tabular_file(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    if suffix in {".xlsx", ".xls"}:
+        return pd.read_excel(path, dtype=str)
+    if suffix == ".zip":
+        with zipfile.ZipFile(path, "r") as zf:
+            members = [n for n in zf.namelist() if n.lower().endswith((".csv", ".txt"))]
+            if not members:
+                raise RuntimeError(f"No CSV/TXT files found in {path.name}")
+            with zf.open(members[0]) as f:
+                return pd.read_csv(f, dtype=str, low_memory=False)
+    return pd.read_csv(path, compression="infer", dtype=str, low_memory=False)
 
 
 def _parse_low_vacancy_year(path: Path) -> Optional[int]:
@@ -390,37 +420,13 @@ def _fetch_crosswalk_from_api(zip_codes: list[str]) -> pd.DataFrame:
     return df
 
 
-def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
-    """
-    Fetch USPS vacancy data (via HUD) and aggregate to county.
-
-    Requires either:
-    - settings.USPS_VACANCY_DATA_PATH (local CSV), or
-    - settings.USPS_VACANCY_DATA_URL (downloadable CSV)
-    and optionally settings.USPS_ZIP_COUNTY_CROSSWALK_PATH for ZIP → county mapping.
-    """
-    vacancy_url = settings.USPS_VACANCY_DATA_URL
-    if vacancy_url and not vacancy_url.lower().endswith((".csv", ".txt", ".zip", ".gz", ".xlsx")):
-        logger.warning("USPS vacancy URL is not a direct data file; skipping USPS enrichment")
-        vacancy_url = None
-
-    source_path = _resolve_data_path(
-        settings.USPS_VACANCY_DATA_PATH,
-        vacancy_url,
-        CACHE_DIR,
-        "usps_vacancy.csv"
-    )
-
-    if source_path is None:
-        logger.warning("USPS vacancy data source not configured; skipping USPS enrichment")
+def _aggregate_usps_vacancy_records(
+    df: pd.DataFrame,
+    target_years: list[int],
+    source_label: str
+) -> pd.DataFrame:
+    if df.empty:
         return pd.DataFrame()
-
-    try:
-        df = pd.read_csv(source_path, dtype=str, low_memory=False)
-    except Exception as e:
-        logger.warning(f"Failed to read USPS vacancy data {source_path}: {e}")
-        return pd.DataFrame()
-
     df = _normalize_columns(df)
     columns = list(df.columns)
 
@@ -447,7 +453,11 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
 
     fips_col = _find_col(columns, ["fips", "fips_code", "county_fips", "geoid"])
     if fips_col:
-        df['fips_code'] = df[fips_col].astype(str).str.zfill(5)
+        fips_raw = df[fips_col].astype(str).str.strip()
+        if fips_raw.str.len().max() > 5:
+            df['fips_code'] = fips_raw.str.zfill(11).str.slice(0, 5)
+        else:
+            df['fips_code'] = fips_raw.str.zfill(5)
     else:
         zip_col = _find_col(columns, ["zip", "zipcode", "zip5"])
         if not zip_col:
@@ -508,10 +518,82 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
         pd.NA
     )
     agg['data_year'] = data_year
-    agg['source_url'] = vacancy_url or str(source_path)
+    agg['source_url'] = source_label
     agg['fetch_date'] = datetime.utcnow().date().isoformat()
     agg['is_real'] = True
     return agg
+
+
+def fetch_usps_vacancy_from_api(target_years: list[int]) -> pd.DataFrame:
+    if not settings.USPS_VACANCY_API_URL:
+        return pd.DataFrame()
+
+    headers = _parse_json_setting(settings.USPS_VACANCY_API_HEADERS, "USPS_VACANCY_API_HEADERS") or {}
+    params = _parse_json_setting(settings.USPS_VACANCY_API_PARAMS, "USPS_VACANCY_API_PARAMS") or {}
+    year_param = settings.USPS_VACANCY_API_YEAR_PARAM
+    if year_param and target_years:
+        params[year_param] = max(target_years)
+
+    try:
+        resp = requests.get(settings.USPS_VACANCY_API_URL, headers=headers, params=params, timeout=60)
+        if resp.status_code != 200:
+            logger.warning(f"USPS vacancy API returned {resp.status_code}; skipping")
+            return pd.DataFrame()
+    except Exception as e:
+        logger.warning(f"USPS vacancy API request failed: {e}")
+        return pd.DataFrame()
+
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            payload = payload.get("data") or payload.get("results") or payload.get("items") or payload
+        if isinstance(payload, list):
+            df = pd.DataFrame(payload)
+        elif isinstance(payload, dict):
+            df = pd.DataFrame([payload])
+        else:
+            df = pd.DataFrame()
+    except Exception:
+        try:
+            df = pd.read_csv(io.BytesIO(resp.content), dtype=str, low_memory=False)
+        except Exception as e:
+            logger.warning(f"Failed to parse USPS vacancy API response: {e}")
+            return pd.DataFrame()
+
+    return _aggregate_usps_vacancy_records(df, target_years, settings.USPS_VACANCY_API_URL)
+
+
+def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
+    """
+    Fetch USPS vacancy data and aggregate to county.
+    Supports API and file-based sources.
+    """
+    api_df = fetch_usps_vacancy_from_api(target_years)
+    if not api_df.empty:
+        return api_df
+
+    vacancy_url = settings.USPS_VACANCY_DATA_URL
+    if vacancy_url and not vacancy_url.lower().endswith((".csv", ".txt", ".zip", ".gz", ".xlsx", ".xls")):
+        logger.info("USPS vacancy URL is not a direct data file; skipping file URL source")
+        vacancy_url = None
+
+    source_path = _resolve_data_path(
+        settings.USPS_VACANCY_DATA_PATH,
+        vacancy_url,
+        CACHE_DIR,
+        "usps_vacancy.csv"
+    )
+    if source_path is None:
+        logger.info("USPS vacancy data source not configured; skipping USPS enrichment")
+        return pd.DataFrame()
+
+    try:
+        df = _read_tabular_file(source_path)
+    except Exception as e:
+        logger.warning(f"Failed to read USPS vacancy data {source_path}: {e}")
+        return pd.DataFrame()
+
+    return _aggregate_usps_vacancy_records(df, target_years, vacancy_url or str(source_path))
 
 
 def merge_usps_vacancy(combined: pd.DataFrame, usps_df: pd.DataFrame) -> pd.DataFrame:
@@ -755,7 +837,14 @@ def main():
             )
             return
 
-        combined = pd.concat(all_years, ignore_index=True)
+        valid_frames = [
+            frame for frame in all_years
+            if frame is not None and not frame.empty and not frame.isna().all().all()
+        ]
+        if not valid_frames:
+            logger.warning("No non-empty demographic records available after source filtering")
+            return
+        combined = pd.concat(valid_frames, ignore_index=True)
 
         # Working-age momentum (3-year change) and household formation change (YoY)
         combined['working_age_momentum'] = pd.NA

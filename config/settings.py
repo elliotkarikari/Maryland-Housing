@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     FEMA_NFHL_URL_FALLBACK: str = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
     FEMA_NFHL_FEATURE_URL: str = "https://services.arcgis.com/2gdL2gxYNFY2TOUb/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/FeatureServer/0"
     FEMA_SKIP_NFHL: bool = True
+    FEMA_NFHL_LOCAL_PATH: Optional[str] = None
     EPA_EJSCREEN_URL: str = "https://gaftp.epa.gov/EJSCREEN"
     EPA_EJSCREEN_ZENODO_URL: Optional[str] = "https://zenodo.org/records/14767363/files/2023.zip?download=1"
     NOAA_SLR_DATA_URL: Optional[str] = None
@@ -82,15 +83,31 @@ class Settings(BaseSettings):
     HUD_LIHTC_DATA_PATH: Optional[str] = None
     USPS_VACANCY_DATA_URL: Optional[str] = None
     USPS_VACANCY_DATA_PATH: Optional[str] = None
+    USPS_VACANCY_API_URL: Optional[str] = None
+    USPS_VACANCY_API_HEADERS: Optional[str] = None
+    USPS_VACANCY_API_PARAMS: Optional[str] = None
+    USPS_VACANCY_API_YEAR_PARAM: Optional[str] = None
     USPS_ZIP_COUNTY_CROSSWALK_URL: Optional[str] = None
     USPS_ZIP_COUNTY_CROSSWALK_PATH: Optional[str] = None
     CENSUS_ZIP_COUNTY_CROSSWALK_URL: Optional[str] = None
     HUD_USPS_API_URL: Optional[str] = None
+    MSDE_ENROLLMENT_URL: Optional[str] = None
+    MSDE_ENROLLMENT_PATH: Optional[str] = None
+    MSDE_ENROLLMENT_AUTO_DISCOVER: bool = True
+    MSDE_ENROLLMENT_GITHUB_REPO: str = "elipousson/marylandedu"
+    MSDE_ENROLLMENT_GITHUB_PATH: str = "data-raw/extdata"
+    MSDE_ENROLLMENT_GITHUB_BRANCH: str = "main"
+    MSDE_ENROLLMENT_ALLOW_MSDE_INDEX: bool = False
+    MSDE_ENROLLMENT_RAW_BASE_URL: str = "https://raw.githubusercontent.com/elipousson/marylandedu/main/data-raw/extdata"
+    MSDE_ENROLLMENT_MANIFEST_PATH: Optional[str] = None
+    MSDE_ENROLLMENT_FILE_MAP: Optional[str] = None
+    NCES_MEMBERSHIP_MANIFEST_PATH: Optional[str] = None
     LOW_VACANCY_COUNTIES_URL: Optional[str] = None
     LOW_VACANCY_COUNTIES_PATH: Optional[str] = None
     CENSUS_QWI_DATA_URL: Optional[str] = None
     CENSUS_QWI_DATA_PATH: Optional[str] = None
     CENSUS_QWI_DATASET: str = "timeseries/qwi/sa"
+    CIP_AI_EXTRACTED_PATH: Optional[str] = None
 
     # Maryland state FIPS code
     MD_STATE_FIPS: str = "24"

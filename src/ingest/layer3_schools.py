@@ -4,6 +4,7 @@ Ingests school enrollment trends using NCES CCD Student Membership data.
 
 Data Sources:
 - NCES CCD Student Membership files (052 series) - actual enrollment counts
+- MSDE enrollment exports (marylandedu) - preferred source
 
 Signals Produced:
 - Total enrollment (LEA -> county)
@@ -18,9 +19,13 @@ import sys
 import zipfile
 import re
 import argparse
+import io
+import json
+import os
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import pandas as pd
 import numpy as np
@@ -46,6 +51,205 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # NCES CCD Data page - contains direct download links
 CCD_LEA_BROWSE_URL = "https://nces.ed.gov/ccd/pau_rev.asp"
 CCD_BASE_URL = "https://nces.ed.gov/ccd/"
+MSDE_REPORTCARD_DOWNLOAD_BASE_URL = "https://reportcard.msde.maryland.gov/Download"
+
+
+def _normalize_colname(name: str) -> str:
+    name = str(name).strip().lower()
+    name = re.sub(r"[^a-z0-9]+", "_", name)
+    return re.sub(r"_+", "_", name).strip("_")
+
+
+def _parse_year_from_text(value: str) -> Optional[int]:
+    if value is None:
+        return None
+    text = str(value)
+    years = [int(y) for y in re.findall(r"(?:19|20)\d{2}", text)]
+    if years:
+        return max(years)
+    pair = re.findall(r"\b(\d{2})(\d{2})\b", text)
+    if pair:
+        end_year = int(pair[-1][1])
+        return 2000 + end_year if end_year < 90 else 1900 + end_year
+    return None
+
+
+def _load_json_mapping(value: Optional[str], path: Optional[Path]) -> Dict[int, str]:
+    if value:
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return {int(k): str(v) for k, v in parsed.items() if str(k).isdigit() and str(v)}
+        except Exception:
+            return {}
+    if path and path.exists():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                return {int(k): str(v) for k, v in parsed.items() if str(k).isdigit() and str(v)}
+        except Exception:
+            return {}
+    return {}
+
+
+def _load_msde_enrollment_manifest() -> Dict[int, str]:
+    configured = settings.MSDE_ENROLLMENT_MANIFEST_PATH
+    default_path = Path("config/msde_enrollment_manifest.json")
+    path = Path(configured) if configured else default_path
+    if path.exists():
+        return _load_json_mapping(settings.MSDE_ENROLLMENT_FILE_MAP, path)
+    return _load_json_mapping(settings.MSDE_ENROLLMENT_FILE_MAP, None)
+
+
+def _load_nces_membership_manifest() -> Dict[int, str]:
+    configured = settings.NCES_MEMBERSHIP_MANIFEST_PATH
+    default_path = Path("config/nces_membership_manifest.json")
+    path = Path(configured) if configured else default_path
+    if not path.exists():
+        return {}
+    return _load_json_mapping(None, path)
+
+
+def _github_headers() -> Dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "maryland-housing-ingest",
+    }
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _list_github_msde_files(latest_year: Optional[int] = None) -> List[Tuple[str, str, Optional[int]]]:
+    repo = settings.MSDE_ENROLLMENT_GITHUB_REPO
+    path = settings.MSDE_ENROLLMENT_GITHUB_PATH.strip("/")
+    branch = settings.MSDE_ENROLLMENT_GITHUB_BRANCH or "main"
+    if not repo or not path:
+        return []
+
+    api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    try:
+        resp = requests.get(api_url, headers=_github_headers(), params={"ref": branch}, timeout=30)
+        if resp.status_code != 200:
+            logger.warning(f"GitHub MSDE listing failed ({resp.status_code})")
+            return []
+        payload = resp.json()
+    except Exception as e:
+        logger.warning(f"GitHub MSDE listing failed: {e}")
+        return []
+
+    if not isinstance(payload, list):
+        return []
+
+    allowed_ext = (".csv", ".csv.gz", ".zip", ".xlsx", ".xls")
+    scored_by_year: Dict[int, Tuple[int, str, str]] = {}
+    for item in payload:
+        if item.get("type") != "file":
+            continue
+        name = str(item.get("name", ""))
+        lower = name.lower()
+        if not lower.endswith(allowed_ext):
+            continue
+        if not any(token in lower for token in ["enroll", "member"]):
+            continue
+        year = _parse_year_from_text(name)
+        if year is None:
+            continue
+        if latest_year and year < latest_year - 6:
+            continue
+        download_url = item.get("download_url")
+        if not download_url:
+            continue
+        score = 0
+        if "enrollment" in lower:
+            score += 3
+        if "by_race" in lower:
+            score += 2
+        if "race" in lower:
+            score += 1
+        existing = scored_by_year.get(year)
+        if existing is None or score > existing[0]:
+            scored_by_year[year] = (score, name, download_url)
+
+    files: List[Tuple[str, str, Optional[int]]] = []
+    for year, (_, name, download_url) in sorted(scored_by_year.items(), reverse=True):
+        files.append((name, download_url, year))
+    return files
+
+
+def _download_msde_enrollment_files(latest_year: Optional[int] = None) -> List[Path]:
+    if settings.MSDE_ENROLLMENT_PATH:
+        path = Path(settings.MSDE_ENROLLMENT_PATH)
+        if path.exists():
+            return [path]
+        logger.warning(f"MSDE_ENROLLMENT_PATH not found: {path}")
+
+    if settings.MSDE_ENROLLMENT_URL:
+        url = settings.MSDE_ENROLLMENT_URL
+        filename = Path(urlparse(url).path).name or "msde_enrollment.csv"
+        target = CACHE_DIR / filename
+        if not target.exists():
+            ok = download_file(url, str(target))
+            if not ok:
+                raise RuntimeError(f"Failed to download MSDE enrollment source: {url}")
+        return [target]
+
+    # First use local cached exports if present.
+    cached = sorted(CACHE_DIR.glob("Enrollment_By_Race_*.csv"))
+    if cached:
+        return cached
+
+    manifest = _load_msde_enrollment_manifest()
+    if manifest:
+        base_url = settings.MSDE_ENROLLMENT_RAW_BASE_URL.rstrip("/")
+        paths: List[Path] = []
+        for _, source in sorted(manifest.items()):
+            source_url = source if source.startswith("http") else f"{base_url}/{source}"
+            filename = Path(urlparse(source_url).path).name or "msde_enrollment.csv"
+            target = CACHE_DIR / filename
+            if not target.exists():
+                ok = download_file(source_url, str(target))
+                if not ok:
+                    continue
+            paths.append(target)
+        if paths:
+            return paths
+
+    if not settings.MSDE_ENROLLMENT_AUTO_DISCOVER:
+        return []
+
+    github_files = _list_github_msde_files(latest_year=latest_year)
+    paths = []
+    for name, url, _ in github_files:
+        target = CACHE_DIR / name
+        if not target.exists():
+            ok = download_file(url, str(target))
+            if not ok:
+                continue
+        paths.append(target)
+    return paths
+
+
+def _read_msde_enrollment_file(source_path: Path) -> pd.DataFrame:
+    suffix = source_path.suffix.lower()
+    if suffix in [".csv", ".txt", ".gz"]:
+        return pd.read_csv(source_path, compression="infer", dtype=str, low_memory=False)
+    if suffix in [".xlsx", ".xls"]:
+        return pd.read_excel(source_path, dtype=str)
+    if suffix == ".zip":
+        with zipfile.ZipFile(source_path, "r") as zf:
+            members = [n for n in zf.namelist() if n.lower().endswith((".csv", ".csv.gz", ".xlsx", ".xls"))]
+            if not members:
+                raise RuntimeError(f"No tabular file found in {source_path.name}")
+            member = members[0]
+            with zf.open(member) as f:
+                if member.lower().endswith(".csv"):
+                    return pd.read_csv(f, dtype=str, low_memory=False)
+                if member.lower().endswith(".csv.gz"):
+                    return pd.read_csv(io.BytesIO(f.read()), compression="gzip", dtype=str, low_memory=False)
+                return pd.read_excel(f, dtype=str)
+    raise RuntimeError(f"Unsupported MSDE file type: {source_path.suffix}")
 
 
 def _normalize_name(name: str) -> str:
@@ -81,6 +285,17 @@ def _resolve_membership_zip_url(year: int) -> Optional[str]:
     Returns:
         Full download URL or None if not found
     """
+    manifest = _load_nces_membership_manifest()
+    if manifest:
+        manifest_url = manifest.get(year)
+        if manifest_url:
+            if manifest_url.startswith("http"):
+                logger.info(f"Resolved NCES membership URL for {year} from manifest")
+                return manifest_url
+            logger.warning(f"Invalid NCES manifest URL for {year}: {manifest_url}")
+            return None
+        logger.info(f"No NCES manifest URL for {year}; falling back to NCES page scrape")
+
     try:
         resp = requests.get(CCD_LEA_BROWSE_URL, timeout=60)
         resp.raise_for_status()
@@ -95,7 +310,7 @@ def _resolve_membership_zip_url(year: int) -> Optional[str]:
     # Look for Student Membership files: Data/zip/ccd_lea_052_2122_*.zip
     # Pattern matches membership series (052)
     pattern = rf"Data/zip/ccd_lea_052_{yy_format}_[^\"'<>]+\.zip"
-    matches = re.findall(pattern, resp.text)
+    matches = re.findall(pattern, resp.text, flags=re.IGNORECASE)
 
     if not matches:
         logger.warning(f"No Student Membership ZIP found for {year} (pattern: 052_{yy_format})")
@@ -236,7 +451,7 @@ def _map_lea_to_county(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _build_enrollment_timeseries(latest_year: Optional[int] = None) -> pd.DataFrame:
+def _build_enrollment_timeseries_nces(latest_year: Optional[int] = None) -> pd.DataFrame:
     """
     Build enrollment timeseries for Maryland counties using Student Membership data.
 
@@ -320,6 +535,108 @@ def _build_enrollment_timeseries(latest_year: Optional[int] = None) -> pd.DataFr
         return pd.DataFrame()
 
     return pd.concat(records, ignore_index=True)
+
+
+def _build_enrollment_timeseries_msde(latest_year: Optional[int] = None) -> pd.DataFrame:
+    try:
+        source_paths = _download_msde_enrollment_files(latest_year=latest_year)
+    except Exception as e:
+        logger.warning(f"Failed to load MSDE enrollment data: {e}")
+        return pd.DataFrame()
+
+    if not source_paths:
+        return pd.DataFrame()
+
+    frames = []
+    for source_path in source_paths:
+        try:
+            df_part = _read_msde_enrollment_file(source_path)
+        except Exception as e:
+            logger.warning(f"Failed to read MSDE file {source_path.name}: {e}")
+            continue
+        df_part.columns = [_normalize_colname(c) for c in df_part.columns]
+        year_guess = _parse_year_from_text(source_path.name)
+        if year_guess and "year" not in df_part.columns:
+            df_part["year"] = year_guess
+        frames.append(df_part)
+
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True)
+    cols = list(df.columns)
+
+    def _pick(candidates: List[str]) -> Optional[str]:
+        for cand in candidates:
+            if cand in cols:
+                return cand
+        return None
+
+    year_col = _pick(["year", "school_year", "data_year"])
+    lea_col = _pick(["lea_name", "lss_name", "lea", "local_school_system", "school_system", "district"])
+    student_col = _pick(["enrolled_count", "student_count", "enrollment_count", "enrollment", "membership", "member"])
+    race_col = _pick(["race", "race_ethnicity"])
+    school_col = _pick(["school", "school_number", "school_id"])
+
+    if not year_col or not lea_col or not student_col:
+        logger.warning("MSDE enrollment file missing required columns (year/lea/student count)")
+        return pd.DataFrame()
+
+    # Prefer aggregate race rows when present; keep all rows otherwise.
+    if race_col:
+        race = df[race_col].astype(str).str.lower().str.strip()
+        if race.eq("all").any():
+            df = df[race.eq("all")].copy()
+
+    df["data_year"] = pd.to_numeric(df[year_col], errors="coerce")
+    df = df[df["data_year"].notna()].copy()
+    if latest_year is not None:
+        df = df[df["data_year"] <= latest_year]
+    if df.empty:
+        return pd.DataFrame()
+
+    df["total_enrollment"] = pd.to_numeric(df[student_col], errors="coerce")
+    df = df[df["total_enrollment"].notna()].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    county_map = _build_county_name_map()
+
+    def _map_lea_name(name: str) -> str:
+        normalized = _normalize_name(name)
+        if "baltimore city" in normalized:
+            return "24510"
+        if "baltimore county" in normalized or "baltimore co" in normalized:
+            return "24005"
+        for county_norm, fips in county_map.items():
+            if county_norm and county_norm in normalized:
+                return fips
+        return ""
+
+    df["fips_code"] = df[lea_col].astype(str).apply(_map_lea_name)
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
+    if df.empty:
+        return pd.DataFrame()
+
+    if school_col:
+        df["_school"] = df[school_col].astype(str).str.strip()
+        schools = df.groupby(["fips_code", "data_year"])["_school"].nunique(dropna=True).rename("schools_total")
+    else:
+        schools = df.groupby(["fips_code", "data_year"]).size().rename("schools_total")
+
+    enroll = df.groupby(["fips_code", "data_year"])["total_enrollment"].sum(min_count=1)
+    agg = pd.concat([enroll, schools], axis=1).reset_index()
+    agg["schools_total"] = pd.to_numeric(agg["schools_total"], errors="coerce").fillna(0)
+    return agg
+
+
+def _build_enrollment_timeseries(latest_year: Optional[int] = None) -> pd.DataFrame:
+    msde = _build_enrollment_timeseries_msde(latest_year=latest_year)
+    if not msde.empty:
+        logger.info("Using MSDE enrollment source")
+        return msde
+    logger.info("MSDE unavailable; falling back to NCES membership")
+    return _build_enrollment_timeseries_nces(latest_year=latest_year)
 
 
 def calculate_school_indicators(latest_year: Optional[int] = None) -> pd.DataFrame:

@@ -84,10 +84,61 @@ def _pick_env_column(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
     return None
 
 
+def _load_local_floodplain() -> Optional[gpd.GeoDataFrame]:
+    if not settings.FEMA_NFHL_LOCAL_PATH:
+        return None
+
+    local_path = Path(settings.FEMA_NFHL_LOCAL_PATH)
+    if not local_path.exists():
+        logger.warning(f"FEMA_NFHL_LOCAL_PATH not found: {local_path}")
+        return None
+
+    try:
+        gdf = gpd.read_file(local_path)
+    except Exception as e:
+        logger.warning(f"Failed to read local floodplain data {local_path}: {e}")
+        return None
+
+    if gdf.empty:
+        logger.warning("Local floodplain dataset is empty")
+        return None
+
+    if gdf.crs is None:
+        gdf = gdf.set_crs("EPSG:4326")
+    elif gdf.crs != "EPSG:4326":
+        gdf = gdf.to_crs("EPSG:4326")
+
+    return gdf
+
+
+def _filter_sfha_features(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    cols = {c.lower(): c for c in gdf.columns}
+
+    sfha_col = next((cols[k] for k in cols if "sfha" in k), None)
+    if sfha_col:
+        sfha = gdf[sfha_col].astype(str).str.upper().str.strip()
+        filtered = gdf[sfha.isin(["T", "TRUE", "1", "Y", "YES"])]
+        if not filtered.empty:
+            return filtered
+
+    zone_col = None
+    for key in ["fld_zone", "flood_zone", "zone", "zone_subty"]:
+        if key in cols:
+            zone_col = cols[key]
+            break
+    if zone_col:
+        zones = gdf[zone_col].astype(str).str.upper().str.strip()
+        filtered = gdf[zones.str.startswith(("A", "V")) | zones.isin(["D"])]
+        if not filtered.empty:
+            return filtered
+
+    return gdf
+
+
 def _compute_sfha_metrics() -> pd.DataFrame:
     logger.info("Fetching FEMA NFHL SFHA polygons")
     if settings.FEMA_SKIP_NFHL:
-        logger.warning("FEMA NFHL fetch disabled; skipping SFHA metrics")
+        logger.info("FEMA NFHL fetch disabled; skipping SFHA metrics")
         return pd.DataFrame(columns=["fips_code", "sfha_area_sq_mi", "sfha_pct_of_county"])
     counties = _fetch_md_counties()
     if counties.empty:
@@ -95,6 +146,26 @@ def _compute_sfha_metrics() -> pd.DataFrame:
 
     counties_proj = counties.to_crs('EPSG:5070')
     results = []
+
+    local_floodplain = _load_local_floodplain()
+    if local_floodplain is not None:
+        logger.info("Using local floodplain dataset for SFHA metrics")
+        sfha_proj = _filter_sfha_features(local_floodplain).to_crs('EPSG:5070')
+
+        for _, county in counties_proj.iterrows():
+            fips = county['fips_code']
+            county_geom = county['geometry']
+            clipped = gpd.clip(sfha_proj, county_geom)
+            sfha_area_m2 = clipped.area.sum() if not clipped.empty else 0.0
+            county_area_m2 = county_geom.area
+            sfha_area_sq_mi = sfha_area_m2 / 2_589_988.110336
+            pct = sfha_area_m2 / county_area_m2 if county_area_m2 else None
+            results.append({
+                "fips_code": fips,
+                "sfha_area_sq_mi": sfha_area_sq_mi,
+                "sfha_pct_of_county": pct
+            })
+        return pd.DataFrame(results)
 
     for _, county in counties.iterrows():
         fips = county['fips_code']

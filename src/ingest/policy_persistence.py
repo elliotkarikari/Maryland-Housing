@@ -12,6 +12,7 @@ This layer modifies CONFIDENCE, not scores.
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
+from pathlib import Path
 from sqlalchemy import text
 from datetime import datetime
 
@@ -136,6 +137,52 @@ def fetch_ai_cip_follow_through() -> pd.DataFrame:
     """
     logger.info("Fetching AI-extracted CIP follow-through rates")
 
+    def _load_cip_file() -> pd.DataFrame:
+        if not settings.CIP_AI_EXTRACTED_PATH:
+            return pd.DataFrame()
+
+        path = Path(settings.CIP_AI_EXTRACTED_PATH)
+        if not path.exists():
+            logger.warning(f"CIP_AI_EXTRACTED_PATH not found: {path}")
+            return pd.DataFrame()
+
+        try:
+            if path.suffix.lower() in {".parquet", ".pq"}:
+                local_df = pd.read_parquet(path)
+            else:
+                local_df = pd.read_csv(path, compression="infer", dtype=str, low_memory=False)
+        except Exception as e:
+            logger.warning(f"Failed to read CIP local file {path}: {e}")
+            return pd.DataFrame()
+
+        if local_df.empty:
+            return pd.DataFrame()
+
+        local_df.columns = [c.strip().lower() for c in local_df.columns]
+        fips_col = None
+        for cand in ["fips_code", "geoid", "county_fips", "fips"]:
+            if cand in local_df.columns:
+                fips_col = cand
+                break
+        rate_col = None
+        for cand in ["cip_follow_through_rate", "cip_follow_through", "follow_through_rate", "claim_value"]:
+            if cand in local_df.columns:
+                rate_col = cand
+                break
+        if not fips_col or not rate_col:
+            logger.warning("CIP local file missing fips_code/cip_follow_through_rate columns")
+            return pd.DataFrame()
+
+        local_df = local_df[[fips_col, rate_col]].rename(columns={
+            fips_col: "fips_code",
+            rate_col: "cip_follow_through_rate"
+        })
+        local_df["fips_code"] = local_df["fips_code"].astype(str).str.zfill(5)
+        local_df["cip_follow_through_rate"] = pd.to_numeric(local_df["cip_follow_through_rate"], errors="coerce")
+        local_df = local_df.dropna(subset=["cip_follow_through_rate"])
+        local_df = local_df[local_df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
+        return local_df
+
     with get_db() as db:
         # Query ai_evidence_link for CIP follow-through claims
         query = text("""
@@ -154,7 +201,14 @@ def fetch_ai_cip_follow_through() -> pd.DataFrame:
         df = pd.read_sql(query, db.connection())
 
     if df.empty:
-        logger.warning("No AI-extracted CIP data found")
+        local_df = _load_cip_file()
+        if not local_df.empty:
+            logger.info(f"Loaded CIP follow-through data for {len(local_df)} counties from local file")
+            return local_df
+        if settings.CIP_AI_EXTRACTED_PATH:
+            logger.warning("No AI-extracted CIP data found in DB or local file")
+        else:
+            logger.info("No AI-extracted CIP data found")
         return pd.DataFrame()
 
     logger.info(f"Found CIP follow-through data for {len(df)} counties")
