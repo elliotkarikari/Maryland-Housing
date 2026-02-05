@@ -15,7 +15,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import text
 import argparse
 from typing import Optional
@@ -271,7 +271,7 @@ def fetch_low_vacancy_counties() -> pd.DataFrame:
         logger.warning("Low vacancy file missing county FIPS column")
         return pd.DataFrame()
 
-    fy_year = _parse_low_vacancy_year(Path(source_path)) or datetime.utcnow().year
+    fy_year = _parse_low_vacancy_year(Path(source_path)) or datetime.now(timezone.utc).year
 
     df['fips_code'] = pd.to_numeric(df[fips_col], errors='coerce')
     df['fips_code'] = df['fips_code'].dropna().astype(int).astype(str).str.zfill(5)
@@ -285,7 +285,7 @@ def fetch_low_vacancy_counties() -> pd.DataFrame:
     df['low_vacancy_fy'] = fy_year
     df['low_vacancy_county_flag'] = True
     df['source_url'] = settings.LOW_VACANCY_COUNTIES_URL or str(source_path)
-    df['fetch_date'] = datetime.utcnow().date().isoformat()
+    df['fetch_date'] = datetime.now(timezone.utc).date().isoformat()
     df['is_real'] = True
 
     return df[[
@@ -431,7 +431,7 @@ def _aggregate_usps_vacancy_records(
     columns = list(df.columns)
 
     year_col = _find_col(columns, ["year", "yr", "time"])
-    data_year = max(target_years) if target_years else datetime.utcnow().year
+    data_year = max(target_years) if target_years else datetime.now(timezone.utc).year
     if year_col:
         df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
         if (df[year_col] == data_year).any():
@@ -519,7 +519,7 @@ def _aggregate_usps_vacancy_records(
     )
     agg['data_year'] = data_year
     agg['source_url'] = source_label
-    agg['fetch_date'] = datetime.utcnow().date().isoformat()
+    agg['fetch_date'] = datetime.now(timezone.utc).date().isoformat()
     agg['is_real'] = True
     return agg
 
@@ -671,7 +671,7 @@ def fetch_irs_migration_by_year() -> dict[int, pd.DataFrame]:
                 f"https://www.irs.gov/pub/irs-soi/countyinflow{year_range}.csv; "
                 f"https://www.irs.gov/pub/irs-soi/countyoutflow{year_range}.csv"
             )
-            df['fetch_date'] = datetime.utcnow().date().isoformat()
+            df['fetch_date'] = datetime.now(timezone.utc).date().isoformat()
             df['is_real'] = True
             results[data_year] = df
             logger.info(f"Loaded IRS migration data for {year_range} ({data_year})")
@@ -784,7 +784,7 @@ def main():
         parser.add_argument('--single-year', action='store_true', help='Fetch only single year (default: multi-year)')
         args = parser.parse_args()
 
-        current_year = datetime.utcnow().year
+        current_year = datetime.now(timezone.utc).year
         latest_year = args.year or min(settings.ACS_LATEST_YEAR, current_year)
         if latest_year > settings.ACS_LATEST_YEAR:
             logger.warning(
@@ -837,10 +837,15 @@ def main():
             )
             return
 
-        valid_frames = [
-            frame for frame in all_years
-            if frame is not None and not frame.empty and not frame.isna().all().all()
-        ]
+        valid_frames = []
+        for frame in all_years:
+            if frame is None or frame.empty:
+                continue
+            trimmed = frame.dropna(axis=1, how='all')
+            if trimmed.empty or trimmed.isna().all().all():
+                continue
+            valid_frames.append(trimmed)
+
         if not valid_frames:
             logger.warning("No non-empty demographic records available after source filtering")
             return

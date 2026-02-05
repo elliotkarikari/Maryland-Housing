@@ -30,7 +30,7 @@ import hashlib
 import tempfile
 import zipfile
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 import warnings
@@ -274,7 +274,7 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
             feed_date=feed_date,
             file_hash=file_hash,
             source_url=feed_info['url'],
-            fetch_date=datetime.utcnow().date().isoformat(),
+            fetch_date=datetime.now(timezone.utc).date().isoformat(),
             is_real=True
         ))
 

@@ -412,13 +412,18 @@ async def get_layer_detail(
         # Build column list for query
         factor_cols = [f["col"] for f in config["factors"]]
         col_list = ", ".join([f'"{c}"' if c != "data_year" else c for c in factor_cols + ["data_year"]])
+        primary_col = next((f["col"] for f in config["factors"] if f.get("weight") == 1.0), factor_cols[0])
+        any_value_expr = " OR ".join([f'"{c}" IS NOT NULL' for c in factor_cols])
 
-        # Query layer table
+        # Query layer table, preferring rows that actually contain layer values.
         layer_query = text(f"""
             SELECT {col_list}
             FROM {config["table"]}
             WHERE fips_code = :geoid
-            ORDER BY data_year DESC
+            ORDER BY
+                CASE WHEN "{primary_col}" IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN ({any_value_expr}) THEN 0 ELSE 1 END,
+                data_year DESC
             LIMIT 1
         """)
 
@@ -484,6 +489,19 @@ async def get_layer_detail(
             if f.weight == 1.0:
                 main_score = f.value
                 break
+
+        # Fallback to final synthesis score if the layer table has null main score.
+        if main_score is None:
+            summary_col = f"{layer_key}_score"
+            summary_query = text(f"""
+                SELECT "{summary_col}" AS layer_score
+                FROM final_synthesis_current
+                WHERE geoid = :geoid
+                LIMIT 1
+            """)
+            summary_result = db.execute(summary_query, {"geoid": geoid}).fetchone()
+            if summary_result and summary_result.layer_score is not None:
+                main_score = float(summary_result.layer_score)
 
         return LayerDetail(
             layer_key=layer_key,

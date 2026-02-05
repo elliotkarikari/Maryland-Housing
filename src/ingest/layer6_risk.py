@@ -219,7 +219,7 @@ def _compute_ejscreen_metrics(year: int = EJSCREEN_YEAR) -> pd.DataFrame:
     try:
         df = fetch_epa_ejscreen(year=year, prefer_zenodo=False)
     except Exception as e:
-        logger.warning(f"EJScreen fetch failed; skipping pollution metrics: {e}")
+        logger.info(f"EJScreen fetch failed; skipping pollution metrics: {e}")
         return pd.DataFrame(columns=["fips_code"])
     if df.empty or 'ID' not in df.columns:
         return pd.DataFrame(columns=["fips_code"])

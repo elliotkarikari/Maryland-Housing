@@ -8,7 +8,7 @@ import io
 import time
 import random
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import pandas as pd
 from typing import Optional, Dict, Any, Tuple, List
 from functools import wraps
@@ -25,7 +25,7 @@ def attach_source_metadata(df: pd.DataFrame, source_url: str) -> pd.DataFrame:
         return df
     df = df.copy()
     df["source_url"] = source_url
-    df["fetch_date"] = datetime.utcnow().date().isoformat()
+    df["fetch_date"] = datetime.now(timezone.utc).date().isoformat()
     df["is_real"] = True
     return df
 
@@ -620,7 +620,7 @@ def fetch_epa_ejscreen(
                     last_error = e
                     continue
 
-    logger.error(f"Failed to fetch EPA EJScreen data: {last_error}")
+    logger.info(f"Failed to fetch EPA EJScreen data: {last_error}")
     raise last_error if last_error else RuntimeError("EJScreen download failed")
 
 

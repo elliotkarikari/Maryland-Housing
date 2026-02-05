@@ -28,7 +28,7 @@ import os
 import sys
 import hashlib
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import warnings
@@ -160,7 +160,7 @@ def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
         logger.warning("Census API key missing; cannot fetch QWI API")
         return pd.DataFrame()
 
-    current_year = datetime.utcnow().year
+    current_year = datetime.now(timezone.utc).year
     start_year = min(data_year, current_year - 1)
     target_years = list(range(start_year, max(start_year - 3, 1990) - 1, -1))
 
@@ -426,7 +426,7 @@ def download_lodes_wac_segments(year: int) -> pd.DataFrame:
             df['tract_geoid'] = df['tract_geoid'].astype(str)
             df['fips_code'] = df['fips_code'].astype(str)
         df['source_url'] = "https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/"
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['fetch_date'] = datetime.now(timezone.utc).date().isoformat()
         df['is_real'] = True
         return df
 
@@ -480,7 +480,7 @@ def download_lodes_wac_segments(year: int) -> pd.DataFrame:
             f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE02_JT00_{year}.csv.gz; "
             f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE03_JT00_{year}.csv.gz"
         )
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['fetch_date'] = datetime.now(timezone.utc).date().isoformat()
         df['is_real'] = True
 
         # Cache
@@ -513,7 +513,7 @@ def download_lodes_rac(year: int) -> pd.DataFrame:
         logger.info(f"Using cached LODES RAC: {cache_path}")
         df = pd.read_csv(cache_path, dtype={'h_geocode': str})
         df['source_url'] = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['fetch_date'] = datetime.now(timezone.utc).date().isoformat()
         df['is_real'] = True
         return df
 
@@ -537,7 +537,7 @@ def download_lodes_rac(year: int) -> pd.DataFrame:
         df = df[df['fips_code'].str.startswith('24')]
 
         df['source_url'] = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
+        df['fetch_date'] = datetime.now(timezone.utc).date().isoformat()
         df['is_real'] = True
 
         # Cache

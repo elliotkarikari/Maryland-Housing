@@ -16,7 +16,7 @@ Signals Produced:
 import sys
 from pathlib import Path
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import text
 import argparse
 
@@ -290,7 +290,7 @@ def run_layer4_ingestion(data_year: int = None, multi_year: bool = True):
         data_year: Latest year to process (default: 2021, latest ACS 5-year)
         multi_year: If True, fetch 3 years of ACS data; if False, single year only
     """
-    current_year = datetime.utcnow().year
+    current_year = datetime.now(timezone.utc).year
     latest_year = data_year or min(settings.ACS_LATEST_YEAR, current_year)
 
     if multi_year:

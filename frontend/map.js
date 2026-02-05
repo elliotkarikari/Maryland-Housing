@@ -3,11 +3,16 @@
 
 // Configuration
 const MAPBOX_TOKEN = 'pk.eyJ1IjoiZWxrYXJpMjMiLCJhIjoiY2tubm04b3BkMTYwcTJzcG5tZDZ2YTV5MSJ9.S0oAvquhkkMoDGrRJ_oP-Q';
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v1';
-const GEOJSON_PATH = `${API_BASE_URL}/layers/counties/latest`;  // API endpoint
+const API_BASE_URL = `${window.location.protocol}//${window.location.hostname}:8000/api/v1`;
+const GEOJSON_PATHS = [
+    `${API_BASE_URL}/layers/counties/latest`,
+    './md_counties_latest.geojson',
+    '/md_counties_latest.geojson'
+];
 
 // Currently selected county FIPS (for layer detail lookups)
 let currentFipsCode = null;
+let currentCountySummary = null;
 
 // Color schemes for different layers
 const SYNTHESIS_COLORS = {
@@ -49,6 +54,33 @@ const CONFIDENCE_LABELS = {
     'strong': 'Strong Evidence',
     'conditional': 'Conditional Evidence',
     'fragile': 'Fragile Evidence'
+};
+
+const LAYER_DECISION_GUIDANCE = {
+    employment_gravity: {
+        signal: 'Can households reach strong jobs and wage growth opportunities?',
+        use: 'Prioritize workforce and employer strategies where this score is low.'
+    },
+    mobility_optionality: {
+        signal: 'How many practical commute options exist across modes?',
+        use: 'Low scores indicate transit/reliability constraints that can block growth.'
+    },
+    school_trajectory: {
+        signal: 'Are school systems supporting long-run family stability?',
+        use: 'Low scores suggest education quality or enrollment pressure risk.'
+    },
+    housing_elasticity: {
+        signal: 'Can housing supply respond to demand without major affordability strain?',
+        use: 'Low scores flag affordability pressure and permitting bottlenecks.'
+    },
+    demographic_momentum: {
+        signal: 'Are working-age and family population dynamics reinforcing growth?',
+        use: 'Low scores suggest out-migration or weaker household formation.'
+    },
+    risk_drag: {
+        signal: 'How much environmental/infrastructure risk can erode gains?',
+        use: 'Higher risk drag means stronger resilience mitigation is needed.'
+    }
 };
 
 // Initialize Mapbox
@@ -205,6 +237,30 @@ let activeLegendFilter = null;
 const DEFAULT_FILL_OPACITY = 0.7;
 const DIMMED_FILL_OPACITY = 0.18;
 
+async function fetchGeojsonWithFallback(paths) {
+    const errors = [];
+
+    for (const path of paths) {
+        try {
+            const response = await fetch(path);
+            if (!response.ok) {
+                errors.push(`${path} (${response.status})`);
+                continue;
+            }
+            const data = await response.json();
+            if (!data || data.type !== 'FeatureCollection') {
+                errors.push(`${path} (invalid GeoJSON payload)`);
+                continue;
+            }
+            return data;
+        } catch (error) {
+            errors.push(`${path} (${error.message})`);
+        }
+    }
+
+    throw new Error(`No reachable GeoJSON source. Tried: ${errors.join('; ')}`);
+}
+
 // Update loading status helper
 function updateLoadingStatus(text) {
     const statusEl = document.getElementById('loading-status');
@@ -236,9 +292,8 @@ map.on('load', async () => {
         map.on('move', updateColorReveal);
         map.on('resize', updateColorReveal);
 
-        // Fetch GeoJSON data
-        const response = await fetch(GEOJSON_PATH);
-        const geojsonData = await response.json();
+        // Fetch GeoJSON data (API first, local fallback)
+        const geojsonData = await fetchGeojsonWithFallback(GEOJSON_PATHS);
 
         updateLoadingStatus('Rendering map layers...');
 
@@ -703,7 +758,7 @@ function setupInteractivity() {
             const groupingClass = props.synthesis_grouping || 'high_uncertainty';
 
             // Format composite score
-            const score = props.composite_score
+            const score = props.composite_score !== null && props.composite_score !== undefined
                 ? parseFloat(props.composite_score).toFixed(2)
                 : 'N/A';
 
@@ -786,6 +841,47 @@ function renderScoreBar(value) {
     `;
 }
 
+function classifyScoreBand(score) {
+    if (score === null || score === undefined || Number.isNaN(score)) {
+        return 'No score available';
+    }
+    if (score >= 0.67) return 'Strong';
+    if (score >= 0.34) return 'Moderate';
+    return 'Weak';
+}
+
+function renderDecisionLens(data) {
+    const directional = DIRECTIONAL_LABELS[data.directional_class] || 'Unknown';
+    const confidence = CONFIDENCE_LABELS[data.confidence_class] || 'Unknown';
+    const scoreBand = classifyScoreBand(data.composite_score);
+
+    return `
+        <div class="panel-section decision-lens">
+            <h4>How To Use This</h4>
+            <div class="list-item"><strong>Directional Trajectory:</strong> ${directional} describes current pressure direction.</div>
+            <div class="list-item"><strong>Evidence Confidence:</strong> ${confidence} indicates how much to trust the signal coverage.</div>
+            <div class="list-item"><strong>Composite Score:</strong> ${scoreBand} (${data.composite_score !== null && data.composite_score !== undefined ? data.composite_score.toFixed(3) : 'N/A'}) is relative county standing (0-1).</div>
+            <div class="list-item">Use weak + strong confidence as a near-term intervention priority.</div>
+        </div>
+    `;
+}
+
+function renderLayerGuidance(layerKey, scoreValue) {
+    const guidance = LAYER_DECISION_GUIDANCE[layerKey];
+    if (!guidance) {
+        return '';
+    }
+    const scoreBand = classifyScoreBand(scoreValue);
+    return `
+        <div class="layer-guidance">
+            <h4>What This Means For Decisions</h4>
+            <p><strong>Signal:</strong> ${guidance.signal}</p>
+            <p><strong>Interpretation:</strong> ${scoreBand} layer strength for this county.</p>
+            <p><strong>Action:</strong> ${guidance.use}</p>
+        </div>
+    `;
+}
+
 // Load county detail from API
 async function loadCountyDetail(fipsCode) {
     try {
@@ -796,7 +892,11 @@ async function loadCountyDetail(fipsCode) {
         }
         currentFipsCode = fipsCode;
         const response = await fetch(`${API_BASE_URL}/areas/${fipsCode}`);
+        if (!response.ok) {
+            throw new Error(`Area detail API returned ${response.status}`);
+        }
         const data = await response.json();
+        currentCountySummary = data;
 
         // Populate side panel
         document.getElementById('panel-title').textContent = data.county_name;
@@ -806,7 +906,7 @@ async function loadCountyDetail(fipsCode) {
         const layerScoresContent = Object.entries(data.layer_scores).map(([key, value]) => {
             const displayValue = value !== null ? parseFloat(value).toFixed(3) : 'No Data';
             return `
-                <div class="score-item clickable" onclick="loadLayerDetail('${key}')" title="Click to see factor breakdown">
+                <div class="score-item clickable" data-layer-key="${key}" onclick="loadLayerDetail('${key}')" title="Click to see factor breakdown">
                     <div class="score-label">${formatLayerName(key)}</div>
                     <div class="score-value ${value === null ? 'null' : ''}">
                         ${displayValue}
@@ -843,7 +943,7 @@ async function loadCountyDetail(fipsCode) {
                     </div>
                     <div class="score-item">
                         <div class="score-label">Composite Score</div>
-                        <div class="score-value">${data.composite_score ? data.composite_score.toFixed(3) : 'N/A'}</div>
+                        <div class="score-value">${data.composite_score !== null && data.composite_score !== undefined ? data.composite_score.toFixed(3) : 'N/A'}</div>
                         ${renderScoreBar(data.composite_score)}
                     </div>
                     <div class="score-item">
@@ -852,6 +952,8 @@ async function loadCountyDetail(fipsCode) {
                     </div>
                 </div>
             </div>
+
+            ${renderDecisionLens(data)}
 
             <div class="panel-section layer-scores" id="layer-scores">
                 <button class="section-toggle" onclick="toggleLayerScores()" aria-expanded="false" aria-controls="layer-scores-content">
@@ -863,6 +965,13 @@ async function loadCountyDetail(fipsCode) {
                     <div class="score-grid">
                         ${layerScoresContent}
                     </div>
+                </div>
+            </div>
+
+            <div class="panel-section layer-detail-inline" id="layer-detail-inline">
+                <h4 id="layer-detail-title">Layer Detail</h4>
+                <div id="layer-detail-body" class="layer-empty-state">
+                    Click a layer score to open factor detail and interpretation guidance.
                 </div>
             </div>
 
@@ -903,16 +1012,30 @@ async function loadCountyDetail(fipsCode) {
 
     } catch (error) {
         console.error('Error loading county detail:', error);
-        alert('Failed to load county details. Please try again.');
+        alert('County detail API is unavailable. Start backend with `make serve` to enable drill-down panels.');
     }
 }
 
-// Load layer detail and show modal
+// Load layer detail inline in the right-side county panel
 async function loadLayerDetail(layerKey) {
     if (!currentFipsCode) {
         console.error('No county selected');
         return;
     }
+
+    const detailTitleEl = document.getElementById('layer-detail-title');
+    const detailBodyEl = document.getElementById('layer-detail-body');
+    const detailSectionEl = document.getElementById('layer-detail-inline');
+    if (!detailTitleEl || !detailBodyEl || !detailSectionEl) {
+        console.error('Layer detail inline container not found');
+        return;
+    }
+
+    detailTitleEl.textContent = `${formatLayerName(layerKey)} Detail`;
+    detailBodyEl.innerHTML = '<div class="layer-empty-note">Loading layer detail...</div>';
+    document.querySelectorAll('.score-item.clickable').forEach((el) => {
+        el.classList.toggle('active', el.getAttribute('data-layer-key') === layerKey);
+    });
 
     try {
         const response = await fetch(`${API_BASE_URL}/areas/${currentFipsCode}/layers/${layerKey}`);
@@ -922,17 +1045,21 @@ async function loadLayerDetail(layerKey) {
         }
 
         const data = await response.json();
-
-        // Update modal header
-        document.getElementById('layer-modal-title').textContent = data.display_name;
-        document.getElementById('layer-modal-desc').textContent = data.description;
+        const scoreFromSummary = currentCountySummary?.layer_scores?.[layerKey];
+        const effectiveScore = data.score !== null && data.score !== undefined
+            ? data.score
+            : (typeof scoreFromSummary === 'number' ? scoreFromSummary : null);
+        detailTitleEl.textContent = `${data.display_name} Detail`;
 
         // Get trend icon
         const trendIcon = getTrendIcon(data.momentum_direction);
         const trendText = getTrendText(data.momentum_direction, data.momentum_slope);
 
         // Build factor list
-        const factorHtml = data.factors.map(f => {
+        const availableFactors = data.factors.filter((f) => f.value !== null && f.value !== undefined);
+        const missingFactorCount = Math.max(0, data.factors.length - availableFactors.length);
+
+        const factorHtml = availableFactors.map(f => {
             const factorTrend = f.trend ? getTrendIcon(f.trend) : '';
             const weightText = f.weight ? `Weight: ${(f.weight * 100).toFixed(0)}%` : '';
 
@@ -951,12 +1078,12 @@ async function loadLayerDetail(layerKey) {
             `;
         }).join('');
 
-        // Build modal body content
+        // Build inline detail content
         const bodyContent = `
             <div class="layer-score-main">
                 <div>
                     <div style="font-size: 12px; color: #666; margin-bottom: 4px;">Overall Score</div>
-                    <div class="layer-score-value">${data.score !== null ? data.score.toFixed(3) : 'N/A'}</div>
+                    <div class="layer-score-value">${effectiveScore !== null ? effectiveScore.toFixed(3) : 'N/A'}</div>
                 </div>
                 <div class="layer-score-trend">
                     <div class="layer-trend-icon ${data.momentum_direction || ''}">${trendIcon}</div>
@@ -968,9 +1095,12 @@ async function loadLayerDetail(layerKey) {
                 <strong>Formula:</strong> ${data.formula}
             </div>
 
+            ${renderLayerGuidance(layerKey, effectiveScore)}
+
             <div class="layer-factors">
                 <h4>Contributing Factors</h4>
-                ${factorHtml}
+                ${factorHtml || '<div class="layer-empty-state">Detailed factor metrics are not populated for this county/year. Use the layer score and trend for decisions.</div>'}
+                ${missingFactorCount > 0 ? `<div class="layer-empty-note">${missingFactorCount} factor(s) hidden because values are unavailable.</div>` : ''}
             </div>
 
             <div class="layer-metadata">
@@ -980,23 +1110,19 @@ async function loadLayerDetail(layerKey) {
             </div>
         `;
 
-        document.getElementById('layer-modal-body').innerHTML = bodyContent;
-
-        // Show modal
-        document.getElementById('layer-modal').classList.add('open');
+        detailBodyEl.innerHTML = bodyContent;
+        detailSectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     } catch (error) {
         console.error('Error loading layer detail:', error);
-        // Show a simpler error message instead of alert
-        document.getElementById('layer-modal-title').textContent = 'Layer Details';
-        document.getElementById('layer-modal-desc').textContent = '';
-        document.getElementById('layer-modal-body').innerHTML = `
-            <div style="padding: 20px; text-align: center; color: #666;">
+        detailTitleEl.textContent = `${formatLayerName(layerKey)} Detail`;
+        detailBodyEl.innerHTML = `
+            <div class="layer-empty-state">
                 <p>Unable to load detailed factor breakdown.</p>
-                <p style="font-size: 12px; margin-top: 10px;">The data may not be available for this layer.</p>
+                <p style="font-size: 12px; margin-top: 10px;">The data may not be available for this layer in this year.</p>
             </div>
         `;
-        document.getElementById('layer-modal').classList.add('open');
+        detailSectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 }
 
@@ -1055,6 +1181,7 @@ function closePanel() {
         map.setFilter('counties-hover', ['==', 'fips_code', '']);
     }
     currentFipsCode = null;
+    currentCountySummary = null;
 }
 
 // Clear selection (called from header button)
@@ -1198,12 +1325,6 @@ function formatLayerName(key) {
 // ESC key to close panels/modals
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-        // Close layer modal first if open
-        const layerModal = document.getElementById('layer-modal');
-        if (layerModal.classList.contains('open')) {
-            closeLayerModal();
-        } else {
-            closePanel();
-        }
+        closePanel();
     }
 });
