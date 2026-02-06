@@ -92,7 +92,7 @@ mapboxgl.accessToken = MAPBOX_TOKEN;
 
 const map = new mapboxgl.Map({
     container: 'map',
-    style: 'mapbox://styles/mapbox/streets-v12',
+    style: 'mapbox://styles/mapbox/light-v11',
     center: [-77.0, 39.0], // Center on Maryland
     zoom: 7,
     minZoom: 6,
@@ -106,10 +106,6 @@ if (mapControlsHost && controlContainer && !mapControlsHost.contains(controlCont
     mapControlsHost.appendChild(controlContainer);
 }
 
-const colorReveal = document.getElementById('color-reveal');
-let lastPointer = null;
-const REVEAL_START_ZOOM = 7.2;
-const REVEAL_END_ZOOM = 11.4;
 const PITCH_START_ZOOM = 9.5;
 const PITCH_END_ZOOM = 13.2;
 const MAX_PITCH = 45;
@@ -141,24 +137,6 @@ const URBAN_PULSE_THEMES = {
 
 const URBAN_PULSE_LAYER_IDS = Object.keys(URBAN_PULSE_THEMES).map((key) => `urban-${key}-poi`);
 let activePulse = null;
-
-function updateColorReveal() {
-    if (!colorReveal) {
-        return;
-    }
-    const zoom = map.getZoom();
-    const strength = Math.max(0, Math.min(1, (zoom - REVEAL_START_ZOOM) / (REVEAL_END_ZOOM - REVEAL_START_ZOOM)));
-    const rect = map.getContainer().getBoundingClientRect();
-    const radius = Math.hypot(rect.width, rect.height) * strength * 0.95;
-    const point = lastPointer || { x: rect.width / 2, y: rect.height / 2 };
-    const xPct = Math.max(0, Math.min(100, (point.x / rect.width) * 100));
-    const yPct = Math.max(0, Math.min(100, (point.y / rect.height) * 100));
-
-    colorReveal.style.setProperty('--reveal-x', `${xPct}%`);
-    colorReveal.style.setProperty('--reveal-y', `${yPct}%`);
-    colorReveal.style.setProperty('--reveal-radius', `${radius}px`);
-    colorReveal.style.setProperty('--reveal-strength', strength.toFixed(3));
-}
 
 function updatePitch() {
     const zoom = map.getZoom();
@@ -238,7 +216,7 @@ function debounceHover(callback, delay = 16) {
 // Current layer selection
 let currentLayer = 'synthesis';
 let activeLegendFilter = null;
-const DEFAULT_FILL_OPACITY = 0.85;
+const DEFAULT_FILL_OPACITY = 0.75;
 const DIMMED_FILL_OPACITY = 0.18;
 
 async function fetchGeojsonWithFallback(paths) {
@@ -277,24 +255,10 @@ map.on('load', async () => {
         updateLoadingStatus('Fetching county data...');
 
         add3DBuildings();
-        updateColorReveal();
-
-        map.on('mousemove', (e) => {
-            lastPointer = e.point;
-        });
-
-        map.on('touchmove', (e) => {
-            if (e.points && e.points[0]) {
-                lastPointer = e.points[0];
-            }
-        });
 
         map.on('zoom', () => {
-            updateColorReveal();
             updatePitch();
         });
-        map.on('move', updateColorReveal);
-        map.on('resize', updateColorReveal);
 
         // Fetch GeoJSON data (API first, local fallback)
         const geojsonData = await fetchGeojsonWithFallback(GEOJSON_PATHS);
@@ -1960,17 +1924,16 @@ function toggleTableView() {
     const toggleBtn = document.getElementById('view-toggle');
 
     if (tableViewActive) {
-        if (!tableEl.innerHTML.trim()) {
-            renderTableView();
-        }
+        document.body.classList.add('table-mode');
+        renderTableView();
         tableEl.classList.add('visible');
         mapEl.style.display = 'none';
         if (toggleBtn) toggleBtn.textContent = 'Map View';
     } else {
+        document.body.classList.remove('table-mode');
         tableEl.classList.remove('visible');
         mapEl.style.display = 'block';
         if (toggleBtn) toggleBtn.textContent = 'Table View';
-        // Resize map after showing it again
         setTimeout(() => map.resize(), 50);
     }
 }
@@ -1988,31 +1951,43 @@ function renderTableView() {
 
     let sortCol = 'composite_score';
     let sortDir = 'desc';
+    let filterText = '';
 
     const buildTable = (data) => {
+        const filtered = filterText
+            ? data.filter(f => f.properties.county_name.toLowerCase().includes(filterText))
+            : data;
+
         return `
             <table class="ranking-table">
                 <thead>
                     <tr>
                         <th data-col="rank">#</th>
-                        <th data-col="county_name" style="cursor: pointer;">County</th>
-                        <th data-col="synthesis_grouping" style="cursor: pointer;">Synthesis</th>
-                        <th data-col="composite_score" style="cursor: pointer;">Score</th>
-                        <th data-col="directional_class" style="cursor: pointer;">Trajectory</th>
-                        <th data-col="confidence_class" style="cursor: pointer;">Confidence</th>
+                        <th data-col="county_name" class="${sortCol === 'county_name' ? (sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc') : ''}">County</th>
+                        <th data-col="synthesis_grouping" class="${sortCol === 'synthesis_grouping' ? (sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc') : ''}">Synthesis</th>
+                        <th data-col="composite_score" class="${sortCol === 'composite_score' ? (sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc') : ''}">Score</th>
+                        <th data-col="directional_class" class="${sortCol === 'directional_class' ? (sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc') : ''}">Trajectory</th>
+                        <th data-col="confidence_class" class="${sortCol === 'confidence_class' ? (sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc') : ''}">Confidence</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${data.map((f, i) => {
+                    ${filtered.map((f, i) => {
                         const p = f.properties;
                         const badgeBg = SYNTHESIS_COLORS[p.synthesis_grouping] || '#ccc';
                         const badgeColor = p.synthesis_grouping === 'stable_constrained' ? '#333' : 'white';
+                        const score = p.composite_score !== null ? parseFloat(p.composite_score) : null;
+                        const scorePct = score !== null ? (score * 100).toFixed(0) : 0;
                         return `
-                            <tr onclick="tableRowClick('${p.fips_code}')" style="cursor: pointer;">
-                                <td style="color: #999; font-size: 12px;">${i + 1}</td>
+                            <tr onclick="tableRowClick('${p.fips_code}')">
+                                <td><span class="rank-number ${i < 3 ? 'top-3' : ''}">${i + 1}</span></td>
                                 <td style="font-weight: 600;">${p.county_name}</td>
-                                <td><span style="background: ${badgeBg}; color: ${badgeColor}; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;">${SYNTHESIS_LABELS[p.synthesis_grouping] || p.synthesis_grouping}</span></td>
-                                <td style="font-weight: 600;">${p.composite_score !== null ? parseFloat(p.composite_score).toFixed(3) : 'N/A'}</td>
+                                <td><span class="table-synthesis-badge" style="background: ${badgeBg}; color: ${badgeColor};">${SYNTHESIS_LABELS[p.synthesis_grouping] || p.synthesis_grouping}</span></td>
+                                <td>
+                                    <div class="table-score-cell">
+                                        <span style="font-weight: 600; min-width: 42px;">${score !== null ? score.toFixed(3) : 'N/A'}</span>
+                                        <div class="table-score-bar"><div class="table-score-bar-fill" style="width: ${scorePct}%"></div></div>
+                                    </div>
+                                </td>
                                 <td>${DIRECTIONAL_LABELS[p.directional_class] || p.directional_class}</td>
                                 <td>${CONFIDENCE_LABELS[p.confidence_class] || p.confidence_class}</td>
                             </tr>
@@ -2023,43 +1998,64 @@ function renderTableView() {
         `;
     };
 
+    const rebuildTable = () => {
+        const sorted = [...features].sort((a, b) => {
+            if (sortCol === 'rank') return 0;
+            let va = a.properties[sortCol], vb = b.properties[sortCol];
+            if (typeof va === 'string') {
+                return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+            }
+            va = va ?? -Infinity;
+            vb = vb ?? -Infinity;
+            return sortDir === 'asc' ? va - vb : vb - va;
+        });
+
+        const container = document.getElementById('ranking-table-container');
+        if (container) container.innerHTML = buildTable(sorted);
+        bindSortHandlers();
+    };
+
+    const bindSortHandlers = () => {
+        tableEl.querySelectorAll('th[data-col]').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.getAttribute('data-col');
+                if (col === 'rank') return;
+                if (sortCol === col) {
+                    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    sortCol = col;
+                    sortDir = col === 'composite_score' ? 'desc' : 'asc';
+                }
+                rebuildTable();
+            });
+        });
+    };
+
     tableEl.innerHTML = `
-        <div style="padding: 20px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                <h2 style="font-size: 18px; font-weight: 700;">Maryland County Rankings</h2>
-                <button onclick="exportAllCountiesCSV()" style="padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 12px;">Download CSV</button>
+        <div class="table-header-bar">
+            <h2>Maryland County Rankings</h2>
+            <input type="text" class="table-search" id="table-search" placeholder="Filter counties..." autocomplete="off">
+            <div class="table-header-actions">
+                <button onclick="exportAllCountiesCSV()" class="btn">Download CSV</button>
+                <button onclick="toggleTableView()" class="btn btn-primary">Map View</button>
             </div>
+        </div>
+        <div class="table-scroll-area">
             <div id="ranking-table-container">
                 ${buildTable(features)}
             </div>
         </div>
     `;
 
-    // Column sort handlers
-    tableEl.querySelectorAll('th[data-col]').forEach(th => {
-        th.addEventListener('click', () => {
-            const col = th.getAttribute('data-col');
-            if (col === 'rank') return;
-            if (sortCol === col) {
-                sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-            } else {
-                sortCol = col;
-                sortDir = col === 'composite_score' ? 'desc' : 'asc';
-            }
+    bindSortHandlers();
 
-            const sorted = [...features].sort((a, b) => {
-                let va = a.properties[col], vb = b.properties[col];
-                if (typeof va === 'string') {
-                    return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
-                }
-                va = va ?? -Infinity;
-                vb = vb ?? -Infinity;
-                return sortDir === 'asc' ? va - vb : vb - va;
-            });
-
-            document.getElementById('ranking-table-container').innerHTML = buildTable(sorted);
+    const searchInput = document.getElementById('table-search');
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            filterText = searchInput.value.trim().toLowerCase();
+            rebuildTable();
         });
-    });
+    }
 }
 
 function tableRowClick(fipsCode) {
