@@ -108,7 +108,8 @@ def _generate_explainability_payload(
         "mobility_optionality": "Mobility Optionality",
         "school_trajectory": "School System Trajectory",
         "housing_elasticity": "Housing Elasticity",
-        "demographic_momentum": "Demographic Momentum"
+        "demographic_momentum": "Demographic Momentum",
+        "risk_drag": "Composite Risk Drag"
     }
 
     strengths = _identify_top_strengths(layer_scores, top_n=2)

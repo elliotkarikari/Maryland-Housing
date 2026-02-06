@@ -101,7 +101,8 @@ def _generate_explainability_payload(
         "mobility_optionality": "Mobility Optionality",
         "school_trajectory": "School System Trajectory",
         "housing_elasticity": "Housing Elasticity",
-        "demographic_momentum": "Demographic Momentum"
+        "demographic_momentum": "Demographic Momentum",
+        "risk_drag": "Composite Risk Drag"
     }
 
     strengths = _identify_top_strengths(layer_scores, top_n=2)
@@ -183,7 +184,8 @@ def fetch_latest_synthesis() -> pd.DataFrame:
             "mobility_optionality": row.get('mobility_optionality_score'),
             "school_trajectory": row.get('school_trajectory_score'),
             "housing_elasticity": row.get('housing_elasticity_score'),
-            "demographic_momentum": row.get('demographic_momentum_score')
+            "demographic_momentum": row.get('demographic_momentum_score'),
+            "risk_drag": row.get('risk_drag_score')
         }
         payload = _generate_explainability_payload(
             directional_class=row.get('directional_status'),

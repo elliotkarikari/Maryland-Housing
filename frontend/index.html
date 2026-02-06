@@ -20,6 +20,25 @@
             --panel-width: 400px;
         }
 
+        /* Global focus indicator for keyboard navigation */
+        *:focus-visible {
+            outline: 2px solid #2563eb;
+            outline-offset: 2px;
+        }
+
+        /* Screen reader only utility */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border-width: 0;
+        }
+
         html, body {
             width: 100%;
             height: 100%;
@@ -255,6 +274,45 @@
             padding: 30px;
         }
 
+        /* Panel Tabs */
+        .panel-tabs {
+            display: flex;
+            border-bottom: 2px solid #e9ecef;
+            padding: 0 30px;
+            gap: 0;
+        }
+
+        .panel-tab {
+            padding: 10px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #6c757d;
+            cursor: pointer;
+            border: none;
+            background: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .panel-tab:hover {
+            color: #333;
+        }
+
+        .panel-tab.active {
+            color: #2d5016;
+            border-bottom-color: #2d5016;
+        }
+
+        .panel-tab-content {
+            display: none;
+        }
+
+        .panel-tab-content.active {
+            display: block;
+        }
+
         .panel-section {
             margin-bottom: 30px;
         }
@@ -367,77 +425,6 @@
 
         .score-trend.stable {
             color: #f57c00;
-        }
-
-        /* Layer Detail Modal */
-        .layer-modal {
-            position: fixed;
-            top: 16px;
-            bottom: 16px;
-            right: calc(var(--panel-width) + 16px);
-            width: min(560px, calc(100vw - var(--panel-width) - 48px));
-            background: transparent;
-            z-index: 100;
-            display: none;
-            pointer-events: none;
-        }
-
-        .layer-modal.open {
-            display: block;
-            pointer-events: auto;
-        }
-
-        .layer-modal-content {
-            background: white;
-            width: 100%;
-            height: 100%;
-            border-radius: 14px;
-            overflow: hidden;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-        }
-
-        .layer-modal-header {
-            padding: 20px 24px;
-            background: linear-gradient(135deg, #2d5016 0%, #4caf50 100%);
-            color: white;
-            position: relative;
-        }
-
-        .layer-modal-header h3 {
-            font-size: 20px;
-            margin-bottom: 4px;
-        }
-
-        .layer-modal-header p {
-            font-size: 13px;
-            opacity: 0.9;
-        }
-
-        .layer-modal-close {
-            position: absolute;
-            top: 16px;
-            right: 16px;
-            background: rgba(255, 255, 255, 0.2);
-            border: none;
-            color: white;
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            cursor: pointer;
-            font-size: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .layer-modal-close:hover {
-            background: rgba(255, 255, 255, 0.3);
-        }
-
-        .layer-modal-body {
-            padding: 24px;
-            overflow-y: auto;
-            max-height: calc(100% - 120px);
         }
 
         .layer-score-main {
@@ -695,8 +682,8 @@
             inset: 0;
             pointer-events: none;
             z-index: 1;
-            backdrop-filter: grayscale(1) saturate(0);
-            -webkit-backdrop-filter: grayscale(1) saturate(0);
+            backdrop-filter: grayscale(0.3) saturate(0.7);
+            -webkit-backdrop-filter: grayscale(0.3) saturate(0.7);
             mask-image: radial-gradient(
                 circle at var(--reveal-x, 50%) var(--reveal-y, 50%),
                 transparent 0,
@@ -1024,6 +1011,112 @@
             display: inline-flex;
         }
 
+        /* County Search */
+        .county-search-wrapper {
+            position: relative;
+            margin-top: 10px;
+        }
+
+        .county-search {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s;
+            box-sizing: border-box;
+        }
+
+        .county-search:focus {
+            border-color: #4caf50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.15);
+        }
+
+        .county-search-results {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 20;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .county-search-results.visible {
+            display: block;
+        }
+
+        .county-search-result {
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 13px;
+            border-bottom: 1px solid #f0f0f0;
+            transition: background 0.15s;
+        }
+
+        .county-search-result:hover,
+        .county-search-result.highlighted {
+            background: #e8f5e9;
+        }
+
+        .county-search-result:last-child {
+            border-bottom: none;
+        }
+
+        /* Table View */
+        .table-view {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background: white;
+            z-index: 5;
+            overflow-y: auto;
+        }
+
+        .table-view.visible {
+            display: block;
+        }
+
+        .ranking-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .ranking-table th {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 2px solid #e0e0e0;
+            font-size: 11px;
+            font-weight: 700;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            user-select: none;
+        }
+
+        .ranking-table th:hover {
+            color: #333;
+        }
+
+        .ranking-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #f0f0f0;
+            vertical-align: middle;
+        }
+
+        .ranking-table tr:hover td {
+            background: #f8faf8;
+        }
+
         /* Enhanced Tooltip */
         .mapboxgl-popup-content {
             padding: 12px 16px;
@@ -1069,6 +1162,16 @@
         .tooltip-grouping.stable_constrained { background: #fffde7; color: #f9a825; }
         .tooltip-grouping.at_risk_headwinds { background: #fbe9e7; color: #d84315; }
         .tooltip-grouping.high_uncertainty { background: #f5f5f5; color: #616161; }
+
+        /* Directional layer tooltip colors */
+        .tooltip-grouping.improving { background: #e8f5e9; color: #2e7d32; }
+        .tooltip-grouping.stable { background: #fff8e1; color: #f57f17; }
+        .tooltip-grouping.at_risk { background: #fbe9e7; color: #c62828; }
+
+        /* Confidence layer tooltip colors */
+        .tooltip-grouping.strong { background: #e3f2fd; color: #1565c0; }
+        .tooltip-grouping.conditional { background: #fff3e0; color: #e65100; }
+        .tooltip-grouping.fragile { background: #fce4ec; color: #c62828; }
 
         /* Layer score progressive disclosure */
         .section-toggle {
@@ -1144,23 +1247,52 @@
                 left: 10px;
                 right: 10px;
                 top: 10px;
-                padding: 16px 20px;
+                padding: 12px 16px;
+                max-width: none;
             }
 
             .header h1 {
-                font-size: 18px;
+                font-size: 16px;
+            }
+
+            .header p {
+                font-size: 12px;
+                margin-top: 4px;
+            }
+
+            .county-search {
+                font-size: 16px; /* Prevent iOS zoom on focus */
             }
 
             .legend {
                 left: 10px;
-                bottom: 20px;
+                bottom: 70px; /* Above layer controls */
                 max-width: 240px;
             }
 
+            /* Move layer controls to bottom bar on mobile */
             .layer-controls {
-                top: 100px;
+                top: auto;
+                bottom: 10px;
+                left: 10px;
                 right: 10px;
-                min-width: 160px;
+                min-width: auto;
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+                align-items: center;
+                padding: 10px 12px;
+            }
+
+            .layer-controls h4 {
+                display: none;
+            }
+
+            .layer-option {
+                font-size: 12px;
+                flex: 1;
+                text-align: center;
+                min-width: 0;
             }
 
             .side-panel {
@@ -1185,15 +1317,9 @@
                 top: 100px !important;
             }
 
-            .layer-modal {
-                top: 0;
-                bottom: 0;
-                right: 0;
-                width: 100%;
-            }
-
-            .layer-modal-content {
-                border-radius: 0;
+            /* Comparison table on mobile */
+            .panel-section table {
+                font-size: 12px;
             }
         }
     </style>
@@ -1217,13 +1343,23 @@
         <div id="map-controls"></div>
         <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="closePanel()"></div>
 
+        <!-- Table View Container -->
+        <div id="table-view" class="table-view"></div>
+
         <!-- Header -->
         <div class="header">
-            <h1>Maryland Growth & Family Viability Atlas</h1>
+            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <h1>Maryland Growth & Family Viability Atlas</h1>
+                <button id="view-toggle" onclick="toggleTableView()" style="padding: 4px 10px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 12px; white-space: nowrap; margin-left: 12px;">Table View</button>
+            </div>
             <p>
                 Real-data structural trajectories across Maryland counties.
                 <strong>Click a county</strong> for detailed breakdown.
             </p>
+            <div class="county-search-wrapper">
+                <input type="text" id="county-search" class="county-search" placeholder="Search county..." autocomplete="off" aria-label="Search for a Maryland county">
+                <div id="county-search-results" class="county-search-results"></div>
+            </div>
             <button id="clear-selection" class="clear-selection" onclick="clearSelection()" aria-label="Clear county selection">
                 <span>✕</span> Clear Selection
             </button>
@@ -1238,31 +1374,31 @@
                 </button>
             </div>
             <div id="legend-content" class="legend-content">
-            <button class="legend-item" data-group="emerging_tailwinds" type="button" aria-pressed="false">
+            <button class="legend-item" data-group="emerging_tailwinds" type="button" aria-pressed="false" aria-label="Filter map to show only Emerging Tailwinds counties">
                 <span class="legend-color" style="background: #2d5016;"></span>
                 <span class="legend-label">Emerging Tailwinds</span>
             </button>
             <div class="legend-description">Reinforcing tailwinds across real-data layers</div>
 
-            <button class="legend-item" data-group="conditional_growth" type="button" aria-pressed="false">
+            <button class="legend-item" data-group="conditional_growth" type="button" aria-pressed="false" aria-label="Filter map to show only Conditional Growth counties">
                 <span class="legend-color" style="background: #7cb342;"></span>
                 <span class="legend-label">Conditional Growth</span>
             </button>
             <div class="legend-description">Upside exists; delivery risk matters</div>
 
-            <button class="legend-item" data-group="stable_constrained" type="button" aria-pressed="false">
+            <button class="legend-item" data-group="stable_constrained" type="button" aria-pressed="false" aria-label="Filter map to show only Stable Constrained counties">
                 <span class="legend-color" style="background: #fdd835;"></span>
                 <span class="legend-label">Stable Constrained</span>
             </button>
             <div class="legend-description">Steady pressures, limited upside</div>
 
-            <button class="legend-item" data-group="at_risk_headwinds" type="button" aria-pressed="false">
+            <button class="legend-item" data-group="at_risk_headwinds" type="button" aria-pressed="false" aria-label="Filter map to show only At Risk / Headwinds counties">
                 <span class="legend-color" style="background: #f4511e;"></span>
                 <span class="legend-label">At Risk / Headwinds</span>
             </button>
             <div class="legend-description">Headwinds dominate outcomes</div>
 
-            <button class="legend-item" data-group="high_uncertainty" type="button" aria-pressed="false">
+            <button class="legend-item" data-group="high_uncertainty" type="button" aria-pressed="false" aria-label="Filter map to show only High Uncertainty counties">
                 <span class="legend-color" style="background: #757575;"></span>
                 <span class="legend-label">High Uncertainty</span>
             </button>
@@ -1293,31 +1429,18 @@
         </div>
 
         <!-- Side Panel -->
-        <div id="side-panel" class="side-panel" data-compare-ready="false" data-compare-mode="off">
+        <div id="side-panel" class="side-panel" role="complementary" aria-label="County detail panel" data-compare-ready="false" data-compare-mode="off">
             <div class="panel-header">
                 <button class="compare-toggle" onclick="toggleCompareMode()" aria-pressed="false">Compare</button>
-                <button class="panel-close" onclick="closePanel()">&times;</button>
-                <div class="panel-title" id="panel-title">County Name</div>
-                <div class="panel-subtitle" id="panel-subtitle">FIPS: 24000 | Data Year: 2021</div>
+                <button class="panel-close" onclick="closePanel()" aria-label="Close panel">&times;</button>
+                <div class="panel-title" id="panel-title" role="heading" aria-level="2">County Name</div>
+                <div class="panel-subtitle" id="panel-subtitle">Data Year: 2021</div>
             </div>
-            <div class="panel-content" id="panel-content">
+            <div class="panel-content" id="panel-content" aria-live="polite">
                 <!-- Content loaded dynamically -->
             </div>
         </div>
 
-        <!-- Layer Detail Modal -->
-        <div id="layer-modal" class="layer-modal" onclick="closeLayerModal(event)">
-            <div class="layer-modal-content" onclick="event.stopPropagation()">
-                <div class="layer-modal-header">
-                    <button class="layer-modal-close" onclick="closeLayerModal()">&times;</button>
-                    <h3 id="layer-modal-title">Layer Name</h3>
-                    <p id="layer-modal-desc">Layer description</p>
-                </div>
-                <div class="layer-modal-body" id="layer-modal-body">
-                    <!-- Content loaded dynamically -->
-                </div>
-            </div>
-        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
