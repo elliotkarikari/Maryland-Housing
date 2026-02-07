@@ -15,7 +15,7 @@ import geopandas as gpd
 import pandas as pd
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import text
 import hashlib
@@ -171,6 +171,36 @@ def fetch_latest_synthesis() -> pd.DataFrame:
         logger.warning("No synthesis records found in database")
         return pd.DataFrame()
 
+    # Backfill null layer scores from individual layer tables
+    _BACKFILL_CONFIGS = {
+        'employment_gravity_score': ('layer1_employment_gravity', 'economic_opportunity_index'),
+        'mobility_optionality_score': ('layer2_mobility_optionality', 'mobility_optionality_index'),
+        'school_trajectory_score': ('layer3_school_trajectory', 'education_opportunity_index'),
+        'housing_elasticity_score': ('layer4_housing_elasticity', 'housing_opportunity_index'),
+        'demographic_momentum_score': ('layer5_demographic_momentum', 'demographic_opportunity_index'),
+        'risk_drag_score': ('layer6_risk_drag', 'risk_drag_index'),
+    }
+    for score_col, (table, primary_col) in _BACKFILL_CONFIGS.items():
+        if score_col in df.columns and df[score_col].isna().any():
+            try:
+                with get_db() as db2:
+                    bq = text(f"""
+                        SELECT fips_code, "{primary_col}" AS val
+                        FROM {table}
+                        WHERE "{primary_col}" IS NOT NULL
+                        ORDER BY data_year DESC
+                    """)
+                    backfill_df = pd.read_sql(bq, db2.connection())
+                if not backfill_df.empty:
+                    backfill_map = backfill_df.drop_duplicates('fips_code').set_index('fips_code')['val']
+                    mask = df[score_col].isna()
+                    df.loc[mask, score_col] = df.loc[mask, 'fips_code'].map(backfill_map)
+                    filled = mask.sum() - df[score_col].isna().sum()
+                    if filled > 0:
+                        logger.info(f"Backfilled {filled} null values for {score_col}")
+            except Exception as e:
+                logger.warning(f"Could not backfill {score_col}: {e}")
+
     # Map V2 fields to V1-compatible property names for frontend
     df['synthesis_grouping'] = df['final_grouping']
     df['directional_class'] = df['directional_status']
@@ -227,7 +257,7 @@ def merge_geojson_data(
     )
 
     # Add metadata
-    merged['last_updated'] = datetime.utcnow().isoformat()
+    merged['last_updated'] = datetime.now(timezone.utc).isoformat()
 
     logger.info(f"Merged data for {len(merged)} counties")
 
@@ -266,10 +296,10 @@ def prepare_geojson_properties(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     # Round numeric columns (only non-null values)
     for col in numeric_cols:
         if col in gdf.columns:
-            # Only round non-null values
-            mask = pd.notna(gdf[col])
-            if mask.any():
-                gdf.loc[mask, col] = gdf.loc[mask, col].round(4)
+            # Coerce mixed/object columns to numeric before rounding to avoid object-dtype ufunc failures.
+            numeric_series = pd.to_numeric(gdf[col], errors='coerce')
+            if numeric_series.notna().any():
+                gdf[col] = numeric_series.round(4)
 
     # Convert list/dict/object fields to JSON strings for GeoJSON compatibility
     import json
@@ -398,7 +428,7 @@ def log_export_version(
 
         db.execute(sql, {
             "version": version,
-            "export_date": datetime.utcnow(),
+            "export_date": datetime.now(timezone.utc),
             "data_year": data_year,
             "geojson_path": geojson_path,
             "record_count": record_count,
@@ -458,7 +488,7 @@ def run_geojson_export(
         # Export versioned snapshot
         versioned_path = None
         if versioned:
-            version = datetime.utcnow().strftime("%Y%m%d")
+            version = datetime.now(timezone.utc).strftime("%Y%m%d")
             versioned_path = os.path.join(
                 settings.EXPORT_DIR,
                 f"md_counties_{version}.geojson"

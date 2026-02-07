@@ -37,6 +37,10 @@ Interactive web map visualizing the Maryland Growth & Family Viability Atlas. Th
   - **Directional Status** (improving/stable/at_risk)
   - **Confidence Level** (strong/conditional/fragile)
 
+### Sprint 3 UX Enhancements
+- **Basemap Mode Toggle** - Switch between `Standard` and `Satellite` basemaps
+- **Performance Guardrails** - Reduced motion + lighter animations on lower-power devices
+
 ---
 
 ## Quick Start
@@ -169,13 +173,16 @@ GET http://localhost:8000/api/v1/areas/{fips_code}
 
 Edit `map.js` line 58:
 ```javascript
-style: 'mapbox://styles/mapbox/light-v11'
+style: 'mapbox://styles/mapbox/standard'
 ```
 
 Options:
-- `light-v11` - Light (current)
+- `standard` - Standard (current, monochrome theme)
+- `bright-v8` - Bright
+- `streets-v8` - Streets (classic palette)
+- `streets-v11` - Streets (updated)
+- `light-v11` - Light
 - `dark-v11` - Dark
-- `streets-v12` - Streets
 - `outdoors-v12` - Outdoors
 - `satellite-v9` - Satellite
 
@@ -310,6 +317,26 @@ aws s3 sync frontend/ s3://maryland-atlas-frontend --exclude "*.py"
 - Check `synthesis_grouping` values in GeoJSON
 - Verify color mappings in `map.js` match database values
 - Ensure latest export was generated
+
+---
+
+## Sprint 1 UI Smoke Test (Controls + Search Visibility)
+
+Run this quick matrix after UI/layout changes to confirm core map controls remain visible.
+
+| Scenario | Expected Result |
+|---|---|
+| Desktop, map mode, panel closed | Zoom/geolocate/fullscreen controls visible at bottom-right; county search visible in header |
+| Desktop, map mode, panel open | Controls shift left and remain visible/clickable; county search remains visible |
+| Mobile (`<=768px`), map mode, panel closed | Controls visible above bottom layer control bar; county search visible in header |
+| Mobile (`<=768px`), map mode, panel open | Controls remain visible/clickable (not under panel or bottom bar) |
+| Table mode | Header, legend, layer controls, and map controls hidden intentionally |
+| Return from table mode to map mode | Controls and county search reappear immediately |
+
+Manual checks:
+- Test `+/-` zoom, geolocate, and fullscreen interactions.
+- Type in county search and verify autocomplete list appears.
+- Open and close county side panel and confirm controls remain accessible.
 
 ---
 

@@ -14,8 +14,9 @@ Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that inge
 - Install deps: `make install`
 - Initialize DB: `make init-db` (or `make db-setup` then `make db-migrate`)
 - Run full ingest: `make ingest-all`
-- Run full ingest for a specific year: `INGEST_YEAR=2024 make ingest-all`
+- Run a single layer: `make ingest-layer1` ... `make ingest-layer6`
 - Run pipeline + export: `make pipeline`
+- Run pipeline for a year: `python src/run_pipeline.py --year 2024`
 - Export GeoJSON only: `make export`
 - Run API: `make serve`
 - Tests: `make test`
@@ -31,12 +32,21 @@ When adding or refreshing a data source:
 When the ingest schema changes:
 - Add a migration in `migrations/` to align table columns/precision with the new dataframe.
 - Apply the migration before re-running `make ingest-all`.
-- Do not rely on `scripts/ensure_ingest_schema.py` to alter existing tables.
+- Do not rely on ad-hoc schema scripts to alter existing tables.
 
 Optional source toggles (keep deterministic defaults):
-- USPS vacancy: require a direct CSV/zip URL or a local file path configured in `src/ingest/settings.py`.
-- FEMA NFHL / Maryland floodplain: set `FEMA_SKIP_NFHL=false` and provide a local shapefile path where supported.
-- CIP AI: place the extracted CIP file in the configured path; missing files should no-op cleanly.
+- USPS vacancy: require a direct CSV/zip URL or a local file path in `.env`.
+- FEMA NFHL / Maryland floodplain: set `FEMA_SKIP_NFHL=false` and confirm the NFHL URLs in `config/settings.py`.
+- CIP AI: set `AI_ENABLED=true`, provide `OPENAI_API_KEY`, and ensure the expected input files are present.
+
+## Preflight checks (recurring failure points)
+- Confirm `.env` has required keys for the run: `DATABASE_URL`, `CENSUS_API_KEY`, `MAPBOX_ACCESS_TOKEN`.
+- Confirm PostGIS extensions are enabled (`postgis`, `postgis_topology`) before ingest.
+- Ensure `LODES_LATEST_YEAR`, `ACS_LATEST_YEAR`, and `PREDICT_TO_YEAR` in `config/settings.py` match available data.
+
+## Prompt workflows
+- Prompts live in `.claude/prompts/`.
+- Use `make claude-list`, `make claude-run PROMPT=name`, `make claude-new NAME=name`.
 
 ## Data artifacts
 - Cached inputs: `data/cache/`
@@ -44,11 +54,12 @@ Optional source toggles (keep deterministic defaults):
 - Exports: `exports/`
 
 ## Testing + debugging tips
-- Most ingestion failures are missing API keys or input files; start with `.env` vs `.env.example`.
+- Most ingestion failures are missing API keys or input files; start by diffing `.env` vs `.env.example`.
+- Undefined column errors indicate a missing migration; add it in `migrations/` and run `make db-migrate`.
 - If a layer fails, run its module directly (e.g. `python -m src.ingest.layer2_accessibility`).
 - Avoid re-running the same failing step until the root cause is addressed; capture the stack trace + layer name first.
 
 ## Skills
-- Use the `spreadsheet` skill for editing or validating CSV/XLSX data.
-- Use the `jupyter-notebook` skill for exploratory analysis or pipeline experiments.
-- Use the `maryland-housing-ingest` skill for ingest runs, schema drift fixes, and optional source configuration.
+- maryland-housing-ingest: Use for ingest runs, schema drift fixes, and source toggles. (file: `skills/maryland-housing-ingest/SKILL.md`)
+- spreadsheet: Use for CSV/XLSX edits and validation. (file: `/Users/elliotkarikari/.codex/skills/spreadsheet/SKILL.md`)
+- jupyter-notebook: Use for exploratory analysis or pipeline experiments. (file: `/Users/elliotkarikari/.codex/skills/jupyter-notebook/SKILL.md`)

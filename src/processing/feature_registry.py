@@ -166,37 +166,37 @@ LAYER2_FEATURES: List[FeatureDefinition] = [
 
 LAYER3_FEATURES: List[FeatureDefinition] = [
     FeatureDefinition(
-        name="enrollment_momentum",
+        name="education_opportunity_index",
         layer="school_trajectory",
         source_table="layer3_school_trajectory",
-        source_column="enrollment_3yr_change_pct",
+        source_column="education_opportunity_index",
         directionality=Directionality.POSITIVE,
-        norm_method=NormMethod.ROBUST_ZSCORE,
-        unit="Percent change (3-year)",
-        description="Enrollment trend direction (growing = positive family demand signal)",
+        norm_method=NormMethod.PERCENTILE,
+        unit="Composite score (0-1)",
+        description="Combined school supply + accessibility composite score",
+        weight=2.0  # Primary Layer 3 signal
+    ),
+    FeatureDefinition(
+        name="education_accessibility_score",
+        layer="school_trajectory",
+        source_table="layer3_school_trajectory",
+        source_column="education_accessibility_score",
+        directionality=Directionality.POSITIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Score (0-1)",
+        description="Quality school access within commute distance",
         weight=1.5
     ),
     FeatureDefinition(
-        name="capital_per_student",
+        name="school_supply_score",
         layer="school_trajectory",
         source_table="layer3_school_trajectory",
-        source_column="capital_per_student",
+        source_column="school_supply_score",
         directionality=Directionality.POSITIVE,
         norm_method=NormMethod.PERCENTILE,
-        unit="Dollars per student",
-        description="School capital investment per student (if CIP data available)",
+        unit="Score (0-1)",
+        description="Enrollment density and school capacity",
         weight=1.0
-    ),
-    FeatureDefinition(
-        name="enrollment_momentum_score",
-        layer="school_trajectory",
-        source_table="layer3_school_trajectory",
-        source_column="enrollment_momentum_score",
-        directionality=Directionality.POSITIVE,
-        norm_method=NormMethod.PERCENTILE,
-        unit="Composite score",
-        description="Pre-calculated enrollment trajectory signal",
-        weight=2.0
     )
 ]
 
@@ -206,59 +206,37 @@ LAYER3_FEATURES: List[FeatureDefinition] = [
 
 LAYER4_FEATURES: List[FeatureDefinition] = [
     FeatureDefinition(
-        name="permits_per_1000_households",
+        name="housing_opportunity_index",
         layer="housing_elasticity",
         source_table="layer4_housing_elasticity",
-        source_column="permits_per_1000_households",
+        source_column="housing_opportunity_index",
         directionality=Directionality.POSITIVE,
         norm_method=NormMethod.PERCENTILE,
-        unit="Permits per 1000 households",
-        description="Building permit intensity (supply responsiveness proxy)",
+        unit="Composite score (0-1)",
+        description="Combined affordability + supply elasticity composite score",
+        weight=2.0  # Primary Layer 4 signal
+    ),
+    FeatureDefinition(
+        name="housing_affordability_score",
+        layer="housing_elasticity",
+        source_table="layer4_housing_elasticity",
+        source_column="housing_affordability_score",
+        directionality=Directionality.POSITIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Score (0-1)",
+        description="Cost burden and affordable housing stock availability",
         weight=1.5
     ),
     FeatureDefinition(
-        name="price_to_income_trend",
+        name="housing_elasticity_index",
         layer="housing_elasticity",
         source_table="layer4_housing_elasticity",
-        source_column="price_to_income_5yr_change",
-        directionality=Directionality.NEGATIVE,  # Rising P/I ratio is a constraint
-        norm_method=NormMethod.ROBUST_ZSCORE,
-        unit="Percentage point change",
-        description="5-year change in price-to-income ratio (rising = less affordable)",
+        source_column="housing_elasticity_index",
+        directionality=Directionality.POSITIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Score (0-1)",
+        description="Building permit activity and supply responsiveness",
         weight=1.0
-    ),
-    FeatureDefinition(
-        name="supply_responsiveness",
-        layer="housing_elasticity",
-        source_table="layer4_housing_elasticity",
-        source_column="supply_responsiveness_score",
-        directionality=Directionality.POSITIVE,
-        norm_method=NormMethod.PERCENTILE,
-        unit="Composite score",
-        description="Housing supply elasticity composite",
-        weight=2.0
-    ),
-    FeatureDefinition(
-        name="fmr_2br_to_income",
-        layer="housing_elasticity",
-        source_table="layer4_housing_elasticity",
-        source_column="fmr_2br_to_income",
-        directionality=Directionality.NEGATIVE,
-        norm_method=NormMethod.PERCENTILE,
-        unit="Ratio (annual rent / income)",
-        description="HUD Fair Market Rent (2BR) as share of median income",
-        weight=0.6
-    ),
-    FeatureDefinition(
-        name="lihtc_units_per_1000_households",
-        layer="housing_elasticity",
-        source_table="layer4_housing_elasticity",
-        source_column="lihtc_units_per_1000_households",
-        directionality=Directionality.POSITIVE,
-        norm_method=NormMethod.PERCENTILE,
-        unit="Units per 1000 households",
-        description="LIHTC affordable unit supply intensity",
-        weight=0.6
     )
 ]
 
@@ -268,48 +246,48 @@ LAYER4_FEATURES: List[FeatureDefinition] = [
 
 LAYER5_FEATURES: List[FeatureDefinition] = [
     FeatureDefinition(
-        name="net_migration_households",
+        name="demographic_opportunity_index",
         layer="demographic_momentum",
         source_table="layer5_demographic_momentum",
-        source_column="net_migration_households",
+        source_column="demographic_opportunity_index",
         directionality=Directionality.POSITIVE,
-        norm_method=NormMethod.ROBUST_ZSCORE,
-        unit="Net household inflow",
-        description="IRS county-to-county migration net flow",
+        norm_method=NormMethod.PERCENTILE,
+        unit="Composite score (0-1)",
+        description="Combined static + equity + migration composite score",
+        weight=2.0  # Primary Layer 5 signal
+    ),
+    FeatureDefinition(
+        name="equity_score",
+        layer="demographic_momentum",
+        source_table="layer5_demographic_momentum",
+        source_column="equity_score",
+        directionality=Directionality.POSITIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Score (0-1)",
+        description="Segregation and family viability equity composite",
         weight=1.5
     ),
     FeatureDefinition(
-        name="working_age_share",
+        name="static_demographic_score",
         layer="demographic_momentum",
         source_table="layer5_demographic_momentum",
-        source_column="pop_age_25_44_pct",
+        source_column="static_demographic_score",
         directionality=Directionality.POSITIVE,
         norm_method=NormMethod.PERCENTILE,
-        unit="Share (0-1)",
-        description="Share of population age 25-44 (prime working age)",
+        unit="Score (0-1)",
+        description="Population structure and working-age share",
         weight=1.0
     ),
     FeatureDefinition(
-        name="household_formation_change",
+        name="migration_dynamics_score",
         layer="demographic_momentum",
         source_table="layer5_demographic_momentum",
-        source_column="household_formation_change",
-        directionality=Directionality.POSITIVE,
-        norm_method=NormMethod.ROBUST_ZSCORE,
-        unit="Percent change",
-        description="Year-over-year household formation rate change",
-        weight=1.2
-    ),
-    FeatureDefinition(
-        name="demographic_momentum_composite",
-        layer="demographic_momentum",
-        source_table="layer5_demographic_momentum",
-        source_column="demographic_momentum_score",
+        source_column="migration_dynamics_score",
         directionality=Directionality.POSITIVE,
         norm_method=NormMethod.PERCENTILE,
-        unit="Composite score",
-        description="Pre-calculated demographic pressure composite",
-        weight=2.0
+        unit="Score (0-1)",
+        description="Net migration and household growth dynamics",
+        weight=1.2
     )
 ]
 
@@ -319,6 +297,39 @@ LAYER5_FEATURES: List[FeatureDefinition] = [
 
 LAYER6_FEATURES: List[FeatureDefinition] = [
     FeatureDefinition(
+        name="risk_drag_composite",
+        layer="risk_drag",
+        source_table="layer6_risk_drag",
+        source_column="risk_drag_index",
+        directionality=Directionality.NEGATIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Risk index (0-1)",
+        description="Combined static + modern vulnerability risk score (subtractive)",
+        weight=2.0  # Primary Layer 6 signal
+    ),
+    FeatureDefinition(
+        name="modern_vulnerability_score",
+        layer="risk_drag",
+        source_table="layer6_risk_drag",
+        source_column="modern_vulnerability_score",
+        directionality=Directionality.NEGATIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Score (0-1)",
+        description="Climate projection + social vulnerability composite",
+        weight=1.5
+    ),
+    FeatureDefinition(
+        name="static_risk_score",
+        layer="risk_drag",
+        source_table="layer6_risk_drag",
+        source_column="static_risk_score",
+        directionality=Directionality.NEGATIVE,
+        norm_method=NormMethod.PERCENTILE,
+        unit="Score (0-1)",
+        description="Flood exposure, pollution burden, infrastructure deficiency",
+        weight=1.0
+    ),
+    FeatureDefinition(
         name="flood_hazard_exposure",
         layer="risk_drag",
         source_table="layer6_risk_drag",
@@ -327,40 +338,7 @@ LAYER6_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Percent of county area",
         description="FEMA Special Flood Hazard Area (100-year floodplain)",
-        weight=1.5
-    ),
-    FeatureDefinition(
-        name="air_quality_burden",
-        layer="risk_drag",
-        source_table="layer6_risk_drag",
-        source_column="pm25_avg",
-        directionality=Directionality.NEGATIVE,
-        norm_method=NormMethod.PERCENTILE,
-        unit="PM2.5 μg/m³",
-        description="Particulate matter exposure (EPA EJScreen)",
         weight=0.8
-    ),
-    FeatureDefinition(
-        name="infrastructure_deficiency",
-        layer="risk_drag",
-        source_table="layer6_risk_drag",
-        source_column="bridges_deficient_pct",
-        directionality=Directionality.NEGATIVE,
-        norm_method=NormMethod.PERCENTILE,
-        unit="Percent of bridges",
-        description="Share of structurally deficient bridges",
-        weight=1.0
-    ),
-    FeatureDefinition(
-        name="risk_drag_composite",
-        layer="risk_drag",
-        source_table="layer6_risk_drag",
-        source_column="risk_drag_index",
-        directionality=Directionality.NEGATIVE,
-        norm_method=NormMethod.PERCENTILE,
-        unit="Risk index (0-1)",
-        description="Pre-calculated composite risk drag (subtractive only)",
-        weight=2.0
     )
 ]
 

@@ -1,28 +1,36 @@
 ---
 name: maryland-housing-ingest
-description: Maintain and debug the Maryland Housing Atlas ingest pipeline, schema migrations, deterministic ingest runs, and optional data source configuration (USPS vacancy, FEMA NFHL, CIP AI). Use when tasks involve make ingest-all, layer ingest modules, ingest warnings/errors, or pipeline-related settings/env vars.
+description: Run/debug the Maryland Housing ingest + pipeline, fix schema drift, and configure optional data sources.
+metadata:
+  short-description: Ingest workflow and fixes
 ---
 
 # Maryland Housing Ingest
 
+## When to use
+- Running `make ingest-all` or a single layer.
+- Fixing ingest failures (missing columns, missing data, missing dependencies).
+- Updating optional data source toggles or data URLs.
+
 ## Quick start
-- Confirm the target year and scope before running: `INGEST_YEAR=2024 make ingest-all` or `make ingest-layer3`.
-- If a run fails, capture the exact stack trace and the layer name, then fix root cause before re-running the same step.
+1. Verify `.env` keys and `DATABASE_URL`.
+2. Ensure PostGIS extensions are enabled and run `make db-migrate` after schema changes.
+3. Run a single layer with `make ingest-layerX` before full ingest.
 
-## Deterministic ingest checklist
-- Verify `.env` values match `.env.example`, especially API keys and optional source paths/URLs.
-- If the ingest schema changed, add a migration in `migrations/` and apply it before re-running.
-- Run `python scripts/ensure_ingest_schema.py` only for fresh databases; do not rely on it to add columns to existing tables.
+## Common fixes
+- **Undefined column**: add an Alembic migration in `migrations/` and run `make db-migrate` before re-running ingest.
+- **Parquet engine missing**: add `pyarrow` to `requirements.txt`, reinstall deps, then re-run.
+- **Import errors when running scripts**: run modules via `python -m src.ingest.layerX` or `make ingest-layerX` from repo root.
 
-## Optional sources (turn on when files are present)
-- USPS vacancy: use a direct CSV/zip URL or a local file path; wire it in `src/ingest/settings.py`.
-- FEMA NFHL or Maryland floodplain: set `FEMA_SKIP_NFHL=false` and provide a local shapefile path when supported by the layer.
-- CIP AI: place the extracted CIP file where the ingest layer expects it (check `src/ingest/layer4_housing.py` and `src/ingest/settings.py`).
+## Optional sources
+- USPS vacancy: set `USPS_VACANCY_DATA_URL` or `USPS_VACANCY_DATA_PATH` in `.env`.
+- FEMA NFHL: set `FEMA_SKIP_NFHL=false` and confirm the NFHL URLs in `config/settings.py`.
+- AI CIP extraction: set `AI_ENABLED=true`, provide `OPENAI_API_KEY`, and confirm expected input files per `src/ingest/policy_persistence.py`.
 
-## Schema drift playbook
-- If an INSERT fails due to missing columns, add a migration that aligns the table schema to the current dataframe columns.
-- Prefer widening numeric precision instead of capping values to avoid corrupting scores.
+## Pipeline
+- `make pipeline` or `python src/run_pipeline.py --year 2024` for a specific year.
+- `make export` to regenerate GeoJSONs.
 
-## Common cleanup fixes
-- Pandas concat FutureWarning: filter empty/all-NA frames before `pd.concat`.
-- Obsolete race filters in MSDE enrollment: remove or guard to avoid noisy logs when the source already provides totals.
+## References
+- Data source registry: `docs/architecture/DATA_SOURCES.md`
+- Architecture: `docs/ARCHITECTURE.md`

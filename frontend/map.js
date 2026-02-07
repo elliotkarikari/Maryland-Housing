@@ -3,6 +3,7 @@
 
 // Configuration
 const MAPBOX_TOKEN = 'pk.eyJ1IjoiZWxrYXJpMjMiLCJhIjoiY2tubm04b3BkMTYwcTJzcG5tZDZ2YTV5MSJ9.S0oAvquhkkMoDGrRJ_oP-Q';
+const MAPBOX_STYLE_URL = 'mapbox://styles/elkari23/cmlapbzzr005001s57o3mdhxk';
 const API_BASE_URL = `${window.location.protocol}//${window.location.hostname}:8000/api/v1`;
 const GEOJSON_PATHS = [
     `${API_BASE_URL}/layers/counties/latest`,
@@ -28,9 +29,9 @@ const SYNTHESIS_COLORS = {
 };
 
 const DIRECTIONAL_COLORS = {
-    'improving': '#4caf50',
-    'stable': '#ffc107',
-    'at_risk': '#f44336'
+    'improving': '#2d5016',
+    'stable': '#fdd835',
+    'at_risk': '#f4511e'
 };
 
 const CONFIDENCE_COLORS = {
@@ -58,6 +59,12 @@ const CONFIDENCE_LABELS = {
     'strong': 'Strong Evidence',
     'conditional': 'Conditional Evidence',
     'fragile': 'Fragile Evidence'
+};
+
+const LAYER_VIEW_LABELS = {
+    synthesis: 'Overall Growth Outlook',
+    directional: 'Direction of Change',
+    confidence: 'Evidence Strength'
 };
 
 const LAYER_DECISION_GUIDANCE = {
@@ -92,7 +99,7 @@ mapboxgl.accessToken = MAPBOX_TOKEN;
 
 const map = new mapboxgl.Map({
     container: 'map',
-    style: 'mapbox://styles/mapbox/light-v11',
+    style: MAPBOX_STYLE_URL,
     center: [-77.0, 39.0], // Center on Maryland
     zoom: 7,
     minZoom: 6,
@@ -100,10 +107,15 @@ const map = new mapboxgl.Map({
 });
 
 const mapControlsHost = document.getElementById('map-controls');
-const mapContainer = map.getContainer();
-const controlContainer = mapContainer.querySelector('.mapboxgl-control-container');
-if (mapControlsHost && controlContainer && !mapControlsHost.contains(controlContainer)) {
-    mapControlsHost.appendChild(controlContainer);
+function mountMapControlContainer() {
+    if (!mapControlsHost) {
+        return;
+    }
+    const mapContainer = map.getContainer();
+    const controlContainer = mapContainer ? mapContainer.querySelector('.mapboxgl-control-container') : null;
+    if (controlContainer && !mapControlsHost.contains(controlContainer)) {
+        mapControlsHost.appendChild(controlContainer);
+    }
 }
 
 const PITCH_START_ZOOM = 9.5;
@@ -111,6 +123,14 @@ const PITCH_END_ZOOM = 13.2;
 const MAX_PITCH = 45;
 const PULSE_RADIUS_MILES = 5;
 const URBAN_PULSE_ENABLED = false;
+const PREFERS_REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const DEVICE_MEMORY_GB = Number(navigator.deviceMemory || 0);
+const CPU_THREADS = Number(navigator.hardwareConcurrency || 0);
+const LOW_PERFORMANCE_MODE = PREFERS_REDUCED_MOTION || (DEVICE_MEMORY_GB > 0 && DEVICE_MEMORY_GB <= 4) || (CPU_THREADS > 0 && CPU_THREADS <= 4);
+const HOVER_FRAME_INTERVAL_MS = LOW_PERFORMANCE_MODE ? 48 : 16;
+const PANEL_EASE_DURATION_MS = LOW_PERFORMANCE_MODE ? 220 : 350;
+const MAP_FLY_DURATION_MS = LOW_PERFORMANCE_MODE ? 800 : 1200;
+const MAP_EASE_DURATION_MS = LOW_PERFORMANCE_MODE ? 420 : 700;
 
 const URBAN_PULSE_THEMES = {
     live: {
@@ -148,36 +168,9 @@ function updatePitch() {
 }
 
 function setPanelOpenState(isOpen) {
-    document.body.classList.toggle('panel-open', isOpen);
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (backdrop) {
-        backdrop.classList.toggle('active', isOpen);
-    }
-
-    const panel = document.getElementById('side-panel');
-    if (panel) {
-        panel.style.willChange = 'transform';
-        panel.addEventListener('transitionend', () => {
-            panel.style.willChange = 'auto';
-        }, { once: true });
-    }
-
-    const panelWidthValue = getComputedStyle(document.documentElement).getPropertyValue('--panel-width');
-    const panelWidth = Number.parseFloat(panelWidthValue) || 400;
-    const isMobile = window.matchMedia('(max-width: 768px)').matches;
-    const paddingRight = isOpen && !isMobile ? panelWidth : 0;
-
-    if (map && typeof map.easeTo === 'function') {
-        map.easeTo({
-            padding: { left: 0, right: paddingRight, top: 0, bottom: 0 },
-            duration: 350,
-            easing(t) {
-                return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-            }
-        });
-    } else if (map && typeof map.resize === 'function') {
-        map.resize();
-    }
+    // Split-layout mode keeps the detail panel in a fixed sidebar,
+    // so map padding animations are unnecessary.
+    void isOpen;
 }
 
 // Add map controls (bottom-right position)
@@ -195,29 +188,500 @@ map.addControl(new mapboxgl.GeolocateControl({
 
 const fullscreenContainer = document.getElementById('app') || map.getContainer();
 map.addControl(new mapboxgl.FullscreenControl({ container: fullscreenContainer }), 'bottom-right');
+mountMapControlContainer();
 
 // Popup for hover tooltips
 const popup = new mapboxgl.Popup({
     closeButton: false,
     closeOnClick: false,
     offset: 12,
-    maxWidth: '240px'
+    maxWidth: '280px'
 });
 
 // Debounce helper for hover performance
 let hoverDebounceTimer = null;
-function debounceHover(callback, delay = 16) {
+let lastHoverFrameTimestamp = 0;
+function debounceHover(callback, minInterval = HOVER_FRAME_INTERVAL_MS) {
     return function(...args) {
         if (hoverDebounceTimer) cancelAnimationFrame(hoverDebounceTimer);
-        hoverDebounceTimer = requestAnimationFrame(() => callback.apply(this, args));
+        hoverDebounceTimer = requestAnimationFrame((timestamp) => {
+            if (timestamp - lastHoverFrameTimestamp < minInterval) {
+                return;
+            }
+            lastHoverFrameTimestamp = timestamp;
+            callback.apply(this, args);
+        });
     };
 }
 
 // Current layer selection
 let currentLayer = 'synthesis';
 let activeLegendFilter = null;
-const DEFAULT_FILL_OPACITY = 0.75;
+let activeBivariateFilter = null; // { dir: 'improving', conf: 'strong' } or null
+const DEFAULT_FILL_OPACITY = 0.68;
 const DIMMED_FILL_OPACITY = 0.18;
+const SOFT_DIMMED_FILL_OPACITY_EXPR = ['interpolate', ['linear'], ['zoom'], 6, 0.16, 8, 0.22, 11, 0.30];
+const HARD_DIMMED_FILL_OPACITY_EXPR = ['interpolate', ['linear'], ['zoom'], 6, 0.10, 8, 0.16, 11, 0.24];
+
+function getCurrentLayerPropertyName() {
+    if (currentLayer === 'directional') {
+        return 'directional_class';
+    }
+    if (currentLayer === 'confidence') {
+        return 'confidence_class';
+    }
+    return 'synthesis_grouping';
+}
+
+function getCurrentLayerGroupLabels() {
+    if (currentLayer === 'directional') {
+        return DIRECTIONAL_LABELS;
+    }
+    if (currentLayer === 'confidence') {
+        return CONFIDENCE_LABELS;
+    }
+    return SYNTHESIS_LABELS;
+}
+
+function findCountyNameByFips(fipsCode) {
+    if (!fipsCode || !map || !map.getSource) {
+        return null;
+    }
+    const source = map.getSource('counties');
+    const features = source && source._data && source._data.features ? source._data.features : [];
+    const match = features.find((feature) => feature.properties && feature.properties.fips_code === fipsCode);
+    return match && match.properties ? match.properties.county_name : null;
+}
+
+function setChipState(chipId, text, muted = false) {
+    const chip = document.getElementById(chipId);
+    if (!chip) {
+        return;
+    }
+    chip.textContent = text;
+    chip.classList.toggle('muted', muted);
+}
+
+function updateMapStateChips() {
+    // Legacy map-state chips are no longer rendered.
+}
+
+function setCompareGuidance(isActive) {
+    const guidance = document.getElementById('compare-guidance');
+    if (!guidance) {
+        return;
+    }
+    if (isActive) {
+        const countyAName = compareCountyA?.county_name || currentCountySummary?.county_name;
+        guidance.textContent = countyAName
+            ? `Compare mode active. ${countyAName} is County A. Click a second county on the map.`
+            : 'Compare mode active. Click a second county on the map.';
+        guidance.classList.add('visible');
+        return;
+    }
+    guidance.classList.remove('visible');
+}
+
+
+function setCompareButtonState(enabled) {
+    const button = document.querySelector('.compare-toggle');
+    if (!button) {
+        return;
+    }
+    button.disabled = !enabled;
+    if (!enabled) {
+        button.setAttribute('aria-pressed', 'false');
+        button.textContent = 'Compare';
+    }
+}
+
+function normalizeAnalysisItems(items) {
+    if (!Array.isArray(items)) {
+        return [];
+    }
+    return items
+        .map((item) => String(item || '').trim())
+        .filter((item) => item.length > 0);
+}
+
+function renderAnalysisList(items, emptyText, icon) {
+    if (!items.length) {
+        return `<ul class="analysis-float-list"><li>${emptyText}</li></ul>`;
+    }
+    return `<ul class="analysis-float-list">${items.map((item) => `<li>${icon ? `${icon} ` : ''}${item}</li>`).join('')}</ul>`;
+}
+
+function hideFloatingAnalysisPanel() {
+    const panel = document.getElementById('analysis-float');
+    if (!panel) {
+        return;
+    }
+    panel.classList.add('hidden');
+}
+
+function setupAnalysisPanel() {
+    const panel = document.getElementById('analysis-float');
+    const host = document.getElementById('map-pane');
+    const handle = document.getElementById('analysis-float-handle');
+    const closeButton = document.getElementById('analysis-float-close');
+    if (!panel || !host || !handle || !closeButton || panel.dataset.bound === 'true') {
+        return;
+    }
+
+    panel.dataset.bound = 'true';
+    let dragState = null;
+
+    const clampAndApply = (left, top) => {
+        const hostRect = host.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const padding = 8;
+        const maxLeft = Math.max(padding, hostRect.width - panelRect.width - padding);
+        const maxTop = Math.max(padding, hostRect.height - panelRect.height - padding);
+        const clampedLeft = Math.min(Math.max(left, padding), maxLeft);
+        const clampedTop = Math.min(Math.max(top, padding), maxTop);
+        panel.style.left = `${clampedLeft}px`;
+        panel.style.top = `${clampedTop}px`;
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+        panel.dataset.positioned = 'true';
+    };
+
+    closeButton.addEventListener('click', () => {
+        hideFloatingAnalysisPanel();
+    });
+    closeButton.addEventListener('pointerdown', (event) => {
+        event.stopPropagation();
+    });
+
+    handle.addEventListener('pointerdown', (event) => {
+        if (event.target && event.target.closest && event.target.closest('#analysis-float-close')) {
+            return;
+        }
+        if (window.matchMedia('(max-width: 980px)').matches || event.button !== 0) {
+            return;
+        }
+        const panelRect = panel.getBoundingClientRect();
+        dragState = {
+            offsetX: event.clientX - panelRect.left,
+            offsetY: event.clientY - panelRect.top,
+            pointerId: event.pointerId
+        };
+        panel.classList.add('dragging');
+        handle.setPointerCapture(event.pointerId);
+        event.preventDefault();
+    });
+
+    handle.addEventListener('pointermove', (event) => {
+        if (!dragState || dragState.pointerId !== event.pointerId) {
+            return;
+        }
+        const hostRect = host.getBoundingClientRect();
+        const left = event.clientX - hostRect.left - dragState.offsetX;
+        const top = event.clientY - hostRect.top - dragState.offsetY;
+        clampAndApply(left, top);
+    });
+
+    const endDrag = (event) => {
+        if (!dragState || dragState.pointerId !== event.pointerId) {
+            return;
+        }
+        dragState = null;
+        panel.classList.remove('dragging');
+        handle.releasePointerCapture(event.pointerId);
+    };
+
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+
+    window.addEventListener('resize', () => {
+        if (panel.classList.contains('hidden')) {
+            return;
+        }
+        if (window.matchMedia('(max-width: 980px)').matches) {
+            panel.style.left = '';
+            panel.style.top = '';
+            panel.style.right = '';
+            panel.style.bottom = '';
+            return;
+        }
+        const left = Number.parseFloat(panel.style.left);
+        const top = Number.parseFloat(panel.style.top);
+        clampAndApply(Number.isFinite(left) ? left : 16, Number.isFinite(top) ? top : 16);
+    });
+}
+
+function showFloatingAnalysisPanel(data) {
+    const panel = document.getElementById('analysis-float');
+    const titleEl = document.getElementById('analysis-float-title');
+    const contentEl = document.getElementById('analysis-float-content');
+    if (!panel || !titleEl || !contentEl) {
+        return;
+    }
+
+    setupAnalysisPanel();
+
+    const strengths = normalizeAnalysisItems(data?.primary_strengths);
+    const weaknesses = normalizeAnalysisItems(data?.primary_weaknesses);
+    const trends = normalizeAnalysisItems(data?.key_trends);
+
+    titleEl.textContent = `${data?.county_name || 'County'} Analysis`;
+    contentEl.innerHTML = `
+        <h4>Primary Strengths</h4>
+        ${renderAnalysisList(strengths, 'No strengths reported for this county.', '✓')}
+        <h4>Primary Weaknesses</h4>
+        ${renderAnalysisList(weaknesses, 'No weaknesses reported for this county.', '⚠')}
+        <h4>Key Trends</h4>
+        ${renderAnalysisList(trends, 'No trend notes available for this county.', '')}
+        <div class="analysis-float-meta">Data Year: ${data?.data_year ?? 'N/A'}</div>
+    `;
+
+    if (!window.matchMedia('(max-width: 980px)').matches && panel.dataset.positioned !== 'true') {
+        panel.style.left = '16px';
+        panel.style.top = '16px';
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+        panel.dataset.positioned = 'true';
+    }
+
+    panel.classList.remove('hidden');
+}
+
+function setupLayoutResizer() {
+    const shell = document.querySelector('.atlas-shell');
+    const resizer = document.getElementById('layout-resizer');
+    if (!shell || !resizer || resizer.dataset.bound === 'true') {
+        return;
+    }
+
+    const STORAGE_KEY = 'atlas_sidebar_width_px';
+    const MIN_MAP_WIDTH_PX = 420;
+    const STEP_PX = 24;
+    let dragPointerId = null;
+    let mapResizeRaf = null;
+
+    const queueMapResize = () => {
+        if (mapResizeRaf !== null) {
+            return;
+        }
+        mapResizeRaf = requestAnimationFrame(() => {
+            mapResizeRaf = null;
+            if (map && typeof map.resize === 'function') {
+                map.resize();
+            }
+        });
+    };
+
+    const getNumericVar = (varName, fallback) => {
+        const raw = getComputedStyle(shell).getPropertyValue(varName);
+        const parsed = Number.parseFloat(raw);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    const getBounds = () => {
+        const shellRect = shell.getBoundingClientRect();
+        const minSidebar = getNumericVar('--sidebar-min-width', 320);
+        const maxSidebarVar = getNumericVar('--sidebar-max-width', 680);
+        const resizerWidth = getNumericVar('--resizer-width', 12);
+        const maxByAvailableSpace = shellRect.width - MIN_MAP_WIDTH_PX - resizerWidth;
+        const maxSidebar = Math.max(minSidebar, Math.min(maxSidebarVar, maxByAvailableSpace));
+        return { minSidebar, maxSidebar };
+    };
+
+    const applySidebarWidth = (widthPx, persist = false) => {
+        const { minSidebar, maxSidebar } = getBounds();
+        const clamped = Math.min(Math.max(widthPx, minSidebar), maxSidebar);
+        shell.style.setProperty('--sidebar-width', `${Math.round(clamped)}px`);
+        if (persist) {
+            try {
+                localStorage.setItem(STORAGE_KEY, String(Math.round(clamped)));
+            } catch (error) {
+                console.warn('Unable to persist sidebar width:', error);
+            }
+        }
+        queueMapResize();
+    };
+
+    const updateFromPointer = (clientX, persist = false) => {
+        const shellRect = shell.getBoundingClientRect();
+        const nextWidth = shellRect.right - clientX;
+        applySidebarWidth(nextWidth, persist);
+    };
+
+    const syncToBounds = () => {
+        if (window.matchMedia('(max-width: 980px)').matches) {
+            return;
+        }
+        const current = Number.parseFloat(getComputedStyle(shell).getPropertyValue('--sidebar-width'));
+        if (Number.isFinite(current)) {
+            applySidebarWidth(current, false);
+        }
+    };
+
+    resizer.dataset.bound = 'true';
+
+    try {
+        const savedWidth = Number.parseFloat(localStorage.getItem(STORAGE_KEY));
+        if (Number.isFinite(savedWidth)) {
+            applySidebarWidth(savedWidth, false);
+        }
+    } catch (error) {
+        console.warn('Unable to load persisted sidebar width:', error);
+    }
+
+    resizer.addEventListener('pointerdown', (event) => {
+        if (window.matchMedia('(max-width: 980px)').matches || event.button !== 0) {
+            return;
+        }
+        dragPointerId = event.pointerId;
+        resizer.classList.add('dragging');
+        document.body.classList.add('layout-resizing');
+        resizer.setPointerCapture(event.pointerId);
+        event.preventDefault();
+    });
+
+    resizer.addEventListener('pointermove', (event) => {
+        if (dragPointerId === null || event.pointerId !== dragPointerId) {
+            return;
+        }
+        updateFromPointer(event.clientX, false);
+    });
+
+    const finishDrag = (event) => {
+        if (dragPointerId === null || event.pointerId !== dragPointerId) {
+            return;
+        }
+        if (event.type === 'pointerup') {
+            updateFromPointer(event.clientX, true);
+        }
+        dragPointerId = null;
+        resizer.classList.remove('dragging');
+        document.body.classList.remove('layout-resizing');
+        resizer.releasePointerCapture(event.pointerId);
+    };
+
+    resizer.addEventListener('pointerup', finishDrag);
+    resizer.addEventListener('pointercancel', finishDrag);
+
+    resizer.addEventListener('keydown', (event) => {
+        if (window.matchMedia('(max-width: 980px)').matches) {
+            return;
+        }
+        const current = Number.parseFloat(getComputedStyle(shell).getPropertyValue('--sidebar-width')) || 420;
+        if (event.key === 'ArrowLeft') {
+            applySidebarWidth(current + STEP_PX, true);
+            event.preventDefault();
+            return;
+        }
+        if (event.key === 'ArrowRight') {
+            applySidebarWidth(current - STEP_PX, true);
+            event.preventDefault();
+            return;
+        }
+        if (event.key === 'Home') {
+            applySidebarWidth(getBounds().minSidebar, true);
+            event.preventDefault();
+            return;
+        }
+        if (event.key === 'End') {
+            applySidebarWidth(getBounds().maxSidebar, true);
+            event.preventDefault();
+        }
+    });
+
+    window.addEventListener('resize', syncToBounds);
+}
+
+function buildFillOpacityExpression() {
+    const activeProperty = getCurrentLayerPropertyName();
+    const hasSelection = Boolean(currentFipsCode);
+    const hasFilter = Boolean(activeLegendFilter);
+    const hasBivariateFilter = Boolean(activeBivariateFilter);
+
+    // Bivariate filter: match on both directional_class AND confidence_class
+    if (hasBivariateFilter) {
+        const matchExpr = ['all',
+            ['==', ['get', 'directional_class'], activeBivariateFilter.dir],
+            ['==', ['get', 'confidence_class'], activeBivariateFilter.conf]
+        ];
+        if (hasSelection) {
+            return ['case',
+                ['==', ['get', 'fips_code'], currentFipsCode],
+                DEFAULT_FILL_OPACITY,
+                matchExpr,
+                DEFAULT_FILL_OPACITY,
+                DIMMED_FILL_OPACITY
+            ];
+        }
+        return ['case', matchExpr, DEFAULT_FILL_OPACITY, DIMMED_FILL_OPACITY];
+    }
+
+    if (hasSelection && hasFilter) {
+        return ['case',
+            ['==', ['get', 'fips_code'], currentFipsCode],
+            DEFAULT_FILL_OPACITY,
+            ['==', ['get', activeProperty], activeLegendFilter],
+            0.46,
+            HARD_DIMMED_FILL_OPACITY_EXPR
+        ];
+    }
+
+    if (hasSelection) {
+        return ['case',
+            ['==', ['get', 'fips_code'], currentFipsCode],
+            DEFAULT_FILL_OPACITY,
+            SOFT_DIMMED_FILL_OPACITY_EXPR
+        ];
+    }
+
+    if (hasFilter) {
+        return ['case',
+            ['==', ['get', activeProperty], activeLegendFilter],
+            DEFAULT_FILL_OPACITY,
+            DIMMED_FILL_OPACITY
+        ];
+    }
+
+    return DEFAULT_FILL_OPACITY;
+}
+
+function buildBorderOpacityExpression() {
+    if (currentFipsCode) {
+        return ['case',
+            ['==', ['get', 'fips_code'], currentFipsCode],
+            0.95,
+            0.2
+        ];
+    }
+    if (activeLegendFilter) {
+        return 0.25;
+    }
+    return ['interpolate', ['linear'], ['zoom'], 6, 0.24, 8, 0.35, 11, 0.5];
+}
+
+function buildBorderWidthExpression() {
+    const baseWidth = ['interpolate', ['linear'], ['zoom'], 6, 0.5, 10, 1.1];
+    if (!currentFipsCode) {
+        return baseWidth;
+    }
+    return ['case',
+        ['==', ['get', 'fips_code'], currentFipsCode],
+        2.4,
+        baseWidth
+    ];
+}
+
+function applyMapVisualFocus() {
+    if (!map || !map.getLayer) {
+        return;
+    }
+    if (map.getLayer('counties-fill')) {
+        map.setPaintProperty('counties-fill', 'fill-opacity', buildFillOpacityExpression());
+    }
+    if (map.getLayer('counties-border')) {
+        map.setPaintProperty('counties-border', 'line-opacity', buildBorderOpacityExpression());
+        map.setPaintProperty('counties-border', 'line-width', buildBorderWidthExpression());
+    }
+}
 
 async function fetchGeojsonWithFallback(paths) {
     const errors = [];
@@ -251,6 +715,7 @@ function updateLoadingStatus(text) {
 
 // Map load event
 map.on('load', async () => {
+    mountMapControlContainer();
     try {
         updateLoadingStatus('Fetching county data...');
 
@@ -289,8 +754,8 @@ map.on('load', async () => {
             source: 'counties',
             paint: {
                 'line-color': '#333',
-                'line-width': 1,
-                'line-opacity': 0.5
+                'line-width': ['interpolate', ['linear'], ['zoom'], 6, 0.5, 10, 1.1],
+                'line-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.24, 8, 0.35, 11, 0.5]
             }
         });
 
@@ -352,7 +817,9 @@ map.on('load', async () => {
 
         // Set up interactivity
         setupInteractivity();
-        setupLegendFiltering();
+        updateLegend(currentLayer);
+        applyMapVisualFocus();
+        updateMapStateChips();
 
         // Add Urban Pulse layers above county fills (disabled by default)
         if (URBAN_PULSE_ENABLED) {
@@ -373,7 +840,7 @@ map.on('load', async () => {
         document.getElementById('loading').innerHTML = `
             <div class="spinner"></div>
             <p>Error loading map data</p>
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">
+            <p class="text-sm text-muted mt-3">
                 ${error.message}
             </p>
         `;
@@ -615,7 +1082,7 @@ function openPulsePanel(themeKey, featureName, nearbyCount) {
                 <span class="pulse-dot" style="background: ${theme.color};"></span>
                 ${theme.label.toUpperCase()} SIGNAL
             </div>
-            <p style="font-size: 14px; color: #666; line-height: 1.5;">
+            <p class="text-md text-muted">
                 Showing nearby ${theme.label.toLowerCase()}-related places within a 5-mile pulse radius.
             </p>
             <div class="pulse-metric">
@@ -627,9 +1094,10 @@ function openPulsePanel(themeKey, featureName, nearbyCount) {
 
     document.getElementById('side-panel').setAttribute('data-compare-ready', 'false');
     document.getElementById('side-panel').setAttribute('data-compare-mode', 'off');
+    setCompareButtonState(false);
+    hideFloatingAnalysisPanel();
     setPanelOpenState(true);
     document.getElementById('side-panel').classList.add('open');
-    document.getElementById('clear-selection').classList.add('visible');
 }
 
 function handlePulseSelection(feature, themeKey) {
@@ -659,12 +1127,15 @@ function handlePulseSelection(feature, themeKey) {
         center,
         zoom: Math.max(map.getZoom(), 15),
         pitch: MAX_PITCH,
-        duration: 700
+        duration: MAP_EASE_DURATION_MS
     });
 }
 
 
 function add3DBuildings() {
+    if (LOW_PERFORMANCE_MODE) {
+        return;
+    }
     const styleLayers = map.getStyle().layers || [];
     const labelLayerId = styleLayers.find(
         (layer) => layer.type === 'symbol' && layer.layout && layer.layout['text-field']
@@ -750,6 +1221,7 @@ function setupInteractivity() {
         map.getCanvas().style.cursor = '';
         popup.remove();
         map.setFilter('counties-hover', ['==', 'fips_code', '']);
+        setHoveredResult(null);
     });
 
     // Show tooltip on hover (debounced for performance)
@@ -764,6 +1236,7 @@ function setupInteractivity() {
 
             // Update hover highlight
             map.setFilter('counties-hover', ['==', 'fips_code', props.fips_code]);
+            setHoveredResult(props.fips_code);
 
             // Get current layer label
             const label = currentLayer === 'synthesis'
@@ -798,7 +1271,8 @@ function setupInteractivity() {
                 </div>`;
             }
 
-            // Enhanced tooltip with score
+            // Enhanced tooltip with score + sparkline
+            const sparkline = renderTooltipSparkline(props);
             popup
                 .setLngLat(e.lngLat)
                 .setHTML(`
@@ -809,6 +1283,7 @@ function setupInteractivity() {
                     </div>
                     ${layerDetail}
                     <div class="tooltip-grouping ${groupingClass}">${label}</div>
+                    ${sparkline}
                 `)
                 .addTo(map);
         }
@@ -833,24 +1308,22 @@ function setupInteractivity() {
                 // Load second county for comparison
                 await loadCompareCounty(fipsCode);
             } else {
+                focusCountyByFips(fipsCode, false);
                 await loadCountyDetail(fipsCode);
             }
+            setHoveredResult(fipsCode);
         }
     });
 
-    // Layer switching
-    document.querySelectorAll('input[name="layer"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            currentLayer = e.target.value;
-            switchLayer(currentLayer);
-        });
-    });
 }
 
-// Switch map layer
-function switchLayer(layer) {
-    let fillExpression;
+// Switch map layer with cross-fade animation
+let _layerTransitionInProgress = false;
 
+function switchLayer(layer) {
+    if (layer === currentLayer || _layerTransitionInProgress) return;
+
+    let fillExpression;
     switch(layer) {
         case 'synthesis':
             fillExpression = getSynthesisFillExpression();
@@ -863,33 +1336,89 @@ function switchLayer(layer) {
             break;
     }
 
-    map.setPaintProperty('counties-fill', 'fill-color', fillExpression);
-
-    // Clear any active legend filter when switching layers
+    // Clear any active filters when switching layers
     activeLegendFilter = null;
+    if (activeBivariateFilter) {
+        activeBivariateFilter = null;
+        updateBivariateCellStyles();
+    }
+    currentLayer = layer;
     updateLegend(layer);
+    updateMapStateChips();
+    renderCountyResults();
     updateUrlHash();
+
+    // Sync extrusion layer color if active
+    if (extrusionActive && map.getLayer('counties-extrusion')) {
+        map.setPaintProperty('counties-extrusion', 'fill-extrusion-color', fillExpression);
+    }
+
+    // Animate: fade out → swap color → fade in
+    const FADE_MS = 320;
+    const fillLayer = 'counties-fill';
+    if (!map.getLayer(fillLayer) || PREFERS_REDUCED_MOTION) {
+        map.setPaintProperty(fillLayer, 'fill-color', fillExpression);
+        applyMapVisualFocus();
+        return;
+    }
+
+    _layerTransitionInProgress = true;
+    const startOpacity = DEFAULT_FILL_OPACITY;
+    const fadeStart = performance.now();
+
+    // Phase 1: fade out
+    function fadeOut(now) {
+        const t = Math.min(1, (now - fadeStart) / FADE_MS);
+        const eased = t * t;
+        const opacity = startOpacity * (1 - eased);
+        map.setPaintProperty(fillLayer, 'fill-opacity', Math.max(0.02, opacity));
+        if (t < 1) {
+            requestAnimationFrame(fadeOut);
+        } else {
+            // Swap color at minimum opacity
+            map.setPaintProperty(fillLayer, 'fill-color', fillExpression);
+            requestAnimationFrame(fadeIn);
+        }
+    }
+
+    // Phase 2: fade in
+    const fadeInStart = { value: 0 };
+    function fadeIn(now) {
+        if (!fadeInStart.ts) fadeInStart.ts = now;
+        const t = Math.min(1, (now - fadeInStart.ts) / FADE_MS);
+        const eased = t * (2 - t); // ease-out-quad
+        const opacity = 0.02 + (startOpacity - 0.02) * eased;
+        map.setPaintProperty(fillLayer, 'fill-opacity', opacity);
+        if (t < 1) {
+            requestAnimationFrame(fadeIn);
+        } else {
+            _layerTransitionInProgress = false;
+            applyMapVisualFocus();
+        }
+    }
+
+    requestAnimationFrame(fadeOut);
 }
 
 // Legend category descriptions per layer
 const SYNTHESIS_DESCRIPTIONS = {
-    'emerging_tailwinds': 'Reinforcing tailwinds across real-data layers',
-    'conditional_growth': 'Upside exists; delivery risk matters',
-    'stable_constrained': 'Steady pressures, limited upside',
-    'at_risk_headwinds': 'Headwinds dominate outcomes',
+    'emerging_tailwinds': 'High upside with reinforcing strengths',
+    'conditional_growth': 'Upside exists, but delivery risk matters',
+    'stable_constrained': 'Balanced conditions with limited upside',
+    'at_risk_headwinds': 'Headwinds currently outweigh strengths',
     'high_uncertainty': 'Thin coverage; interpret cautiously'
 };
 
 const DIRECTIONAL_DESCRIPTIONS = {
-    'improving': 'Multiple reinforcing structural tailwinds',
-    'stable': 'Balanced signals, mixed pressures',
-    'at_risk': 'Structural headwinds dominate'
+    'improving': 'Signals are strengthening',
+    'stable': 'Signals are mixed and mostly steady',
+    'at_risk': 'Signals are deteriorating'
 };
 
 const CONFIDENCE_DESCRIPTIONS = {
-    'strong': 'High data coverage across layers',
-    'conditional': 'Partial coverage, use with caution',
-    'fragile': 'Sparse data, interpret cautiously'
+    'strong': 'Robust coverage across layers',
+    'conditional': 'Partial coverage; use with caution',
+    'fragile': 'Sparse coverage; validate locally'
 };
 
 // Update legend when layer changes
@@ -902,19 +1431,19 @@ function updateLegend(layer) {
 
     switch(layer) {
         case 'synthesis':
-            legendTitle.textContent = 'County Growth Synthesis';
+            legendTitle.textContent = LAYER_VIEW_LABELS.synthesis;
             colors = SYNTHESIS_COLORS;
             labels = SYNTHESIS_LABELS;
             descriptions = SYNTHESIS_DESCRIPTIONS;
             break;
         case 'directional':
-            legendTitle.textContent = 'Directional Trajectory';
+            legendTitle.textContent = LAYER_VIEW_LABELS.directional;
             colors = DIRECTIONAL_COLORS;
             labels = DIRECTIONAL_LABELS;
             descriptions = DIRECTIONAL_DESCRIPTIONS;
             break;
         case 'confidence':
-            legendTitle.textContent = 'Evidence Confidence';
+            legendTitle.textContent = LAYER_VIEW_LABELS.confidence;
             colors = CONFIDENCE_COLORS;
             labels = CONFIDENCE_LABELS;
             descriptions = CONFIDENCE_DESCRIPTIONS;
@@ -934,7 +1463,7 @@ function updateLegend(layer) {
     }
     html += `
         <div class="legend-filter-actions">
-            <span style="font-size: 11px; color: #777;">Legend filter</span>
+            <span class="text-xs text-faint">Legend filter</span>
             <button id="legend-reset" class="legend-reset hidden" type="button" onclick="clearLegendFilter()">Show All</button>
         </div>
     `;
@@ -968,14 +1497,14 @@ function renderScoreContext(score) {
     if (score === null || score === undefined) return '';
     const pct = Math.max(0, Math.min(100, score * 100));
     return `
-        <div class="score-context-bar" style="position: relative; height: 24px; border-radius: 4px; overflow: hidden; display: flex; margin-top: 8px;">
-            <div style="flex: 30; background: #ffcdd2;" title="At Risk (0-0.3)"></div>
-            <div style="flex: 20; background: #fff9c4;" title="Constrained (0.3-0.5)"></div>
-            <div style="flex: 20; background: #c8e6c9;" title="Conditional (0.5-0.7)"></div>
-            <div style="flex: 30; background: #2d5016; opacity: 0.3;" title="Tailwinds (0.7-1.0)"></div>
-            <div style="position: absolute; left: ${pct}%; top: 0; bottom: 0; width: 3px; background: #333; transform: translateX(-50%); border-radius: 2px; box-shadow: 0 0 3px rgba(0,0,0,0.3);"></div>
+        <div class="score-context-bar">
+            <div class="score-context-zone-risk" title="At Risk (0-0.3)"></div>
+            <div class="score-context-zone-constrained" title="Constrained (0.3-0.5)"></div>
+            <div class="score-context-zone-conditional" title="Conditional (0.5-0.7)"></div>
+            <div class="score-context-zone-tailwinds" title="Tailwinds (0.7-1.0)"></div>
+            <div class="score-context-marker" style="left: ${pct}%"></div>
         </div>
-        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #999; margin-top: 2px;">
+        <div class="score-context-labels">
             <span>At Risk</span>
             <span>Constrained</span>
             <span>Conditional</span>
@@ -1034,19 +1563,22 @@ async function loadCountyDetail(fipsCode) {
             panel.classList.remove('pulse-live', 'pulse-work', 'pulse-learn', 'pulse-transit');
         }
         currentFipsCode = fipsCode;
+        applyMapVisualFocus();
+        updateMapStateChips();
+        renderCountyResults();
 
         // Show loading state immediately
         document.getElementById('panel-title').textContent = 'Loading...';
         document.getElementById('panel-subtitle').textContent = '';
         document.getElementById('panel-content').innerHTML = `
-            <div class="panel-section" style="text-align: center; padding: 40px 0;">
-                <div class="loading-icon" style="width: 32px; height: 32px; margin: 0 auto 16px;"></div>
-                <p style="font-size: 14px; color: #666;">Fetching county data...</p>
+            <div class="panel-section panel-loading">
+                <div class="loading-icon"></div>
+                <p class="text-md text-muted">Fetching county data...</p>
             </div>
         `;
+        setCompareButtonState(false);
         document.getElementById('side-panel').classList.add('open');
         setPanelOpenState(true);
-        document.getElementById('clear-selection').classList.add('visible');
 
         // Highlight selected county on map
         if (map.getLayer('counties-selected')) {
@@ -1059,6 +1591,9 @@ async function loadCountyDetail(fipsCode) {
         }
         const data = await response.json();
         currentCountySummary = data;
+        const primaryStrengths = normalizeAnalysisItems(data.primary_strengths);
+        const primaryWeaknesses = normalizeAnalysisItems(data.primary_weaknesses);
+        const keyTrends = normalizeAnalysisItems(data.key_trends);
 
         // Populate side panel
         document.getElementById('panel-title').textContent = data.county_name;
@@ -1066,14 +1601,17 @@ async function loadCountyDetail(fipsCode) {
             `Data Year: ${data.data_year}`;
 
         const layerScoresContent = Object.entries(data.layer_scores).map(([key, value]) => {
-            const displayValue = value !== null ? parseFloat(value).toFixed(3) : 'No Data';
+            const hasValue = value !== null && value !== undefined;
+            const displayValue = hasValue ? parseFloat(value).toFixed(3) : '—';
+            const nullHint = hasValue ? '' : '<div class="text-xs text-faint mt-1">Click for detail</div>';
             return `
                 <div class="score-item clickable" data-layer-key="${key}" onclick="loadLayerDetail('${key}')" title="Click to see factor breakdown">
                     <div class="score-label">${formatLayerName(key)}</div>
-                    <div class="score-value ${value === null ? 'null' : ''}">
+                    <div class="score-value ${!hasValue ? 'null' : ''}">
                         ${displayValue}
                     </div>
                     ${renderScoreBar(value)}
+                    ${nullHint}
                 </div>
             `;
         }).join('');
@@ -1084,7 +1622,6 @@ async function loadCountyDetail(fipsCode) {
             <div class="panel-tabs">
                 <button class="panel-tab active" onclick="switchPanelTab('summary', this)">Summary</button>
                 <button class="panel-tab" onclick="switchPanelTab('scores', this)">Scores</button>
-                <button class="panel-tab" onclick="switchPanelTab('analysis', this)">Analysis</button>
             </div>
 
             <div id="tab-summary" class="panel-tab-content active">
@@ -1093,9 +1630,14 @@ async function loadCountyDetail(fipsCode) {
                     <div class="synthesis-badge" style="background: ${SYNTHESIS_COLORS[data.synthesis_grouping]}; color: ${badgeTextColor};">
                         ${SYNTHESIS_LABELS[data.synthesis_grouping]}
                     </div>
-                    <p style="font-size: 14px; color: #666; margin-top: 12px; line-height: 1.5;">
+                    <p class="text-md text-muted mt-3">
                         ${getSynthesisDescription(data.synthesis_grouping)}
                     </p>
+                </div>
+
+                <div class="panel-section county-narrative">
+                    <h4>County Snapshot</h4>
+                    <p class="narrative-text">${generateCountyNarrative(data)}</p>
                 </div>
 
                 <div class="panel-section">
@@ -1121,12 +1663,21 @@ async function loadCountyDetail(fipsCode) {
                     </div>
                     ${renderScoreContext(data.composite_score)}
                 </div>
+
+                <div class="panel-section panel-meta-row">
+                    <div class="flex justify-between items-center">
+                        <div class="text-sm text-faint">
+                            Data Year: ${data.data_year} | Last Updated: ${new Date(data.last_updated).toLocaleDateString()}
+                        </div>
+                        <button onclick="exportCountyCSV()" class="btn text-xs">Download CSV</button>
+                    </div>
+                </div>
             </div>
 
             <div id="tab-scores" class="panel-tab-content">
                 <div class="panel-section">
                     <h4>Layer Scores</h4>
-                    <div style="font-size: 11px; color: #999; margin: 0 0 8px;">Click a layer for factor detail</div>
+                    <div class="text-xs text-faint mb-2">Click a layer for factor detail</div>
                     <div class="score-grid">
                         ${layerScoresContent}
                     </div>
@@ -1139,44 +1690,22 @@ async function loadCountyDetail(fipsCode) {
                     </div>
                 </div>
             </div>
-
-            <div id="tab-analysis" class="panel-tab-content">
-                <div class="panel-section">
-                    <h4>Primary Strengths</h4>
-                    ${data.primary_strengths.map(s => `<div class="list-item">&#10003; ${s}</div>`).join('')}
-                </div>
-
-                <div class="panel-section">
-                    <h4>Primary Weaknesses</h4>
-                    ${data.primary_weaknesses.map(w => `<div class="list-item">&#9888; ${w}</div>`).join('')}
-                </div>
-
-                <div class="panel-section">
-                    <h4>Key Trends</h4>
-                    ${data.key_trends.map(t => `<div class="list-item">${t}</div>`).join('')}
-                </div>
-
-                <details style="margin-top: 16px;">
-                    <summary style="font-size: 12px; color: #666; cursor: pointer;">How To Use This</summary>
-                    <div style="margin-top: 8px;">
-                        ${renderDecisionLens(data)}
-                    </div>
-                </details>
-
-                <div class="panel-section" style="border-top: 1px solid #e0e0e0; padding-top: 16px; margin-top: 20px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div style="font-size: 12px; color: #999;">
-                            Data Year: ${data.data_year} | Last Updated: ${new Date(data.last_updated).toLocaleDateString()}
-                        </div>
-                        <button onclick="exportCountyCSV()" style="padding: 4px 10px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 11px;">Download CSV</button>
-                    </div>
-                </div>
-            </div>
         `;
 
         document.getElementById('panel-content').innerHTML = content;
         document.getElementById('side-panel').setAttribute('data-compare-ready', 'true');
+        setCompareButtonState(true);
         document.getElementById('side-panel').scrollTop = 0;
+        setCompareGuidance(false);
+        showFloatingAnalysisPanel({
+            county_name: data.county_name,
+            primary_strengths: primaryStrengths,
+            primary_weaknesses: primaryWeaknesses,
+            key_trends: keyTrends,
+            data_year: data.data_year
+        });
+        updateMapStateChips();
+        renderCountyResults();
         updateUrlHash();
 
         // Focus management for accessibility
@@ -1191,18 +1720,22 @@ async function loadCountyDetail(fipsCode) {
         document.getElementById('panel-title').textContent = 'Connection Error';
         document.getElementById('panel-subtitle').textContent = '';
         document.getElementById('panel-content').innerHTML = `
-            <div class="panel-section" style="text-align: center; padding: 30px 0;">
-                <div style="font-size: 36px; margin-bottom: 16px;">&#x26A0;</div>
-                <h4 style="font-size: 16px; color: #333; margin-bottom: 8px;">Backend Unavailable</h4>
-                <p style="font-size: 14px; color: #666; line-height: 1.5;">
+            <div class="panel-section panel-error">
+                <div class="panel-error-icon">&#x26A0;</div>
+                <h4 class="text-lg text-primary mb-2">Backend Unavailable</h4>
+                <p class="text-md text-muted">
                     County detail data requires the API server.<br>
-                    Start it with <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">make serve</code>
+                    Start it with <code class="code-inline">make serve</code>
                 </p>
             </div>
         `;
         document.getElementById('side-panel').classList.add('open');
         setPanelOpenState(true);
-        document.getElementById('clear-selection').classList.add('visible');
+        setCompareButtonState(false);
+        setCompareGuidance(false);
+        hideFloatingAnalysisPanel();
+        updateMapStateChips();
+        renderCountyResults();
     }
 }
 
@@ -1272,7 +1805,7 @@ async function loadLayerDetail(layerKey) {
         const bodyContent = `
             <div class="layer-score-main">
                 <div>
-                    <div style="font-size: 12px; color: #666; margin-bottom: 4px;">Overall Score</div>
+                    <div class="text-sm text-muted mb-1">Overall Score</div>
                     <div class="layer-score-value">${effectiveScore !== null ? effectiveScore.toFixed(3) : 'N/A'}</div>
                 </div>
                 <div class="layer-score-trend">
@@ -1309,7 +1842,7 @@ async function loadLayerDetail(layerKey) {
         detailBodyEl.innerHTML = `
             <div class="layer-empty-state">
                 <p>Unable to load detailed factor breakdown.</p>
-                <p style="font-size: 12px; margin-top: 10px;">The data may not be available for this layer in this year.</p>
+                <p class="text-sm mt-3">The data may not be available for this layer in this year.</p>
             </div>
         `;
         detailSectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1350,16 +1883,11 @@ function closePanel() {
         panel.setAttribute('data-compare-mode', 'off');
         panel.classList.remove('pulse-live', 'pulse-work', 'pulse-learn', 'pulse-transit');
     }
-    const compareButton = document.querySelector('.compare-toggle');
-    if (compareButton) {
-        compareButton.setAttribute('aria-pressed', 'false');
-        compareButton.textContent = 'Compare';
-    }
+    setCompareButtonState(false);
     compareCountyA = null;
     compareCountyB = null;
     clearPulse();
     // Hide clear selection button
-    document.getElementById('clear-selection').classList.remove('visible');
     // Clear map selection highlight
     if (map.getLayer('counties-hover')) {
         map.setFilter('counties-hover', ['==', 'fips_code', '']);
@@ -1369,6 +1897,19 @@ function closePanel() {
     }
     currentFipsCode = null;
     currentCountySummary = null;
+    document.getElementById('panel-title').textContent = 'County Selected';
+    document.getElementById('panel-subtitle').textContent = 'No county selected yet';
+    document.getElementById('panel-content').innerHTML = `
+        <div class="panel-empty-state">
+            County analysis, layer scores, and strengths/weaknesses will appear here after selection.
+        </div>
+    `;
+    hideFloatingAnalysisPanel();
+    setHoveredResult(null);
+    setCompareGuidance(false);
+    applyMapVisualFocus();
+    updateMapStateChips();
+    renderCountyResults();
     updateUrlHash();
 
     // Return focus to map for accessibility
@@ -1406,6 +1947,11 @@ function setupLegendFiltering() {
 }
 
 function toggleLegendFilter(group) {
+    // Clear bivariate filter when using regular legend filter
+    if (activeBivariateFilter) {
+        activeBivariateFilter = null;
+        updateBivariateCellStyles();
+    }
     if (activeLegendFilter === group) {
         clearLegendFilter();
         return;
@@ -1417,26 +1963,7 @@ function toggleLegendFilter(group) {
 function applyLegendFilter() {
     const legendItems = document.querySelectorAll('.legend-item[data-group]');
     const resetButton = document.getElementById('legend-reset');
-
-    // Use the correct GeoJSON property for the active layer
-    const propertyName = currentLayer === 'synthesis' ? 'synthesis_grouping'
-        : currentLayer === 'directional' ? 'directional_class'
-        : 'confidence_class';
-
-    const opacityExpr = activeLegendFilter
-        ? ['case',
-            ['==', ['get', propertyName], activeLegendFilter],
-            DEFAULT_FILL_OPACITY,
-            DIMMED_FILL_OPACITY
-        ]
-        : DEFAULT_FILL_OPACITY;
-
-    if (map.getLayer('counties-fill')) {
-        map.setPaintProperty('counties-fill', 'fill-opacity', opacityExpr);
-    }
-    if (map.getLayer('counties-border')) {
-        map.setPaintProperty('counties-border', 'line-opacity', activeLegendFilter ? 0.25 : 0.5);
-    }
+    applyMapVisualFocus();
 
     legendItems.forEach((item) => {
         const group = item.getAttribute('data-group');
@@ -1449,11 +1976,62 @@ function applyLegendFilter() {
     if (resetButton) {
         resetButton.classList.toggle('hidden', activeLegendFilter === null);
     }
+
+    updateMapStateChips();
+    renderCountyResults();
 }
 
 function clearLegendFilter() {
     activeLegendFilter = null;
     applyLegendFilter();
+}
+
+// ── Bivariate Legend Click Filter ──
+function toggleBivariateFilter(dir, conf) {
+    // If same filter is already active, clear it
+    if (activeBivariateFilter && activeBivariateFilter.dir === dir && activeBivariateFilter.conf === conf) {
+        clearBivariateFilter();
+        return;
+    }
+
+    // Clear regular legend filter if active
+    if (activeLegendFilter) {
+        activeLegendFilter = null;
+        applyLegendFilter();
+    }
+
+    activeBivariateFilter = { dir, conf };
+    applyMapVisualFocus();
+    updateBivariateCellStyles();
+}
+
+function clearBivariateFilter() {
+    activeBivariateFilter = null;
+    applyMapVisualFocus();
+    updateBivariateCellStyles();
+}
+
+function updateBivariateCellStyles() {
+    document.querySelectorAll('.bivariate-cell[data-dir]').forEach(cell => {
+        const isMatch = activeBivariateFilter &&
+            cell.dataset.dir === activeBivariateFilter.dir &&
+            cell.dataset.conf === activeBivariateFilter.conf;
+        cell.classList.toggle('active', isMatch);
+    });
+}
+
+function setupBivariateFilter() {
+    document.querySelectorAll('.bivariate-cell[data-dir]').forEach(cell => {
+        cell.addEventListener('click', () => {
+            toggleBivariateFilter(cell.dataset.dir, cell.dataset.conf);
+        });
+        cell.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleBivariateFilter(cell.dataset.dir, cell.dataset.conf);
+            }
+        });
+    });
 }
 
 function toggleLayerScores() {
@@ -1486,6 +2064,7 @@ function toggleCompareMode() {
         panel.setAttribute('data-compare-mode', 'active');
         button.setAttribute('aria-pressed', 'true');
         button.textContent = 'Select 2nd County';
+        setCompareGuidance(true);
     } else {
         // Exiting compare mode
         compareCountyA = null;
@@ -1493,6 +2072,7 @@ function toggleCompareMode() {
         panel.setAttribute('data-compare-mode', 'off');
         button.setAttribute('aria-pressed', 'false');
         button.textContent = 'Compare';
+        setCompareGuidance(false);
         // Reload original county detail if we have a FIPS code
         if (currentFipsCode) {
             loadCountyDetail(currentFipsCode);
@@ -1523,6 +2103,11 @@ function renderComparisonPanel(dataA, dataB) {
     if (!dataA || !dataB) return;
 
     const panel = document.getElementById('side-panel');
+    hideFloatingAnalysisPanel();
+    const strengthsA = normalizeAnalysisItems(dataA.primary_strengths);
+    const strengthsB = normalizeAnalysisItems(dataB.primary_strengths);
+    const weaknessesA = normalizeAnalysisItems(dataA.primary_weaknesses);
+    const weaknessesB = normalizeAnalysisItems(dataB.primary_weaknesses);
     document.getElementById('panel-title').textContent = 'County Comparison';
     document.getElementById('panel-subtitle').textContent = `${dataA.county_name} vs ${dataB.county_name}`;
 
@@ -1537,47 +2122,47 @@ function renderComparisonPanel(dataA, dataB) {
         const diffColor = diff !== null ? (diff > 0 ? '#2e7d32' : diff < 0 ? '#c62828' : '#666') : '#666';
         return `
             <tr>
-                <td style="font-weight: 500; font-size: 13px;">${formatLayerName(key)}</td>
-                <td style="text-align: right; font-size: 13px;">${fmtA}</td>
-                <td style="text-align: right; font-size: 13px;">${fmtB}</td>
-                <td style="text-align: right; font-size: 12px; color: ${diffColor};">${diffStr}</td>
+                <td class="fw-medium">${formatLayerName(key)}</td>
+                <td class="text-right">${fmtA}</td>
+                <td class="text-right">${fmtB}</td>
+                <td class="text-right text-sm" style="color: ${diffColor};">${diffStr}</td>
             </tr>
         `;
     }).join('');
 
     const content = `
         <div class="panel-section">
-            <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-                <div style="flex: 1; text-align: center; padding: 12px; background: #f8f9fa; border-radius: 8px;">
-                    <div style="font-size: 11px; color: #666; margin-bottom: 4px;">County A</div>
-                    <div style="font-weight: 600; font-size: 14px;">${dataA.county_name}</div>
+            <div class="flex gap-3 mb-4">
+                <div class="compare-card">
+                    <div class="compare-label">County A</div>
+                    <div class="compare-name">${dataA.county_name}</div>
                     <div class="synthesis-badge" style="background: ${SYNTHESIS_COLORS[dataA.synthesis_grouping]}; color: ${dataA.synthesis_grouping === 'stable_constrained' ? '#333' : 'white'}; margin-top: 8px; font-size: 11px;">
                         ${SYNTHESIS_LABELS[dataA.synthesis_grouping]}
                     </div>
-                    <div style="font-size: 20px; font-weight: 700; margin-top: 8px;">${dataA.composite_score?.toFixed(3) || 'N/A'}</div>
-                    <div style="font-size: 11px; color: #666;">Composite Score</div>
+                    <div class="compare-score">${dataA.composite_score?.toFixed(3) || 'N/A'}</div>
+                    <div class="compare-score-label">Composite Score</div>
                 </div>
-                <div style="flex: 1; text-align: center; padding: 12px; background: #f8f9fa; border-radius: 8px;">
-                    <div style="font-size: 11px; color: #666; margin-bottom: 4px;">County B</div>
-                    <div style="font-weight: 600; font-size: 14px;">${dataB.county_name}</div>
+                <div class="compare-card">
+                    <div class="compare-label">County B</div>
+                    <div class="compare-name">${dataB.county_name}</div>
                     <div class="synthesis-badge" style="background: ${SYNTHESIS_COLORS[dataB.synthesis_grouping]}; color: ${dataB.synthesis_grouping === 'stable_constrained' ? '#333' : 'white'}; margin-top: 8px; font-size: 11px;">
                         ${SYNTHESIS_LABELS[dataB.synthesis_grouping]}
                     </div>
-                    <div style="font-size: 20px; font-weight: 700; margin-top: 8px;">${dataB.composite_score?.toFixed(3) || 'N/A'}</div>
-                    <div style="font-size: 11px; color: #666;">Composite Score</div>
+                    <div class="compare-score">${dataB.composite_score?.toFixed(3) || 'N/A'}</div>
+                    <div class="compare-score-label">Composite Score</div>
                 </div>
             </div>
         </div>
 
         <div class="panel-section">
             <h4>Layer Score Comparison</h4>
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <table class="compare-table">
                 <thead>
-                    <tr style="border-bottom: 2px solid #e0e0e0;">
-                        <th style="text-align: left; padding: 6px 0; font-size: 11px; color: #666;">Layer</th>
-                        <th style="text-align: right; padding: 6px 0; font-size: 11px; color: #666;">${dataA.county_name.split(' ')[0]}</th>
-                        <th style="text-align: right; padding: 6px 0; font-size: 11px; color: #666;">${dataB.county_name.split(' ')[0]}</th>
-                        <th style="text-align: right; padding: 6px 0; font-size: 11px; color: #666;">Diff</th>
+                    <tr>
+                        <th>Layer</th>
+                        <th class="text-right">${dataA.county_name.split(' ')[0]}</th>
+                        <th class="text-right">${dataB.county_name.split(' ')[0]}</th>
+                        <th class="text-right">Diff</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1587,33 +2172,34 @@ function renderComparisonPanel(dataA, dataB) {
         </div>
 
         <div class="panel-section">
-            <div style="display: flex; gap: 12px;">
-                <div style="flex: 1;">
+            <div class="flex gap-3">
+                <div class="flex-1">
                     <h4>${dataA.county_name.split(' ')[0]} Strengths</h4>
-                    ${dataA.primary_strengths.map(s => `<div class="list-item" style="font-size: 13px;">&#10003; ${s}</div>`).join('')}
+                    ${strengthsA.length ? strengthsA.map(s => `<div class="list-item text-base">&#10003; ${s}</div>`).join('') : '<div class="list-item text-base">No strengths reported.</div>'}
                 </div>
-                <div style="flex: 1;">
+                <div class="flex-1">
                     <h4>${dataB.county_name.split(' ')[0]} Strengths</h4>
-                    ${dataB.primary_strengths.map(s => `<div class="list-item" style="font-size: 13px;">&#10003; ${s}</div>`).join('')}
+                    ${strengthsB.length ? strengthsB.map(s => `<div class="list-item text-base">&#10003; ${s}</div>`).join('') : '<div class="list-item text-base">No strengths reported.</div>'}
                 </div>
             </div>
         </div>
 
         <div class="panel-section">
-            <div style="display: flex; gap: 12px;">
-                <div style="flex: 1;">
+            <div class="flex gap-3">
+                <div class="flex-1">
                     <h4>${dataA.county_name.split(' ')[0]} Weaknesses</h4>
-                    ${dataA.primary_weaknesses.map(w => `<div class="list-item" style="font-size: 13px;">&#9888; ${w}</div>`).join('')}
+                    ${weaknessesA.length ? weaknessesA.map(w => `<div class="list-item text-base">&#9888; ${w}</div>`).join('') : '<div class="list-item text-base">No weaknesses reported.</div>'}
                 </div>
-                <div style="flex: 1;">
+                <div class="flex-1">
                     <h4>${dataB.county_name.split(' ')[0]} Weaknesses</h4>
-                    ${dataB.primary_weaknesses.map(w => `<div class="list-item" style="font-size: 13px;">&#9888; ${w}</div>`).join('')}
+                    ${weaknessesB.length ? weaknessesB.map(w => `<div class="list-item text-base">&#9888; ${w}</div>`).join('') : '<div class="list-item text-base">No weaknesses reported.</div>'}
                 </div>
             </div>
         </div>
     `;
 
     document.getElementById('panel-content').innerHTML = content;
+    setCompareGuidance(false);
 
     // Reset compare UI
     const button = document.querySelector('.compare-toggle');
@@ -1636,6 +2222,11 @@ function switchPanelTab(tabId, clickedTab) {
 
 // Keyboard support for legend toggle
 document.addEventListener('DOMContentLoaded', () => {
+    setupExtrusionToggle();
+    setupBivariateFilter();
+    updateMapStateChips();
+    setupAnalysisPanel();
+    setupLayoutResizer();
     const legendHeader = document.querySelector('.legend-header');
     if (legendHeader) {
         legendHeader.addEventListener('keydown', (e) => {
@@ -1653,6 +2244,7 @@ document.addEventListener('DOMContentLoaded', () => {
             toggleLegend();
         }
     }
+
 });
 
 // Get synthesis grouping description
@@ -1665,6 +2257,92 @@ function getSynthesisDescription(grouping) {
         'high_uncertainty': 'Coverage is thin or inconsistent across layers; interpret cautiously and prioritize local validation.'
     };
     return descriptions[grouping] || 'No description available.';
+}
+
+// Generate a 2-3 sentence narrative about a county from its data
+function generateCountyNarrative(data) {
+    const name = data.county_name || 'This county';
+    const groupLabel = SYNTHESIS_LABELS[data.synthesis_grouping] || 'Unclassified';
+    const strengths = normalizeAnalysisItems(data.primary_strengths);
+    const weaknesses = normalizeAnalysisItems(data.primary_weaknesses);
+    const trends = normalizeAnalysisItems(data.key_trends);
+    const score = data.composite_score;
+    const scoreText = score !== null && score !== undefined ? score.toFixed(2) : null;
+
+    // Opening sentence: classification + score context
+    const GROUPING_VERBS = {
+        'emerging_tailwinds': 'shows reinforcing structural tailwinds',
+        'conditional_growth': 'has growth potential tempered by delivery risk',
+        'stable_constrained': 'maintains steady conditions with limited upside',
+        'at_risk_headwinds': 'faces structural headwinds that constrain growth',
+        'high_uncertainty': 'has sparse data coverage, making assessment uncertain'
+    };
+    const verb = GROUPING_VERBS[data.synthesis_grouping] || `is classified as ${groupLabel}`;
+    let narrative = `${name} ${verb}`;
+    if (scoreText) {
+        narrative += ` (composite ${scoreText})`;
+    }
+    narrative += '.';
+
+    // Middle sentence: strengths and weaknesses
+    if (strengths.length > 0 && weaknesses.length > 0) {
+        const strengthList = strengths.slice(0, 2).join(' and ');
+        const weaknessList = weaknesses.slice(0, 2).join(' and ');
+        narrative += ` Key strengths include ${strengthList}, while ${weaknessList} present challenges.`;
+    } else if (strengths.length > 0) {
+        narrative += ` Notable strengths: ${strengths.slice(0, 2).join(' and ')}.`;
+    } else if (weaknesses.length > 0) {
+        narrative += ` Key challenges include ${weaknesses.slice(0, 2).join(' and ')}.`;
+    }
+
+    // Closing sentence: trend
+    if (trends.length > 0) {
+        narrative += ` ${trends[0]}.`.replace('..', '.');
+    }
+
+    return narrative;
+}
+
+// Layer score keys and their short labels for sparklines
+const SPARKLINE_LAYERS = [
+    { key: 'employment_gravity_score', label: 'Emp' },
+    { key: 'mobility_optionality_score', label: 'Mob' },
+    { key: 'school_trajectory_score', label: 'Sch' },
+    { key: 'housing_elasticity_score', label: 'Hsg' },
+    { key: 'demographic_momentum_score', label: 'Dem' },
+    { key: 'risk_drag_score', label: 'Risk' }
+];
+
+// Generate an inline SVG sparkline bar chart from county properties
+function renderTooltipSparkline(props) {
+    const W = 180, H = 48, barGap = 4, labelH = 10;
+    const chartH = H - labelH;
+    const barCount = SPARKLINE_LAYERS.length;
+    const barW = (W - barGap * (barCount - 1)) / barCount;
+
+    let bars = '';
+    let labels = '';
+
+    SPARKLINE_LAYERS.forEach((layer, i) => {
+        const raw = props[layer.key];
+        const val = (raw !== null && raw !== undefined && raw !== 'null') ? parseFloat(raw) : null;
+        const x = i * (barW + barGap);
+
+        if (val !== null && !isNaN(val)) {
+            const clamped = Math.max(0, Math.min(1, val));
+            const barH = Math.max(2, clamped * chartH);
+            const y = chartH - barH;
+            const color = clamped >= 0.6 ? '#2d5016' : clamped >= 0.35 ? '#fdd835' : '#f4511e';
+            bars += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" rx="2" fill="${color}" opacity="0.85"/>`;
+        } else {
+            bars += `<rect x="${x}" y="${chartH - 2}" width="${barW}" height="2" rx="1" fill="#cbd5e1" opacity="0.5"/>`;
+        }
+
+        const labelX = x + barW / 2;
+        labels += `<text x="${labelX}" y="${H}" text-anchor="middle" fill="#94a3b8" font-size="7" font-family="Inter, sans-serif">${layer.label}</text>`;
+    });
+
+    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="display:block;margin-top:6px;">${bars}${labels}</svg>`;
 }
 
 // Format layer name for display
@@ -1694,6 +2372,124 @@ document.addEventListener('keydown', (e) => {
 // County Search / Autocomplete
 // ============================================================
 let countyFeatures = []; // Populated after map data loads
+let countySearchQuery = '';
+let hoveredResultFips = null;
+
+function getSortValue(featureRecord) {
+    const p = featureRecord.feature?.properties || {};
+    if (currentLayer === 'directional') {
+        return p.directional_class === 'improving' ? 3 : p.directional_class === 'stable' ? 2 : 1;
+    }
+    if (currentLayer === 'confidence') {
+        return p.confidence_class === 'strong' ? 3 : p.confidence_class === 'conditional' ? 2 : 1;
+    }
+    return Number(p.composite_score ?? -Infinity);
+}
+
+function getListMetric(featureRecord) {
+    const p = featureRecord.feature?.properties || {};
+    if (currentLayer === 'directional') {
+        return DIRECTIONAL_LABELS[p.directional_class] || 'Unknown';
+    }
+    if (currentLayer === 'confidence') {
+        return CONFIDENCE_LABELS[p.confidence_class] || 'Unknown';
+    }
+    if (p.composite_score === null || p.composite_score === undefined) {
+        return 'N/A';
+    }
+    return Number(p.composite_score).toFixed(3);
+}
+
+function filterCountyRecords(records) {
+    const propertyName = getCurrentLayerPropertyName();
+    const query = countySearchQuery.trim().toLowerCase();
+
+    return records.filter((record) => {
+        const p = record.feature?.properties || {};
+        const matchesFilter = !activeLegendFilter || p[propertyName] === activeLegendFilter;
+        const matchesSearch = !query || String(record.name || '').toLowerCase().includes(query);
+        return matchesFilter && matchesSearch;
+    });
+}
+
+function setHoveredResult(fipsCode) {
+    hoveredResultFips = fipsCode || null;
+    document.querySelectorAll('.county-result-item[data-fips]').forEach((item) => {
+        item.classList.toggle('hovered', hoveredResultFips !== null && item.getAttribute('data-fips') === hoveredResultFips);
+    });
+}
+
+function focusCountyByFips(fipsCode, loadDetail = true) {
+    const county = countyFeatures.find((c) => c.fips === fipsCode);
+    if (!county) {
+        return;
+    }
+
+    if (typeof turf !== 'undefined' && county.feature) {
+        const centroid = turf.centroid(county.feature);
+        map.flyTo({
+            center: centroid.geometry.coordinates,
+            zoom: 9,
+            duration: MAP_FLY_DURATION_MS
+        });
+    }
+
+    if (loadDetail) {
+        loadCountyDetail(fipsCode);
+    }
+}
+
+function renderCountyResults() {
+    const listEl = document.getElementById('county-results-list');
+    const countEl = document.getElementById('county-results-count');
+    if (!listEl || !countEl) {
+        return;
+    }
+
+    const visible = filterCountyRecords(countyFeatures)
+        .sort((a, b) => {
+            const diff = getSortValue(b) - getSortValue(a);
+            if (Number.isFinite(diff) && diff !== 0) return diff;
+            return a.name.localeCompare(b.name);
+        });
+
+    countEl.textContent = `${visible.length}`;
+
+    if (visible.length === 0) {
+        listEl.innerHTML = '<div class="county-results-empty">No counties match the current filters.</div>';
+        return;
+    }
+
+    listEl.innerHTML = visible.map((county) => {
+        const isActive = currentFipsCode === county.fips;
+        const isHovered = hoveredResultFips === county.fips;
+        return `
+            <button class="county-result-item ${isActive ? 'active' : ''} ${isHovered ? 'hovered' : ''}" type="button" data-fips="${county.fips}" aria-pressed="${isActive ? 'true' : 'false'}">
+                <span class="county-result-name">${county.name}</span>
+                <span class="county-result-metric">${getListMetric(county)}</span>
+            </button>
+        `;
+    }).join('');
+
+    listEl.querySelectorAll('.county-result-item[data-fips]').forEach((item) => {
+        const fips = item.getAttribute('data-fips');
+        item.addEventListener('mouseenter', () => {
+            if (map.getLayer('counties-hover')) {
+                map.setFilter('counties-hover', ['==', 'fips_code', fips]);
+            }
+            setHoveredResult(fips);
+        });
+        item.addEventListener('mouseleave', () => {
+            if (map.getLayer('counties-hover')) {
+                map.setFilter('counties-hover', ['==', 'fips_code', '']);
+            }
+            setHoveredResult(null);
+        });
+        item.addEventListener('click', () => {
+            focusCountyByFips(fips, true);
+        });
+    });
+}
 
 function setupCountySearch() {
     const input = document.getElementById('county-search');
@@ -1707,13 +2503,17 @@ function setupCountySearch() {
             name: f.properties.county_name,
             fips: f.properties.fips_code,
             feature: f
-        })).sort((a, b) => a.name.localeCompare(b.name));
+        }));
     }
+
+    renderCountyResults();
 
     let highlightedIndex = -1;
 
     input.addEventListener('input', () => {
         const query = input.value.trim().toLowerCase();
+        countySearchQuery = query;
+        renderCountyResults();
         highlightedIndex = -1;
 
         if (!query) {
@@ -1727,7 +2527,7 @@ function setupCountySearch() {
         ).slice(0, 10);
 
         if (matches.length === 0) {
-            results.innerHTML = '<div class="county-search-result" style="color: #999; cursor: default;">No matches found</div>';
+            results.innerHTML = '<div class="county-search-result text-faint" style="cursor: default;">No matches found</div>';
             results.classList.add('visible');
             return;
         }
@@ -1792,20 +2592,10 @@ function selectSearchResult(fipsCode) {
 
     // Update input and close dropdown
     input.value = county.name;
+    countySearchQuery = county.name.toLowerCase();
     results.classList.remove('visible');
-
-    // Fly to county centroid
-    if (typeof turf !== 'undefined' && county.feature) {
-        const centroid = turf.centroid(county.feature);
-        map.flyTo({
-            center: centroid.geometry.coordinates,
-            zoom: 9,
-            duration: 1200
-        });
-    }
-
-    // Load county detail
-    loadCountyDetail(fipsCode);
+    renderCountyResults();
+    focusCountyByFips(fipsCode, true);
     updateUrlHash();
 }
 
@@ -1814,7 +2604,6 @@ function selectSearchResult(fipsCode) {
 // ============================================================
 function updateUrlHash() {
     const parts = [];
-    if (currentLayer !== 'synthesis') parts.push(`layer=${currentLayer}`);
     if (currentFipsCode) parts.push(`county=${currentFipsCode}`);
     const hash = parts.length > 0 ? parts.join('&') : '';
     if (window.location.hash.slice(1) !== hash) {
@@ -1831,13 +2620,6 @@ function restoreFromHash() {
         const [key, value] = part.split('=');
         if (key && value) params[key] = value;
     });
-
-    if (params.layer && ['synthesis', 'directional', 'confidence'].includes(params.layer)) {
-        currentLayer = params.layer;
-        const radio = document.querySelector(`input[name="layer"][value="${params.layer}"]`);
-        if (radio) radio.checked = true;
-        switchLayer(currentLayer);
-    }
 
     if (params.county) {
         loadCountyDetail(params.county);
@@ -1913,6 +2695,95 @@ function downloadBlob(content, filename, type) {
 }
 
 // ============================================================
+// 3D Score Extrusion
+// ============================================================
+let extrusionActive = false;
+const EXTRUSION_MAX_HEIGHT = 40000; // meters for max score (1.0)
+
+function addExtrusionLayer() {
+    if (map.getLayer('counties-extrusion')) return;
+
+    // Insert below county labels but above fills
+    const beforeLayer = map.getLayer('county-labels') ? 'county-labels' : undefined;
+
+    map.addLayer({
+        id: 'counties-extrusion',
+        type: 'fill-extrusion',
+        source: 'counties',
+        paint: {
+            'fill-extrusion-color': getSynthesisFillExpression(),
+            'fill-extrusion-height': 0,
+            'fill-extrusion-base': 0,
+            'fill-extrusion-opacity': 0
+        }
+    }, beforeLayer);
+}
+
+function toggleExtrusion() {
+    extrusionActive = !extrusionActive;
+
+    const btn = document.getElementById('extrude-toggle');
+    if (btn) {
+        btn.setAttribute('aria-pressed', extrusionActive ? 'true' : 'false');
+    }
+
+    if (!map.getLayer('counties-extrusion')) {
+        addExtrusionLayer();
+    }
+
+    if (extrusionActive) {
+        // Sync color with current layer
+        const fillExpr = currentLayer === 'directional'
+            ? getDirectionalFillExpression()
+            : currentLayer === 'confidence'
+                ? getConfidenceFillExpression()
+                : getSynthesisFillExpression();
+        map.setPaintProperty('counties-extrusion', 'fill-extrusion-color', fillExpr);
+
+        // Animate height up
+        map.setPaintProperty('counties-extrusion', 'fill-extrusion-height', [
+            'interpolate', ['linear'],
+            ['coalesce', ['to-number', ['get', 'composite_score']], 0],
+            0, 0,
+            1, EXTRUSION_MAX_HEIGHT
+        ]);
+        map.setPaintProperty('counties-extrusion', 'fill-extrusion-opacity', 0.78);
+
+        // Hide flat fill to avoid z-fighting
+        map.setPaintProperty('counties-fill', 'fill-opacity', 0);
+
+        // Tilt the camera for 3D effect
+        map.easeTo({
+            pitch: 50,
+            bearing: -15,
+            zoom: Math.max(map.getZoom(), 7.2),
+            duration: 800
+        });
+    } else {
+        // Animate back to flat
+        map.setPaintProperty('counties-extrusion', 'fill-extrusion-height', 0);
+        map.setPaintProperty('counties-extrusion', 'fill-extrusion-opacity', 0);
+
+        // Explicitly restore the 2D fill layer visibility
+        map.setPaintProperty('counties-fill', 'fill-opacity', DEFAULT_FILL_OPACITY);
+        applyMapVisualFocus(); // apply selection/filter dimming if any
+
+        map.easeTo({
+            pitch: 0,
+            bearing: 0,
+            duration: 600
+        });
+    }
+}
+
+function setupExtrusionToggle() {
+    const btn = document.getElementById('extrude-toggle');
+    if (!btn || btn.dataset.bound === 'true') return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', toggleExtrusion);
+}
+
+// ============================================================
 // Statewide Ranking Table View
 // ============================================================
 let tableViewActive = false;
@@ -1928,11 +2799,15 @@ function toggleTableView() {
         renderTableView();
         tableEl.classList.add('visible');
         mapEl.style.display = 'none';
+        hideFloatingAnalysisPanel();
         if (toggleBtn) toggleBtn.textContent = 'Map View';
     } else {
         document.body.classList.remove('table-mode');
         tableEl.classList.remove('visible');
         mapEl.style.display = 'block';
+        if (currentCountySummary) {
+            showFloatingAnalysisPanel(currentCountySummary);
+        }
         if (toggleBtn) toggleBtn.textContent = 'Table View';
         setTimeout(() => map.resize(), 50);
     }
@@ -1980,11 +2855,11 @@ function renderTableView() {
                         return `
                             <tr onclick="tableRowClick('${p.fips_code}')">
                                 <td><span class="rank-number ${i < 3 ? 'top-3' : ''}">${i + 1}</span></td>
-                                <td style="font-weight: 600;">${p.county_name}</td>
+                                <td class="fw-bold">${p.county_name}</td>
                                 <td><span class="table-synthesis-badge" style="background: ${badgeBg}; color: ${badgeColor};">${SYNTHESIS_LABELS[p.synthesis_grouping] || p.synthesis_grouping}</span></td>
                                 <td>
                                     <div class="table-score-cell">
-                                        <span style="font-weight: 600; min-width: 42px;">${score !== null ? score.toFixed(3) : 'N/A'}</span>
+                                        <span class="fw-bold" style="min-width: 42px;">${score !== null ? score.toFixed(3) : 'N/A'}</span>
                                         <div class="table-score-bar"><div class="table-score-bar-fill" style="width: ${scorePct}%"></div></div>
                                     </div>
                                 </td>
@@ -2069,9 +2944,135 @@ function tableRowClick(fipsCode) {
         map.flyTo({
             center: turf.centroid(county.feature).geometry.coordinates,
             zoom: 9,
-            duration: 1200
+            duration: MAP_FLY_DURATION_MS
         });
     }
 
     loadCountyDetail(fipsCode);
 }
+
+// ============================================================
+// Scrollytelling Intro Tour
+// ============================================================
+const STORY_STORAGE_KEY = 'atlas_story_seen';
+const STORY_CHAPTERS = [
+    {
+        title: 'Welcome to the Maryland Atlas',
+        body: 'This interactive map reveals structural growth trajectories across all 24 Maryland counties. Each county is scored on employment access, mobility, school quality, housing elasticity, demographics, and risk factors.',
+        center: [-77.0, 39.0],
+        zoom: 7.2,
+        pitch: 0,
+        bearing: 0
+    },
+    {
+        title: 'Montgomery County: Emerging Tailwinds',
+        body: 'Maryland\'s most populous county shows strong employment gravity and school trajectory scores. Its proximity to D.C. creates robust commuting options, though housing elasticity remains a challenge.',
+        center: [-77.2, 39.14],
+        zoom: 9.2,
+        pitch: 30,
+        bearing: -10
+    },
+    {
+        title: 'Baltimore County: Conditional Growth',
+        body: 'With solid school systems and employment access, Baltimore County has real upside — but delivery risk matters. Housing supply constraints and mixed mobility signals require careful attention.',
+        center: [-76.61, 39.44],
+        zoom: 9.0,
+        pitch: 25,
+        bearing: 5
+    },
+    {
+        title: 'Allegany County: Headwinds in the West',
+        body: 'Rural western Maryland faces structural headwinds: limited job access, weaker school trajectories, and out-migration pressure. However, low housing costs create a potential entry point for targeted investment.',
+        center: [-78.7, 39.62],
+        zoom: 9.3,
+        pitch: 35,
+        bearing: -20
+    },
+    {
+        title: 'Start Exploring',
+        body: 'Click any county to see its full analysis, layer scores, and strengths/weaknesses. Use the sidebar search to jump to a county, or toggle 3D Scores to see composite scores rise off the map.',
+        center: [-77.0, 39.0],
+        zoom: 7.2,
+        pitch: 0,
+        bearing: 0
+    }
+];
+
+function shouldShowStory() {
+    try {
+        return !localStorage.getItem(STORY_STORAGE_KEY);
+    } catch {
+        return false;
+    }
+}
+
+function markStorySeen() {
+    try {
+        localStorage.setItem(STORY_STORAGE_KEY, '1');
+    } catch { /* ignore */ }
+}
+
+function launchStoryTour() {
+    const overlay = document.getElementById('story-overlay');
+    if (!overlay) return;
+
+    let step = 0;
+    overlay.style.display = '';
+
+    function renderStep() {
+        const chapter = STORY_CHAPTERS[step];
+        const total = STORY_CHAPTERS.length;
+        document.getElementById('story-title').textContent = chapter.title;
+        document.getElementById('story-body').textContent = chapter.body;
+        document.getElementById('story-step-indicator').textContent = `${step + 1} / ${total}`;
+        document.getElementById('story-progress-fill').style.width = `${((step + 1) / total) * 100}%`;
+
+        const nextBtn = document.getElementById('story-next');
+        nextBtn.textContent = step === total - 1 ? 'Get Started' : 'Next';
+
+        // Animate the card
+        const card = document.getElementById('story-card');
+        card.style.animation = 'none';
+        card.offsetHeight; // force reflow
+        card.style.animation = 'story-card-enter 0.4s ease-out';
+
+        map.flyTo({
+            center: chapter.center,
+            zoom: chapter.zoom,
+            pitch: chapter.pitch,
+            bearing: chapter.bearing,
+            duration: 1400,
+            essential: true
+        });
+    }
+
+    function close() {
+        overlay.style.display = 'none';
+        markStorySeen();
+    }
+
+    document.getElementById('story-next').addEventListener('click', () => {
+        if (step < STORY_CHAPTERS.length - 1) {
+            step++;
+            renderStep();
+        } else {
+            close();
+        }
+    });
+
+    document.getElementById('story-skip').addEventListener('click', () => {
+        // Fly back to overview before closing
+        map.flyTo({ center: [-77.0, 39.0], zoom: 7.2, pitch: 0, bearing: 0, duration: 600 });
+        close();
+    });
+
+    renderStep();
+}
+
+// Hook into map load to start story after data is ready
+map.once('idle', () => {
+    if (shouldShowStory() && !window.location.hash) {
+        // Small delay so the map is fully settled
+        setTimeout(launchStoryTour, 600);
+    }
+});

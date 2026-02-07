@@ -11,6 +11,7 @@ from geoalchemy2 import Geometry
 from contextlib import contextmanager
 from typing import Generator
 import logging
+from datetime import date, datetime
 
 from config.settings import get_settings
 
@@ -240,9 +241,28 @@ def log_refresh(
         error_message: Error description if status != 'success'
         metadata: Additional JSON metadata
     """
+    def _json_default(value):
+        """Handle numpy/pandas/scalar types commonly produced in pipelines."""
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, (set, tuple)):
+            return list(value)
+        # numpy/pandas scalars generally expose .item()
+        if hasattr(value, "item"):
+            try:
+                return value.item()
+            except Exception:
+                pass
+        # numpy arrays / pandas index types often expose .tolist()
+        if hasattr(value, "tolist"):
+            try:
+                return value.tolist()
+            except Exception:
+                pass
+        return str(value)
+
     try:
         with get_db() as db:
-            from datetime import datetime
             import json
 
             sql = text("""
@@ -266,7 +286,7 @@ def log_refresh(
                 "records_inserted": records_inserted,
                 "records_updated": records_updated,
                 "error_message": error_message,
-                "metadata": json.dumps(metadata) if metadata else None
+                "metadata": json.dumps(metadata, default=_json_default) if metadata else None
             })
 
             logger.info(

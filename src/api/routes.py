@@ -248,6 +248,33 @@ async def get_area_detail(
             "risk_drag": result.risk_drag_score
         }
 
+        # Backfill null scores from layer tables (handles v1→v2 column mismatches)
+        for layer_key, score_val in layer_scores.items():
+            if score_val is not None:
+                continue
+            config = LAYER_CONFIGS.get(layer_key)
+            if not config:
+                continue
+            primary_col = next(
+                (f["col"] for f in config["factors"] if f.get("weight") == 1.0),
+                None
+            )
+            if not primary_col:
+                continue
+            try:
+                backfill_query = text(f"""
+                    SELECT "{primary_col}" AS val
+                    FROM {config["table"]}
+                    WHERE fips_code = :geoid AND "{primary_col}" IS NOT NULL
+                    ORDER BY data_year DESC
+                    LIMIT 1
+                """)
+                backfill_result = db.execute(backfill_query, {"geoid": geoid}).fetchone()
+                if backfill_result and backfill_result.val is not None:
+                    layer_scores[layer_key] = float(backfill_result.val)
+            except Exception:
+                pass  # Non-critical; leave as None
+
         explainability = _generate_explainability_payload(
             directional_class=result.directional_status,
             confidence_class=result.confidence_level,
