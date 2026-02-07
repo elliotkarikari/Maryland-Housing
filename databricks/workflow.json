@@ -1,0 +1,145 @@
+{
+  "name": "maryland-atlas-pipeline",
+  "description": "Maryland Growth & Family Viability Atlas — full data pipeline from ingestion through GeoJSON export.",
+  "schedule": {
+    "quartz_cron_expression": "0 0 6 ? * MON",
+    "timezone_id": "America/New_York",
+    "pause_status": "PAUSED"
+  },
+  "email_notifications": {
+    "on_failure": []
+  },
+  "max_concurrent_runs": 1,
+  "tasks": [
+    {
+      "task_key": "ingest_layer1",
+      "description": "Ingest Employment Gravity data (LODES, BLS, USASpending, ACS)",
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "ingest_layer1"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "Standard_DS3_v2",
+        "num_workers": 0,
+        "spark_conf": {
+          "spark.databricks.cluster.profile": "singleNode",
+          "spark.master": "local[*]"
+        }
+      },
+      "timeout_seconds": 3600
+    },
+    {
+      "task_key": "ingest_layer2",
+      "description": "Ingest Mobility Optionality data (OSM, GTFS, LODES)",
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "ingest_layer2"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "existing_cluster_id": "",
+      "timeout_seconds": 3600
+    },
+    {
+      "task_key": "ingest_layer3",
+      "description": "Ingest School Trajectory data (MSDE, NCES)",
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "ingest_layer3"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "timeout_seconds": 3600
+    },
+    {
+      "task_key": "ingest_layer4",
+      "description": "Ingest Housing Elasticity data (HUD, ACS, LIHTC)",
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "ingest_layer4"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "timeout_seconds": 3600
+    },
+    {
+      "task_key": "ingest_layer5",
+      "description": "Ingest Demographic Momentum data (ACS, IRS, USPS)",
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "ingest_layer5"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "timeout_seconds": 3600
+    },
+    {
+      "task_key": "ingest_layer6",
+      "description": "Ingest Risk Drag data (FEMA, EPA, NOAA, CDC)",
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "ingest_layer6"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "timeout_seconds": 3600
+    },
+    {
+      "task_key": "ingest_policy",
+      "description": "Ingest Policy Persistence data",
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "ingest_policy"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "task_key": "process_pipeline",
+      "description": "Run multi-year pipeline: timeseries → scoring → classification",
+      "depends_on": [
+        {"task_key": "ingest_layer1"},
+        {"task_key": "ingest_layer2"},
+        {"task_key": "ingest_layer3"},
+        {"task_key": "ingest_layer4"},
+        {"task_key": "ingest_layer5"},
+        {"task_key": "ingest_layer6"},
+        {"task_key": "ingest_policy"}
+      ],
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "process_pipeline"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "timeout_seconds": 3600
+    },
+    {
+      "task_key": "export_geojson",
+      "description": "Export GeoJSON to Azure Blob Storage",
+      "depends_on": [
+        {"task_key": "process_pipeline"}
+      ],
+      "python_wheel_task": {
+        "package_name": "maryland_atlas",
+        "entry_point": "export_geojson"
+      },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
+      "timeout_seconds": 1800
+    }
+  ]
+}

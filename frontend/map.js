@@ -5,7 +5,10 @@
 const MAPBOX_TOKEN = 'pk.eyJ1IjoiZWxrYXJpMjMiLCJhIjoiY2tubm04b3BkMTYwcTJzcG5tZDZ2YTV5MSJ9.S0oAvquhkkMoDGrRJ_oP-Q';
 const MAPBOX_STYLE_URL = 'mapbox://styles/elkari23/cmlapbzzr005001s57o3mdhxk';
 const API_BASE_URL = `${window.location.protocol}//${window.location.hostname}:8000/api/v1`;
+// GeoJSON source URLs — tries in order until one succeeds.
+// Set GEOJSON_BLOB_URL in a <script> tag before map.js to use Azure Blob Storage.
 const GEOJSON_PATHS = [
+    ...(typeof GEOJSON_BLOB_URL !== 'undefined' && GEOJSON_BLOB_URL ? [GEOJSON_BLOB_URL] : []),
     `${API_BASE_URL}/layers/counties/latest`,
     './md_counties_latest.geojson',
     '/md_counties_latest.geojson'

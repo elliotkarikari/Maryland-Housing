@@ -1,0 +1,47 @@
+{
+  "apiVersion": "2024-11-01-preview",
+  "id": "/subscriptions/502c8db4-1217-4ee7-a090-bd587d12c138/resourceGroups/Maryland_Build/providers/Microsoft.Sql/servers/maryland-2026-build/databases/Maryland_Housing",
+  "name": "Maryland_Housing",
+  "type": "microsoft.sql/servers/databases",
+  "sku": {
+    "name": "GP_S_Gen5",
+    "tier": "GeneralPurpose",
+    "family": "Gen5",
+    "capacity": 2
+  },
+  "kind": "v12.0,user,vcore,serverless,freelimit",
+  "location": "westus2",
+  "tags": {},
+  "properties": {
+    "collation": "SQL_Latin1_General_CP1_CI_AS",
+    "maxSizeBytes": 34359738368,
+    "status": "Online",
+    "databaseId": "b2ea2d57-113b-43e5-819c-8a8867251425",
+    "creationDate": "2026-02-07T07:10:08.38Z",
+    "currentServiceObjectiveName": "GP_S_Gen5_2",
+    "requestedServiceObjectiveName": "GP_S_Gen5_2",
+    "defaultSecondaryLocation": "westcentralus",
+    "catalogCollation": "SQL_Latin1_General_CP1_CI_AS",
+    "zoneRedundant": false,
+    "maxLogSizeBytes": 193273528320,
+    "earliestRestoreDate": "2026-02-07T07:13:17Z",
+    "readScale": "Disabled",
+    "currentSku": {
+      "name": "GP_S_Gen5",
+      "tier": "GeneralPurpose",
+      "family": "Gen5",
+      "capacity": 2
+    },
+    "autoPauseDelay": 60,
+    "currentBackupStorageRedundancy": "Local",
+    "requestedBackupStorageRedundancy": "Local",
+    "minCapacity": 0.5,
+    "resumedDate": "2026-02-07T17:47:46.713Z",
+    "maintenanceConfigurationId": "/subscriptions/502c8db4-1217-4ee7-a090-bd587d12c138/providers/Microsoft.Maintenance/publicMaintenanceConfigurations/SQL_Default",
+    "isLedgerOn": false,
+    "isInfraEncryptionEnabled": false,
+    "useFreeLimit": true,
+    "freeLimitExhaustionBehavior": "AutoPause",
+    "availabilityZone": "NoPreference"
+  }
+}

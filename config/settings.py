@@ -23,8 +23,23 @@ class Settings(BaseSettings):
         - SENTRY_DSN (error tracking)
     """
 
-    # Database
-    DATABASE_URL: str
+    # Backend selector: "postgresql" or "databricks"
+    DATA_BACKEND: str = "postgresql"
+
+    # Database (required when DATA_BACKEND=postgresql)
+    DATABASE_URL: Optional[str] = None
+
+    # Azure Databricks (required when DATA_BACKEND=databricks)
+    DATABRICKS_SERVER_HOSTNAME: Optional[str] = None
+    DATABRICKS_HTTP_PATH: Optional[str] = None
+    DATABRICKS_ACCESS_TOKEN: Optional[str] = None
+    DATABRICKS_CATALOG: str = "maryland_atlas"
+    DATABRICKS_SCHEMA: str = "default"
+
+    # Azure Blob Storage (for GeoJSON export when using Databricks)
+    AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None
+    AZURE_STORAGE_CONTAINER: str = "geojson"
+    GEOJSON_PUBLIC_URL: Optional[str] = None
 
     # External APIs
     MAPBOX_ACCESS_TOKEN: str

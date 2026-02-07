@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new
+.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new databricks-init databricks-deploy databricks-test
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -29,6 +29,11 @@ help:
 	@echo "  make test           - Run test suite"
 	@echo "  make clean          - Remove temporary files"
 	@echo "  make agent-lightning - Start Agent Lightning pilot container"
+	@echo ""
+	@echo "Azure Databricks:"
+	@echo "  make databricks-init   - Initialize Delta tables (requires DATA_BACKEND=databricks)"
+	@echo "  make databricks-deploy - Build wheel + upload to Databricks"
+	@echo "  make databricks-test   - Test Databricks connectivity"
 	@echo ""
 	@echo "Claude Prompt Management:"
 	@echo "  make claude-list    - List all available prompts"
@@ -93,6 +98,22 @@ pipeline:
 export:
 	@echo "Generating GeoJSON outputs..."
 	$(PYTHON) -m src.export.geojson_export
+
+# =============================================================================
+# Azure Databricks
+# =============================================================================
+
+databricks-init:
+	@echo "Initializing Databricks Delta tables..."
+	DATA_BACKEND=databricks $(PYTHON) scripts/init_databricks.py --load-geometries
+
+databricks-deploy:
+	@echo "Building and deploying to Databricks..."
+	bash databricks/deploy.sh
+
+databricks-test:
+	@echo "Testing Databricks connection..."
+	DATA_BACKEND=databricks $(PYTHON) -c "from config.databricks import test_databricks_connection; print('OK' if test_databricks_connection() else 'FAIL')"
 
 serve:
 	$(PYTHON) -m uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000

@@ -7,6 +7,25 @@ license = {text = "MIT"}
 requires-python = ">=3.12"
 keywords = ["gis", "maryland", "housing", "viability", "atlas"]
 
+# Entry points for Databricks wheel tasks
+[project.scripts]
+ingest_layer1 = "src.ingest.layer1_economic_accessibility:main"
+ingest_layer2 = "src.ingest.layer2_accessibility:main"
+ingest_layer3 = "src.ingest.layer3_schools:main"
+ingest_layer4 = "src.ingest.layer4_housing:main"
+ingest_layer5 = "src.ingest.layer5_demographics:main"
+ingest_layer6 = "src.ingest.layer6_risk:main"
+ingest_policy = "src.ingest.policy_persistence:main"
+process_pipeline = "src.run_multiyear_pipeline:main"
+export_geojson = "src.export.geojson_export:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*", "config*"]
+
 [tool.black]
 line-length = 100
 target-version = ['py310', 'py311', 'py312']

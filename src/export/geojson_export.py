@@ -17,12 +17,16 @@ import json
 import os
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import text
 import hashlib
 
 from config.database import get_db, log_refresh
 from config.settings import get_settings
 from src.utils.logging import get_logger
+
+_USE_DATABRICKS = get_settings().DATA_BACKEND == "databricks"
+
+if not _USE_DATABRICKS:
+    from sqlalchemy import text
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -30,27 +34,59 @@ settings = get_settings()
 
 def fetch_maryland_county_boundaries() -> gpd.GeoDataFrame:
     """
-    Fetch Maryland county boundaries from Census TIGER/Line.
+    Fetch Maryland county boundaries.
 
-    Uses pygris library for programmatic access to official boundaries.
+    When using Databricks, reads geometry_geojson from the md_counties Delta table.
+    Otherwise, fetches from Census TIGER/Line via pygris.
 
     Returns:
         GeoDataFrame with county geometries
     """
+    if _USE_DATABRICKS:
+        return _fetch_boundaries_from_databricks()
+    return _fetch_boundaries_from_pygris()
+
+
+def _fetch_boundaries_from_databricks() -> gpd.GeoDataFrame:
+    """Load county geometries stored as GeoJSON strings in Delta table."""
+    from shapely.geometry import shape
+
+    logger.info("Fetching county boundaries from Databricks Delta table")
+
+    with get_db() as db:
+        result = db.execute(
+            "SELECT fips_code, county_name, geometry_geojson FROM md_counties"
+        )
+        rows = result.fetchall()
+
+    if not rows:
+        raise ValueError("No county records found in Databricks md_counties table")
+
+    records = []
+    for row in rows:
+        geom = shape(json.loads(row.geometry_geojson)) if row.geometry_geojson else None
+        records.append({
+            'fips_code': row.fips_code,
+            'county_name': row.county_name,
+            'geometry': geom,
+        })
+
+    gdf = gpd.GeoDataFrame(records, crs='EPSG:4326')
+    logger.info(f"Loaded {len(gdf)} county boundaries from Databricks")
+    return gdf
+
+
+def _fetch_boundaries_from_pygris() -> gpd.GeoDataFrame:
+    """Fetch county boundaries from Census TIGER/Line via pygris."""
     logger.info("Fetching Maryland county boundaries from Census TIGER/Line")
 
     try:
-        import pygris
         from pygris import counties
 
-        # Fetch Maryland counties (FIPS 24)
-        # pygris caches automatically in ~/.cache/pygris
-        md_counties = counties(state="MD", year=2023, cb=True)  # cb=True for simplified boundaries
+        md_counties = counties(state="MD", year=2023, cb=True)
 
-        # Ensure FIPS code is properly formatted
         md_counties['GEOID'] = md_counties['GEOID'].astype(str).str.zfill(5)
 
-        # Rename for clarity
         md_counties = md_counties.rename(columns={
             'GEOID': 'fips_code',
             'NAME': 'county_name',
@@ -58,11 +94,9 @@ def fetch_maryland_county_boundaries() -> gpd.GeoDataFrame:
             'AWATER': 'water_area_m2'
         })
 
-        # Convert to WGS84 (EPSG:4326) for web mapping
         if md_counties.crs != 'EPSG:4326':
             md_counties = md_counties.to_crs('EPSG:4326')
 
-        # Select relevant columns
         md_counties = md_counties[['fips_code', 'county_name', 'geometry']]
 
         logger.info(f"Fetched {len(md_counties)} Maryland county boundaries")
@@ -143,29 +177,45 @@ def fetch_latest_synthesis() -> pd.DataFrame:
     """
     logger.info("Fetching latest synthesis from database")
 
-    with get_db() as db:
-        query = text("""
-            SELECT
-                fsc.geoid AS fips_code,
-                fsc.current_as_of_year AS data_year,
-                fsc.final_grouping,
-                fsc.directional_status,
-                fsc.confidence_level,
-                fsc.uncertainty_level,
-                fsc.uncertainty_reasons,
-                fsc.composite_score,
-                fsc.employment_gravity_score,
-                fsc.mobility_optionality_score,
-                fsc.school_trajectory_score,
-                fsc.housing_elasticity_score,
-                fsc.demographic_momentum_score,
-                fsc.risk_drag_score,
-                fsc.classification_version,
-                fsc.updated_at
-            FROM final_synthesis_current fsc
-        """)
+    synthesis_sql = """
+        SELECT
+            geoid AS fips_code,
+            current_as_of_year AS data_year,
+            final_grouping,
+            directional_status,
+            confidence_level,
+            uncertainty_level,
+            uncertainty_reasons,
+            composite_score,
+            employment_gravity_score,
+            mobility_optionality_score,
+            school_trajectory_score,
+            housing_elasticity_score,
+            demographic_momentum_score,
+            risk_drag_score,
+            classification_version,
+            updated_at
+        FROM final_synthesis_current
+    """
 
-        df = pd.read_sql(query, db.connection())
+    with get_db() as db:
+        if _USE_DATABRICKS:
+            result = db.execute(synthesis_sql)
+            rows = result.fetchall()
+            if rows:
+                cols = [d[0] for d in result._cursor.description] if hasattr(result, '_cursor') else [
+                    'fips_code', 'data_year', 'final_grouping', 'directional_status',
+                    'confidence_level', 'uncertainty_level', 'uncertainty_reasons',
+                    'composite_score', 'employment_gravity_score',
+                    'mobility_optionality_score', 'school_trajectory_score',
+                    'housing_elasticity_score', 'demographic_momentum_score',
+                    'risk_drag_score', 'classification_version', 'updated_at'
+                ]
+                df = pd.DataFrame([list(r) for r in rows], columns=cols)
+            else:
+                df = pd.DataFrame()
+        else:
+            df = pd.read_sql(text(synthesis_sql), db.connection())
 
     if df.empty:
         logger.warning("No synthesis records found in database")
@@ -184,13 +234,22 @@ def fetch_latest_synthesis() -> pd.DataFrame:
         if score_col in df.columns and df[score_col].isna().any():
             try:
                 with get_db() as db2:
-                    bq = text(f"""
-                        SELECT fips_code, "{primary_col}" AS val
+                    backfill_sql = f"""
+                        SELECT fips_code, {primary_col} AS val
                         FROM {table}
-                        WHERE "{primary_col}" IS NOT NULL
+                        WHERE {primary_col} IS NOT NULL
                         ORDER BY data_year DESC
-                    """)
-                    backfill_df = pd.read_sql(bq, db2.connection())
+                    """
+                    if _USE_DATABRICKS:
+                        result = db2.execute(backfill_sql)
+                        rows = result.fetchall()
+                        backfill_df = pd.DataFrame(
+                            [{'fips_code': r[0], 'val': r[1]} for r in rows]
+                        ) if rows else pd.DataFrame()
+                    else:
+                        backfill_df = pd.read_sql(
+                            text(backfill_sql), db2.connection()
+                        )
                 if not backfill_df.empty:
                     backfill_map = backfill_df.drop_duplicates('fips_code').set_index('fips_code')['val']
                     mask = df[score_col].isna()
@@ -408,39 +467,103 @@ def log_export_version(
 
     checksum = calculate_file_checksum(geojson_path)
 
+    meta_json = json.dumps({
+        "file_size_bytes": os.path.getsize(geojson_path),
+        "export_tool": "geojson_export.py",
+        "crs": "EPSG:4326"
+    })
+
     with get_db() as db:
-        sql = text("""
-            INSERT INTO export_versions (
-                version, export_date, data_year, geojson_path,
-                record_count, checksum, metadata
-            ) VALUES (
-                :version, :export_date, :data_year, :geojson_path,
-                :record_count, :checksum, :metadata
+        if _USE_DATABRICKS:
+            # Delete + insert (no ON CONFLICT in Databricks)
+            db.execute(
+                "DELETE FROM export_versions WHERE version = :version",
+                {"version": version}
             )
-            ON CONFLICT (version)
-            DO UPDATE SET
-                export_date = EXCLUDED.export_date,
-                geojson_path = EXCLUDED.geojson_path,
-                record_count = EXCLUDED.record_count,
-                checksum = EXCLUDED.checksum,
-                metadata = EXCLUDED.metadata
-        """)
+            db.execute(
+                """INSERT INTO export_versions
+                   (version, export_date, data_year, geojson_path,
+                    record_count, checksum, metadata)
+                   VALUES (:version, :export_date, :data_year, :geojson_path,
+                           :record_count, :checksum, :metadata)""",
+                {
+                    "version": version,
+                    "export_date": datetime.now(timezone.utc).isoformat(),
+                    "data_year": data_year,
+                    "geojson_path": geojson_path,
+                    "record_count": record_count,
+                    "checksum": checksum,
+                    "metadata": meta_json,
+                }
+            )
+        else:
+            sql = text("""
+                INSERT INTO export_versions (
+                    version, export_date, data_year, geojson_path,
+                    record_count, checksum, metadata
+                ) VALUES (
+                    :version, :export_date, :data_year, :geojson_path,
+                    :record_count, :checksum, :metadata
+                )
+                ON CONFLICT (version)
+                DO UPDATE SET
+                    export_date = EXCLUDED.export_date,
+                    geojson_path = EXCLUDED.geojson_path,
+                    record_count = EXCLUDED.record_count,
+                    checksum = EXCLUDED.checksum,
+                    metadata = EXCLUDED.metadata
+            """)
 
-        db.execute(sql, {
-            "version": version,
-            "export_date": datetime.now(timezone.utc),
-            "data_year": data_year,
-            "geojson_path": geojson_path,
-            "record_count": record_count,
-            "checksum": checksum,
-            "metadata": json.dumps({
-                "file_size_bytes": os.path.getsize(geojson_path),
-                "export_tool": "geojson_export.py",
-                "crs": "EPSG:4326"
+            db.execute(sql, {
+                "version": version,
+                "export_date": datetime.now(timezone.utc),
+                "data_year": data_year,
+                "geojson_path": geojson_path,
+                "record_count": record_count,
+                "checksum": checksum,
+                "metadata": meta_json,
             })
-        })
 
-        db.commit()
+            db.commit()
+
+
+def _upload_to_blob_storage(local_path: str, blob_name: str):
+    """Upload a file to Azure Blob Storage."""
+    try:
+        from azure.storage.blob import BlobServiceClient, ContentSettings
+
+        blob_service = BlobServiceClient.from_connection_string(
+            settings.AZURE_STORAGE_CONNECTION_STRING
+        )
+        container = blob_service.get_container_client(
+            settings.AZURE_STORAGE_CONTAINER
+        )
+
+        # Ensure container exists
+        try:
+            container.get_container_properties()
+        except Exception:
+            container.create_container(public_access='blob')
+            logger.info(f"Created blob container: {settings.AZURE_STORAGE_CONTAINER}")
+
+        with open(local_path, 'rb') as data:
+            container.upload_blob(
+                name=blob_name,
+                data=data,
+                overwrite=True,
+                content_settings=ContentSettings(
+                    content_type='application/geo+json',
+                    cache_control='public, max-age=3600'
+                )
+            )
+
+        blob_url = f"{container.url}/{blob_name}"
+        logger.info(f"Uploaded to Azure Blob Storage: {blob_url}")
+
+    except ImportError:
+        logger.warning("azure-storage-blob not installed, skipping blob upload")
+    except Exception as e:
+        logger.error(f"Failed to upload to Azure Blob Storage: {e}")
 
 
 def run_geojson_export(
@@ -498,6 +621,20 @@ def run_geojson_export(
             # Log version
             log_export_version(version, versioned_path, len(merged_gdf), data_year)
 
+        # Upload to Azure Blob Storage if configured
+        if settings.AZURE_STORAGE_CONNECTION_STRING:
+            _upload_to_blob_storage(latest_path, "md_counties_latest.geojson")
+            if versioned_path:
+                blob_name = f"md_counties_{version}.geojson"
+                _upload_to_blob_storage(versioned_path, blob_name)
+
+        # Copy to frontend directory for local dev
+        frontend_geojson = os.path.join("frontend", "md_counties_latest.geojson")
+        if os.path.exists("frontend"):
+            import shutil
+            shutil.copy2(latest_path, frontend_geojson)
+            logger.info(f"Copied latest GeoJSON to {frontend_geojson}")
+
         # Log success
         log_refresh(
             layer_name="geojson_export",
@@ -535,7 +672,8 @@ def run_geojson_export(
         raise
 
 
-if __name__ == "__main__":
+def main():
+    """CLI entry point (also used by Databricks wheel task)."""
     import sys
     import argparse
     from src.utils.logging import setup_logging
@@ -569,3 +707,7 @@ if __name__ == "__main__":
     )
 
     print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()

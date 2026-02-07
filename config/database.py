@@ -1,13 +1,9 @@
 """
 Maryland Viability Atlas - Database Connection Management
-SQLAlchemy + PostGIS configuration
+Supports PostgreSQL (default) and Azure Databricks backends.
+Backend is selected via the DATA_BACKEND environment variable.
 """
 
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import NullPool
-from geoalchemy2 import Geometry
 from contextlib import contextmanager
 from typing import Generator
 import logging
@@ -19,101 +15,137 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-# SQLAlchemy engine
-# For production on Railway, use NullPool to avoid connection exhaustion
-engine = create_engine(
-    settings.DATABASE_URL,
-    poolclass=NullPool if settings.ENVIRONMENT == "production" else None,
-    echo=settings.DEBUG,
-    connect_args={
-        "options": "-c timezone=utc"
-    }
-)
+# ---------------------------------------------------------------------------
+# Backend detection
+# ---------------------------------------------------------------------------
 
-# Enable PostGIS on connection
-@event.listens_for(engine, "connect")
-def receive_connect(dbapi_conn, connection_record):
-    """Ensure PostGIS is available on connection"""
-    with dbapi_conn.cursor() as cursor:
-        cursor.execute("SELECT PostGIS_version();")
-        version = cursor.fetchone()
-        logger.debug(f"PostGIS version: {version[0] if version else 'Unknown'}")
+_USE_DATABRICKS = settings.DATA_BACKEND == "databricks"
+
+# ---------------------------------------------------------------------------
+# PostgreSQL setup (only when using postgresql backend)
+# ---------------------------------------------------------------------------
+
+if not _USE_DATABRICKS:
+    from sqlalchemy import create_engine, event, text
+    from sqlalchemy.ext.declarative import declarative_base
+    from sqlalchemy.orm import sessionmaker, Session
+    from sqlalchemy.pool import NullPool
+
+    try:
+        from geoalchemy2 import Geometry
+    except ImportError:
+        Geometry = None  # Not required for non-spatial queries
+
+    engine = create_engine(
+        settings.DATABASE_URL,
+        poolclass=NullPool if settings.ENVIRONMENT == "production" else None,
+        echo=settings.DEBUG,
+        connect_args={
+            "options": "-c timezone=utc"
+        }
+    )
+
+    @event.listens_for(engine, "connect")
+    def receive_connect(dbapi_conn, connection_record):
+        """Ensure PostGIS is available on connection"""
+        with dbapi_conn.cursor() as cursor:
+            cursor.execute("SELECT PostGIS_version();")
+            version = cursor.fetchone()
+            logger.debug(f"PostGIS version: {version[0] if version else 'Unknown'}")
+
+    SessionLocal = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=engine
+    )
+
+    Base = declarative_base()
+else:
+    # Stubs so imports don't break when using Databricks
+    engine = None
+    SessionLocal = None
+    Base = None
+    Session = None
 
 
-# Session factory
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
-
-# Base class for ORM models
-Base = declarative_base()
-
+# ---------------------------------------------------------------------------
+# get_db() — unified context manager
+# ---------------------------------------------------------------------------
 
 @contextmanager
-def get_db() -> Generator[Session, None, None]:
+def get_db() -> Generator:
     """
     Context manager for database sessions.
+    Returns a PostgreSQL SQLAlchemy session or a DatabricksSession
+    depending on DATA_BACKEND setting.
 
     Usage:
         with get_db() as db:
             db.execute(...)
             db.commit()
     """
-    db = SessionLocal()
-    try:
-        yield db
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Database error: {e}")
-        raise
-    finally:
-        db.close()
+    if _USE_DATABRICKS:
+        from config.databricks import get_databricks_db
+        with get_databricks_db() as db:
+            yield db
+    else:
+        db = SessionLocal()
+        try:
+            yield db
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Database error: {e}")
+            raise
+        finally:
+            db.close()
 
 
-def get_db_session() -> Session:
+def get_db_session():
     """
     Dependency for FastAPI endpoints.
 
     Usage:
         @app.get("/endpoint")
-        def endpoint(db: Session = Depends(get_db_session)):
+        def endpoint(db = Depends(get_db_session)):
             ...
     """
-    db = SessionLocal()
-    try:
-        return db
-    finally:
-        pass  # FastAPI will close it
+    if _USE_DATABRICKS:
+        from config.databricks import get_databricks_db_session
+        return get_databricks_db_session()
+    else:
+        db = SessionLocal()
+        try:
+            return db
+        finally:
+            pass  # FastAPI will close it
 
 
 def test_connection() -> bool:
     """
-    Test database connectivity and PostGIS availability.
-
-    Returns:
-        bool: True if connection successful, False otherwise
+    Test database connectivity.
+    Returns True if connection successful, False otherwise.
     """
+    if _USE_DATABRICKS:
+        from config.databricks import test_databricks_connection
+        return test_databricks_connection()
+
     try:
         with get_db() as db:
-            # Test basic connectivity
-            result = db.execute(text("SELECT 1"))
+            from sqlalchemy import text as sa_text
+            result = db.execute(sa_text("SELECT 1"))
             assert result.scalar() == 1
 
-            # Test PostGIS
-            result = db.execute(text("SELECT PostGIS_version()"))
+            result = db.execute(sa_text("SELECT PostGIS_version()"))
             version = result.scalar()
             logger.info(f"Database connection successful. PostGIS version: {version}")
 
-            # Test Maryland counties table exists
-            result = db.execute(text(
+            result = db.execute(sa_text(
                 "SELECT COUNT(*) FROM information_schema.tables "
                 "WHERE table_name = 'md_counties'"
             ))
             if result.scalar() == 1:
-                result = db.execute(text("SELECT COUNT(*) FROM md_counties"))
+                result = db.execute(sa_text("SELECT COUNT(*) FROM md_counties"))
                 count = result.scalar()
                 logger.info(f"Found {count} Maryland counties in database")
 
@@ -129,10 +161,13 @@ def init_db():
     Initialize database with schema.
     Should be run once during deployment.
     """
+    if _USE_DATABRICKS:
+        logger.info("For Databricks, run: python scripts/init_databricks.py")
+        return
+
     logger.info("Initializing database schema...")
 
     try:
-        # Use psql command directly to avoid SQL parsing issues
         import subprocess
         import os
         import platform
@@ -141,13 +176,10 @@ def init_db():
             "data/schemas/schema_timeseries.sql"
         ]
 
-        # Get database URL from settings
         db_url = settings.DATABASE_URL
 
-        # Find psql command (check common locations)
         psql_cmd = 'psql'
-        if platform.system() == 'Darwin':  # macOS
-            # Try Homebrew paths
+        if platform.system() == 'Darwin':
             homebrew_paths = [
                 '/opt/homebrew/opt/postgresql@17/bin/psql',
                 '/opt/homebrew/opt/postgresql@16/bin/psql',
@@ -159,7 +191,6 @@ def init_db():
                     psql_cmd = path
                     break
 
-        # Execute schema using psql
         for schema_path in schema_files:
             if not os.path.exists(schema_path):
                 logger.warning(f"Schema file not found, skipping: {schema_path}")
@@ -176,11 +207,9 @@ def init_db():
                 logger.info(f"Schema applied successfully: {schema_path}")
             else:
                 logger.warning(f"Schema execution warnings for {schema_path}: {result.stderr}")
-                # Don't raise - tables may already exist
                 logger.info("Schema initialization completed with warnings")
 
     except FileNotFoundError:
-        # psql not in PATH - fall back to SQLAlchemy
         logger.warning("psql not found, using SQLAlchemy (may have issues with functions)")
 
         schema_files = [
@@ -188,7 +217,9 @@ def init_db():
             "data/schemas/schema_timeseries.sql"
         ]
         with get_db() as db:
+            from sqlalchemy import text as sa_text
             for schema_path in schema_files:
+                import os
                 if not os.path.exists(schema_path):
                     logger.warning(f"Schema file not found, skipping: {schema_path}")
                     continue
@@ -197,18 +228,16 @@ def init_db():
                     schema_sql = f.read()
 
                 try:
-                    # Try to execute as single statement
-                    db.execute(text(schema_sql))
+                    db.execute(sa_text(schema_sql))
                     db.commit()
                     logger.info(f"Database schema initialized successfully: {schema_path}")
                 except Exception as e:
                     logger.error(f"Failed to initialize schema {schema_path}: {e}")
                     logger.info("Trying statement-by-statement (may have issues)...")
-                    # Fall back to splitting by semicolons
                     statements = [s.strip() for s in schema_sql.split(';') if s.strip()]
                     for statement in statements:
                         try:
-                            db.execute(text(statement))
+                            db.execute(sa_text(statement))
                         except Exception as e2:
                             logger.warning(f"Statement warning: {e2}")
                     db.commit()
@@ -230,30 +259,32 @@ def log_refresh(
 ):
     """
     Log data refresh operation to data_refresh_log table.
-
-    Args:
-        layer_name: Name of analytical layer (e.g., 'layer1_employment')
-        data_source: Source of data (e.g., 'LEHD/LODES')
-        status: One of 'success', 'partial', 'failed'
-        records_processed: Total records processed
-        records_inserted: New records inserted
-        records_updated: Existing records updated
-        error_message: Error description if status != 'success'
-        metadata: Additional JSON metadata
+    Works with both PostgreSQL and Databricks backends.
     """
+    if _USE_DATABRICKS:
+        from config.databricks import databricks_log_refresh
+        databricks_log_refresh(
+            layer_name=layer_name,
+            data_source=data_source,
+            status=status,
+            records_processed=records_processed,
+            records_inserted=records_inserted,
+            records_updated=records_updated,
+            error_message=error_message,
+            metadata=metadata,
+        )
+        return
+
     def _json_default(value):
-        """Handle numpy/pandas/scalar types commonly produced in pipelines."""
         if isinstance(value, (datetime, date)):
             return value.isoformat()
         if isinstance(value, (set, tuple)):
             return list(value)
-        # numpy/pandas scalars generally expose .item()
         if hasattr(value, "item"):
             try:
                 return value.item()
             except Exception:
                 pass
-        # numpy arrays / pandas index types often expose .tolist()
         if hasattr(value, "tolist"):
             try:
                 return value.tolist()
@@ -264,8 +295,9 @@ def log_refresh(
     try:
         with get_db() as db:
             import json
+            from sqlalchemy import text as sa_text
 
-            sql = text("""
+            sql = sa_text("""
                 INSERT INTO data_refresh_log (
                     layer_name, data_source, refresh_date, status,
                     records_processed, records_inserted, records_updated,
@@ -296,24 +328,33 @@ def log_refresh(
 
     except Exception as e:
         logger.error(f"Failed to log refresh: {e}")
-        # Don't raise - logging failure shouldn't break ingestion
 
 
+# ---------------------------------------------------------------------------
 # Utility functions for common queries
+# ---------------------------------------------------------------------------
 
 def get_county_fips_list() -> list[str]:
     """Get list of all Maryland county FIPS codes from database."""
     with get_db() as db:
-        result = db.execute(text("SELECT fips_code FROM md_counties ORDER BY fips_code"))
+        if _USE_DATABRICKS:
+            result = db.execute("SELECT fips_code FROM md_counties ORDER BY fips_code")
+        else:
+            from sqlalchemy import text as sa_text
+            result = db.execute(sa_text("SELECT fips_code FROM md_counties ORDER BY fips_code"))
         return [row[0] for row in result]
 
 
 def get_latest_data_year(layer_table: str) -> int:
     """Get the most recent data year for a given layer table."""
     with get_db() as db:
-        result = db.execute(text(
-            f"SELECT MAX(data_year) FROM {layer_table}"
-        ))
+        if _USE_DATABRICKS:
+            result = db.execute(f"SELECT MAX(data_year) FROM {layer_table}")
+        else:
+            from sqlalchemy import text as sa_text
+            result = db.execute(sa_text(
+                f"SELECT MAX(data_year) FROM {layer_table}"
+            ))
         year = result.scalar()
         return year if year else 0
 
@@ -321,26 +362,25 @@ def get_latest_data_year(layer_table: str) -> int:
 def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] = None):
     """
     Bulk insert with optional conflict resolution.
-
-    Args:
-        table_name: Name of table to insert into
-        records: List of dictionaries (column: value)
-        conflict_cols: Columns to use for ON CONFLICT clause (upsert)
+    Uses ON CONFLICT for PostgreSQL, DELETE+INSERT for Databricks.
     """
     if not records:
         logger.warning(f"No records to insert into {table_name}")
+        return
+
+    if _USE_DATABRICKS:
+        from config.databricks import databricks_bulk_insert
+        databricks_bulk_insert(table_name, records, conflict_cols)
         return
 
     with get_db() as db:
         from sqlalchemy import table, column, insert
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        # Dynamically create table object
         cols = [column(k) for k in records[0].keys()]
         tbl = table(table_name, *cols)
 
         if conflict_cols:
-            # Upsert
             stmt = pg_insert(tbl).values(records)
             update_dict = {c.name: c for c in stmt.excluded if c.name not in conflict_cols}
             stmt = stmt.on_conflict_do_update(
@@ -348,7 +388,6 @@ def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] =
                 set_=update_dict
             )
         else:
-            # Simple insert
             stmt = insert(tbl).values(records)
 
         db.execute(stmt)
@@ -356,9 +395,8 @@ def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] =
 
 
 if __name__ == "__main__":
-    # Test connection when run directly
     logging.basicConfig(level=logging.INFO)
     if test_connection():
-        print("✅ Database connection successful")
+        print("Database connection successful")
     else:
-        print("❌ Database connection failed")
+        print("Database connection failed")
