@@ -47,7 +47,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
-from src.ingest.write_mode import is_append_mode, has_rows_for_year
+from src.ingest.write_mode import is_append_mode
 from src.utils.logging import get_logger, setup_logging
 from src.utils.prediction_utils import apply_predictions_to_table
 from src.utils.data_sources import download_file
@@ -1059,11 +1059,22 @@ def store_tract_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_yea
     append_mode = is_append_mode()
 
     with get_db() as db:
-        if append_mode and has_rows_for_year(db, "layer1_economic_opportunity_tract", data_year):
-            logger.info(
-                f"Append mode: year {data_year} already exists in layer1_economic_opportunity_tract; skipping overwrite."
-            )
-            return
+        if append_mode:
+            existing_rows = db.execute(text("""
+                SELECT tract_geoid
+                FROM layer1_economic_opportunity_tract
+                WHERE data_year = :data_year
+            """), {"data_year": data_year}).fetchall()
+            existing_geoids = {str(row.tract_geoid) for row in existing_rows}
+            if existing_geoids:
+                df = df[~df["tract_geoid"].astype(str).isin(existing_geoids)]
+                logger.info(
+                    f"Append mode: {len(existing_geoids)} existing tract rows detected for {data_year}; "
+                    f"inserting {len(df)} missing rows."
+                )
+            if df.empty:
+                logger.info(f"Append mode: no missing tract rows for {data_year}.")
+                return
 
         if not append_mode:
             # Clear existing data for this year during bootstrap/overwrite runs.

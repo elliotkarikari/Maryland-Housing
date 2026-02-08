@@ -13,6 +13,7 @@ import os
 from config.settings import get_settings
 from config.database import get_db_session, test_connection
 from src.api.routes import router
+from src.api.chat_routes import chat_router
 from src.utils.logging import setup_logging
 
 settings = get_settings()
@@ -32,12 +33,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure properly in production
     allow_credentials=True,
-    allow_methods=["GET"],  # Read-only API
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
 # Include routes
 app.include_router(router, prefix="/api/v1")
+app.include_router(chat_router, prefix="/api/v1")
 
 
 @app.on_event("startup")

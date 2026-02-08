@@ -36,9 +36,17 @@ class OpenAIProvider(AIProvider):
 
     # OpenAI pricing (as of 2026-01, subject to change)
     PRICING = {
+        "gpt-4o-mini": {
+            "input": 0.00015 / 1000,
+            "output": 0.0006 / 1000
+        },
+        "gpt-4o": {
+            "input": 0.005 / 1000,
+            "output": 0.015 / 1000
+        },
         "gpt-4-turbo-preview": {
-            "input": 0.01 / 1000,   # $0.01 per 1K input tokens
-            "output": 0.03 / 1000   # $0.03 per 1K output tokens
+            "input": 0.01 / 1000,
+            "output": 0.03 / 1000
         },
         "gpt-4": {
             "input": 0.03 / 1000,
@@ -81,6 +89,71 @@ class OpenAIProvider(AIProvider):
             )
 
         logger.info(f"Initialized OpenAI provider with model {self.model}")
+
+    # ── Responses API (for Ask Atlas chat) ──────────────────────────
+
+    def chat(
+        self,
+        instructions: str,
+        input_messages: list,
+        model: str = None,
+        max_output_tokens: int = 800,
+        temperature: float = 0.4,
+        previous_response_id: str = None,
+    ) -> Dict[str, Any]:
+        """
+        Send a conversation via the OpenAI Responses API.
+
+        Args:
+            instructions: system-level instructions for the model
+            input_messages: list of {"role": ..., "content": ...}
+            model: override model (default: gpt-4o-mini for chat)
+            max_output_tokens: cap on response length
+            temperature: sampling temperature
+            previous_response_id: ID of prior response for multi-turn
+
+        Returns:
+            dict with response, response_id, tokens_input, tokens_output,
+            cost_estimate, model
+        """
+        chat_model = model or "gpt-4o-mini"
+        try:
+            kwargs = {
+                "model": chat_model,
+                "instructions": instructions,
+                "input": input_messages,
+                "max_output_tokens": max_output_tokens,
+                "temperature": temperature,
+                "store": False,
+            }
+            if previous_response_id:
+                kwargs["previous_response_id"] = previous_response_id
+
+            response = self.client.responses.create(**kwargs)
+
+            usage = response.usage
+            tokens_in = usage.input_tokens
+            tokens_out = usage.output_tokens
+
+            # Compute cost with chat model pricing
+            old_model = self.model
+            self.model = chat_model
+            cost = self.estimate_cost(tokens_in, tokens_out)
+            self.model = old_model
+
+            return {
+                "response": response.output_text,
+                "response_id": response.id,
+                "tokens_input": tokens_in,
+                "tokens_output": tokens_out,
+                "cost_estimate": cost,
+                "model": chat_model,
+            }
+        except Exception as exc:
+            logger.error(f"Responses API call failed: {exc}")
+            raise AIProviderError(f"OpenAI chat failed: {exc}") from exc
+
+    # ── Structured extraction (for CIP pipeline) ─────────────────────
 
     def extract_structured(
         self,

@@ -298,6 +298,47 @@ function setCompareButtonState(enabled) {
     }
 }
 
+function buildCountyDetailFromGeoJSON(fipsCode) {
+    const county = countyFeatures.find(c => c.fips === fipsCode);
+    if (!county) return null;
+    const p = county.feature.properties;
+
+    function parseJsonProp(val) {
+        if (Array.isArray(val)) return val;
+        if (typeof val === 'string') {
+            try { return JSON.parse(val); } catch (_) { return []; }
+        }
+        return [];
+    }
+
+    const LAYER_KEYS = [
+        'employment_gravity_score', 'mobility_optionality_score',
+        'school_trajectory_score', 'housing_elasticity_score',
+        'demographic_momentum_score', 'risk_drag_score'
+    ];
+    const layer_scores = {};
+    for (const key of LAYER_KEYS) {
+        const short = key.replace('_score', '');
+        layer_scores[short] = p[key] !== undefined ? p[key] : null;
+    }
+
+    return {
+        county_name: p.county_name,
+        fips_code: fipsCode,
+        synthesis_grouping: p.synthesis_grouping || p.final_grouping,
+        directional_class: p.directional_class || p.directional_status,
+        confidence_class: p.confidence_class || p.confidence_level,
+        composite_score: p.composite_score ?? null,
+        data_year: p.data_year || p.current_as_of_year || '—',
+        last_updated: p.last_updated || new Date().toISOString(),
+        layer_scores,
+        primary_strengths: parseJsonProp(p.primary_strengths),
+        primary_weaknesses: parseJsonProp(p.primary_weaknesses),
+        key_trends: parseJsonProp(p.key_trends),
+        _source: 'geojson'
+    };
+}
+
 function normalizeAnalysisItems(items) {
     if (!Array.isArray(items)) {
         return [];
@@ -318,6 +359,17 @@ function hideFloatingAnalysisPanel() {
     const panel = document.getElementById('analysis-float');
     if (!panel) {
         return;
+    }
+    // If chat is active, exit chat mode before hiding
+    if (typeof chatActive !== 'undefined' && chatActive) {
+        exitChatMode();
+        // Also collapse the chat pill
+        const box = document.getElementById('chat-box');
+        if (box) {
+            box.classList.remove('active');
+            const input = document.getElementById('chat-input');
+            if (input) { input.value = ''; input.blur(); }
+        }
     }
     panel.classList.add('hidden');
 }
@@ -396,6 +448,43 @@ function setupAnalysisPanel() {
     handle.addEventListener('pointerup', endDrag);
     handle.addEventListener('pointercancel', endDrag);
 
+    // --- Right-edge resize ---
+    const resizeHandle = document.getElementById('analysis-float-resize');
+    if (resizeHandle) {
+        let resizeState = null;
+
+        resizeHandle.addEventListener('pointerdown', (event) => {
+            if (window.matchMedia('(max-width: 980px)').matches || event.button !== 0) return;
+            const panelRect = panel.getBoundingClientRect();
+            resizeState = {
+                startX: event.clientX,
+                startWidth: panelRect.width,
+                pointerId: event.pointerId
+            };
+            panel.classList.add('resizing');
+            resizeHandle.setPointerCapture(event.pointerId);
+            event.preventDefault();
+            event.stopPropagation();
+        });
+
+        resizeHandle.addEventListener('pointermove', (event) => {
+            if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+            const delta = event.clientX - resizeState.startX;
+            const newWidth = Math.max(240, Math.min(600, resizeState.startWidth + delta));
+            panel.style.width = `${newWidth}px`;
+        });
+
+        const endResize = (event) => {
+            if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+            resizeState = null;
+            panel.classList.remove('resizing');
+            resizeHandle.releasePointerCapture(event.pointerId);
+        };
+
+        resizeHandle.addEventListener('pointerup', endResize);
+        resizeHandle.addEventListener('pointercancel', endResize);
+    }
+
     window.addEventListener('resize', () => {
         if (panel.classList.contains('hidden')) {
             return;
@@ -405,6 +494,7 @@ function setupAnalysisPanel() {
             panel.style.top = '';
             panel.style.right = '';
             panel.style.bottom = '';
+            panel.style.width = '';
             return;
         }
         const left = Number.parseFloat(panel.style.left);
@@ -1588,11 +1678,16 @@ async function loadCountyDetail(fipsCode) {
             map.setFilter('counties-selected', ['==', 'fips_code', fipsCode]);
         }
 
-        const response = await fetch(`${API_BASE_URL}/areas/${fipsCode}`);
-        if (!response.ok) {
-            throw new Error(`Area detail API returned ${response.status}`);
+        let data;
+        try {
+            const response = await fetch(`${API_BASE_URL}/areas/${fipsCode}`);
+            if (!response.ok) throw new Error(`${response.status}`);
+            data = await response.json();
+        } catch (_apiErr) {
+            // Fallback: build detail from GeoJSON properties already loaded
+            data = buildCountyDetailFromGeoJSON(fipsCode);
+            if (!data) throw _apiErr; // re-throw if GeoJSON lookup also fails
         }
-        const data = await response.json();
         currentCountySummary = data;
         const primaryStrengths = normalizeAnalysisItems(data.primary_strengths);
         const primaryWeaknesses = normalizeAnalysisItems(data.primary_weaknesses);
@@ -2223,6 +2318,247 @@ function switchPanelTab(tabId, clickedTab) {
     if (target) target.classList.add('active');
 }
 
+// ── Ask Atlas chat box expand/collapse ──
+// ── Ask Atlas Chat ──────────────────────────────────────────────────
+// Chat state
+let chatActive = false;
+let chatHistory = [];          // {role, content} pairs
+let chatResponseId = null;     // OpenAI Responses API previous_response_id
+let savedAnalysisHTML = null;   // stashed analysis content for restore
+let savedAnalysisTitle = null;
+
+function setupChatBox() {
+    const box = document.getElementById('chat-box');
+    const input = document.getElementById('chat-input');
+    const closeBtn = document.getElementById('chat-close');
+    if (!box || !input || !closeBtn) return;
+
+    function expand() {
+        if (box.classList.contains('active')) return;
+        box.classList.add('active');
+        setTimeout(() => input.focus(), 350);
+    }
+
+    function collapse() {
+        box.classList.remove('active');
+        input.value = '';
+        input.blur();
+        exitChatMode();
+    }
+
+    // Click the pill to expand
+    box.addEventListener('click', (e) => {
+        if (!box.classList.contains('active')) expand();
+    });
+
+    // Close button
+    closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        collapse();
+    });
+
+    // Enter to send, Escape to close
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            collapse();
+            return;
+        }
+        if (e.key === 'Enter' && input.value.trim()) {
+            e.preventDefault();
+            sendChatMessage(input.value.trim());
+            input.value = '';
+        }
+    });
+
+    // Click outside closes
+    document.addEventListener('mousedown', (e) => {
+        if (box.classList.contains('active') && !box.contains(e.target)) {
+            // Don't close if clicking inside the analysis panel (chat mode)
+            const panel = document.getElementById('analysis-float');
+            if (panel && panel.classList.contains('chat-mode') && panel.contains(e.target)) return;
+            collapse();
+        }
+    });
+}
+
+function enterChatMode() {
+    if (chatActive) return;
+    chatActive = true;
+
+    const panel = document.getElementById('analysis-float');
+    const titleEl = document.getElementById('analysis-float-title');
+    const contentEl = document.getElementById('analysis-float-content');
+    if (!panel || !titleEl || !contentEl) return;
+
+    // Save current analysis content so we can restore it
+    savedAnalysisHTML = contentEl.innerHTML;
+    savedAnalysisTitle = titleEl.textContent;
+
+    // Switch to chat mode
+    panel.classList.add('chat-mode');
+    panel.classList.remove('hidden');
+    titleEl.textContent = 'Ask Atlas';
+
+    // Build chat UI inside the analysis panel
+    contentEl.innerHTML = `
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-panel-input">
+            <input id="chat-panel-input" type="text" placeholder="Ask about this area..." autocomplete="off" />
+            <button id="chat-panel-send" type="button" aria-label="Send">&#9654;</button>
+        </div>
+    `;
+
+    // Wire up the in-panel input
+    const panelInput = document.getElementById('chat-panel-input');
+    const sendBtn = document.getElementById('chat-panel-send');
+
+    panelInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && panelInput.value.trim()) {
+            e.preventDefault();
+            sendChatMessage(panelInput.value.trim());
+            panelInput.value = '';
+        }
+    });
+
+    sendBtn.addEventListener('click', () => {
+        if (panelInput.value.trim()) {
+            sendChatMessage(panelInput.value.trim());
+            panelInput.value = '';
+        }
+    });
+
+    setupAnalysisPanel(); // re-bind drag/resize
+}
+
+function exitChatMode() {
+    if (!chatActive) return;
+    chatActive = false;
+
+    const panel = document.getElementById('analysis-float');
+    const titleEl = document.getElementById('analysis-float-title');
+    const contentEl = document.getElementById('analysis-float-content');
+    if (!panel) return;
+
+    panel.classList.remove('chat-mode');
+
+    // Restore previous analysis content
+    if (savedAnalysisHTML && titleEl && contentEl) {
+        titleEl.textContent = savedAnalysisTitle || 'County Analysis';
+        contentEl.innerHTML = savedAnalysisHTML;
+    }
+
+    // Reset chat state
+    chatHistory = [];
+    chatResponseId = null;
+    savedAnalysisHTML = null;
+    savedAnalysisTitle = null;
+}
+
+function appendChatMessage(role, text) {
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = `chat-msg ${role}`;
+    div.textContent = text;
+    container.appendChild(div);
+    // Scroll the analysis content to bottom
+    const contentEl = document.getElementById('analysis-float-content');
+    if (contentEl) contentEl.scrollTop = contentEl.scrollHeight;
+}
+
+function showThinking() {
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = 'chat-msg thinking';
+    div.id = 'chat-thinking';
+    div.textContent = 'Atlas is thinking';
+    container.appendChild(div);
+    const contentEl = document.getElementById('analysis-float-content');
+    if (contentEl) contentEl.scrollTop = contentEl.scrollHeight;
+}
+
+function removeThinking() {
+    const el = document.getElementById('chat-thinking');
+    if (el) el.remove();
+}
+
+function buildChatContext() {
+    const ctx = {};
+    if (currentFipsCode) ctx.fips_code = currentFipsCode;
+    if (currentCountySummary) {
+        ctx.county_name = currentCountySummary.county_name;
+        ctx.synthesis_grouping = currentCountySummary.synthesis_grouping;
+        ctx.directional_class = currentCountySummary.directional_class;
+        ctx.confidence_class = currentCountySummary.confidence_class;
+        ctx.composite_score = currentCountySummary.composite_score;
+        ctx.layer_scores = currentCountySummary.layer_scores;
+        ctx.primary_strengths = currentCountySummary.primary_strengths;
+        ctx.primary_weaknesses = currentCountySummary.primary_weaknesses;
+        ctx.key_trends = currentCountySummary.key_trends;
+    }
+    ctx.active_layer = currentLayer;
+    return ctx;
+}
+
+async function sendChatMessage(text) {
+    // Enter chat mode on first message if not already
+    if (!chatActive) enterChatMode();
+
+    // Show user message
+    appendChatMessage('user', text);
+    chatHistory.push({ role: 'user', content: text });
+
+    // Show thinking indicator
+    showThinking();
+
+    // Disable inputs while waiting
+    const panelInput = document.getElementById('chat-panel-input');
+    const sendBtn = document.getElementById('chat-panel-send');
+    const pillInput = document.getElementById('chat-input');
+    if (panelInput) panelInput.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
+    if (pillInput) pillInput.disabled = true;
+
+    try {
+        const body = {
+            message: text,
+            context: buildChatContext(),
+            history: chatHistory.slice(0, -1), // exclude current message (already in input)
+        };
+        if (chatResponseId) body.previous_response_id = chatResponseId;
+
+        const resp = await fetch(`${API_BASE_URL}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+
+        removeThinking();
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: 'Unknown error' }));
+            appendChatMessage('assistant', `Sorry, I couldn't process that: ${err.detail || resp.statusText}`);
+            return;
+        }
+
+        const data = await resp.json();
+        chatResponseId = data.response_id || null;
+        chatHistory.push({ role: 'assistant', content: data.response });
+        appendChatMessage('assistant', data.response);
+
+    } catch (err) {
+        removeThinking();
+        appendChatMessage('assistant', 'Connection error — make sure the API server is running on port 8000.');
+    } finally {
+        if (panelInput) panelInput.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+        if (pillInput) pillInput.disabled = false;
+        // Focus the in-panel input for quick follow-up
+        if (panelInput) panelInput.focus();
+    }
+}
+
 // Keyboard support for legend toggle
 document.addEventListener('DOMContentLoaded', () => {
     setupExtrusionToggle();
@@ -2230,6 +2566,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateMapStateChips();
     setupAnalysisPanel();
     setupLayoutResizer();
+    setupChatBox();
     const legendHeader = document.querySelector('.legend-header');
     if (legendHeader) {
         legendHeader.addEventListener('keydown', (e) => {

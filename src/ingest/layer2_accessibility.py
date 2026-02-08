@@ -51,7 +51,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
-from src.ingest.write_mode import is_append_mode, has_rows_for_year
+from src.ingest.write_mode import is_append_mode
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
@@ -1073,12 +1073,6 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
     append_mode = is_append_mode()
 
     with get_db() as db:
-        if append_mode and has_rows_for_year(db, "layer2_mobility_accessibility_tract", data_year):
-            logger.info(
-                f"Append mode: year {data_year} already exists in layer2_mobility_accessibility_tract; skipping overwrite."
-            )
-            return
-
         if not append_mode:
             # Clear existing data for this year during bootstrap/overwrite runs.
             db.execute(text("""
