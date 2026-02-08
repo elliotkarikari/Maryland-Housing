@@ -10,17 +10,9 @@
     "on_failure": []
   },
   "max_concurrent_runs": 1,
-  "tasks": [
+  "job_clusters": [
     {
-      "task_key": "ingest_layer1",
-      "description": "Ingest Employment Gravity data (LODES, BLS, USASpending, ACS)",
-      "python_wheel_task": {
-        "package_name": "maryland_atlas",
-        "entry_point": "ingest_layer1"
-      },
-      "libraries": [
-        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
-      ],
+      "job_cluster_key": "atlas_single_node",
       "new_cluster": {
         "spark_version": "14.3.x-scala2.12",
         "node_type_id": "Standard_DS3_v2",
@@ -28,28 +20,46 @@
         "spark_conf": {
           "spark.databricks.cluster.profile": "singleNode",
           "spark.master": "local[*]"
+        },
+        "spark_env_vars": {
+          "DATA_BACKEND": "databricks"
         }
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_key": "ingest_layer1",
+      "description": "Ingest Employment Gravity data (LODES, BLS, USASpending, ACS)",
+      "job_cluster_key": "atlas_single_node",
+      "python_wheel_task": {
+        "package_name": "maryland-housing-atlas",
+        "entry_point": "ingest_layer1"
       },
+      "libraries": [
+        {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
+      ],
       "timeout_seconds": 3600
     },
     {
       "task_key": "ingest_layer2",
       "description": "Ingest Mobility Optionality data (OSM, GTFS, LODES)",
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "ingest_layer2"
       },
       "libraries": [
         {"whl": "dbfs:/wheels/maryland_atlas-latest-py3-none-any.whl"}
       ],
-      "existing_cluster_id": "",
       "timeout_seconds": 3600
     },
     {
       "task_key": "ingest_layer3",
       "description": "Ingest School Trajectory data (MSDE, NCES)",
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "ingest_layer3"
       },
       "libraries": [
@@ -60,8 +70,9 @@
     {
       "task_key": "ingest_layer4",
       "description": "Ingest Housing Elasticity data (HUD, ACS, LIHTC)",
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "ingest_layer4"
       },
       "libraries": [
@@ -72,8 +83,9 @@
     {
       "task_key": "ingest_layer5",
       "description": "Ingest Demographic Momentum data (ACS, IRS, USPS)",
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "ingest_layer5"
       },
       "libraries": [
@@ -84,8 +96,9 @@
     {
       "task_key": "ingest_layer6",
       "description": "Ingest Risk Drag data (FEMA, EPA, NOAA, CDC)",
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "ingest_layer6"
       },
       "libraries": [
@@ -96,8 +109,9 @@
     {
       "task_key": "ingest_policy",
       "description": "Ingest Policy Persistence data",
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "ingest_policy"
       },
       "libraries": [
@@ -117,8 +131,9 @@
         {"task_key": "ingest_layer6"},
         {"task_key": "ingest_policy"}
       ],
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "process_pipeline"
       },
       "libraries": [
@@ -132,8 +147,9 @@
       "depends_on": [
         {"task_key": "process_pipeline"}
       ],
+      "job_cluster_key": "atlas_single_node",
       "python_wheel_task": {
-        "package_name": "maryland_atlas",
+        "package_name": "maryland-housing-atlas",
         "entry_point": "export_geojson"
       },
       "libraries": [

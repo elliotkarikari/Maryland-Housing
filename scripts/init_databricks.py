@@ -21,7 +21,7 @@ from config.databricks import get_databricks_db, test_databricks_connection
 settings = get_settings()
 
 
-def run_schema():
+def run_schema(recreate: bool = False):
     """Execute the Databricks schema SQL to create all Delta tables."""
     schema_path = PROJECT_ROOT / "data" / "schemas" / "databricks_schema.sql"
     if not schema_path.exists():
@@ -52,7 +52,42 @@ def run_schema():
 
     print(f"Found {len(statements)} SQL statements to execute")
 
+    managed_tables = [
+        "layer1_economic_opportunity_tract",
+        "layer2_mobility_accessibility_tract",
+        "layer_timeseries_features",
+        "layer_summary_scores",
+        "final_synthesis_current",
+        "layer_scores",
+        "county_classifications",
+        "policy_persistence",
+        "layer1_employment_gravity",
+        "layer2_mobility_optionality",
+        "layer3_school_trajectory",
+        "layer4_housing_elasticity",
+        "layer5_demographic_momentum",
+        "layer6_risk_drag",
+        "data_refresh_log",
+        "export_versions",
+        "md_counties",
+    ]
+
+    failures = []
     with get_databricks_db() as db:
+        # Ensure target namespace exists before executing unqualified table DDL.
+        try:
+            db.execute(f"CREATE CATALOG IF NOT EXISTS {settings.DATABRICKS_CATALOG}")
+        except Exception as e:
+            print(f"WARN: Could not create catalog {settings.DATABRICKS_CATALOG}: {e}")
+        db.execute(f"CREATE SCHEMA IF NOT EXISTS {settings.DATABRICKS_CATALOG}.{settings.DATABRICKS_SCHEMA}")
+        db.execute(f"USE CATALOG {settings.DATABRICKS_CATALOG}")
+        db.execute(f"USE SCHEMA {settings.DATABRICKS_SCHEMA}")
+
+        if recreate:
+            print("Recreate mode enabled: dropping managed tables first...")
+            for table_name in managed_tables:
+                db.execute(f"DROP TABLE IF EXISTS {table_name}")
+
         for i, stmt in enumerate(statements, 1):
             # Show first line of each statement for progress
             first_line = stmt.strip().split('\n')[0][:80]
@@ -62,6 +97,11 @@ def run_schema():
             except Exception as e:
                 print(f"  [{i}/{len(statements)}] WARN: {first_line}")
                 print(f"    Error: {e}")
+                failures.append((i, first_line, str(e)))
+
+    if failures:
+        print(f"\nSchema initialization failed with {len(failures)} statement error(s).")
+        sys.exit(1)
 
     print("\nSchema initialization complete.")
 
@@ -105,6 +145,8 @@ def main():
     parser = argparse.ArgumentParser(description='Initialize Databricks Delta tables')
     parser.add_argument('--load-geometries', action='store_true',
                         help='Also load county geometries from Census TIGER/Line')
+    parser.add_argument('--recreate', action='store_true',
+                        help='Drop managed tables before creating schema')
     args = parser.parse_args()
 
     if settings.DATA_BACKEND != "databricks":
@@ -121,7 +163,7 @@ def main():
     print(f"Schema:  {settings.DATABRICKS_SCHEMA}")
     print()
 
-    run_schema()
+    run_schema(recreate=args.recreate)
 
     if args.load_geometries:
         print()

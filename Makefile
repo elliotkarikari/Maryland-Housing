@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new databricks-init databricks-deploy databricks-test
+.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new databricks-init databricks-reinit databricks-deploy databricks-test
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -32,6 +32,7 @@ help:
 	@echo ""
 	@echo "Azure Databricks:"
 	@echo "  make databricks-init   - Initialize Delta tables (requires DATA_BACKEND=databricks)"
+	@echo "  make databricks-reinit - Drop + recreate Delta tables from schema"
 	@echo "  make databricks-deploy - Build wheel + upload to Databricks"
 	@echo "  make databricks-test   - Test Databricks connectivity"
 	@echo ""
@@ -106,6 +107,10 @@ export:
 databricks-init:
 	@echo "Initializing Databricks Delta tables..."
 	DATA_BACKEND=databricks $(PYTHON) scripts/init_databricks.py --load-geometries
+
+databricks-reinit:
+	@echo "Recreating Databricks Delta tables..."
+	DATA_BACKEND=databricks $(PYTHON) scripts/init_databricks.py --recreate --load-geometries
 
 databricks-deploy:
 	@echo "Building and deploying to Databricks..."

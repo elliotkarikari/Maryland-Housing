@@ -13,8 +13,8 @@ CREATE TABLE IF NOT EXISTS md_counties (
     county_name STRING NOT NULL,
     geometry_geojson STRING,          -- GeoJSON string (replaces PostGIS geometry)
     land_area_sq_mi DECIMAL(10,2),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Maryland county boundaries and reference data';
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS data_refresh_log (
     error_message STRING,
     metadata STRING,                  -- JSON stored as STRING
     computation_type STRING,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Tracks all data ingestion operations for auditing and monitoring';
@@ -66,12 +66,41 @@ CREATE TABLE IF NOT EXISTS layer1_employment_gravity (
     federal_awards_volatility DECIMAL(10,6),
     stable_sector_share DECIMAL(5,4),
     employment_diversification_score DECIMAL(10,6),
-    -- V2 composite columns
+    -- v2 accessibility metrics
+    high_wage_jobs INT,
+    mid_wage_jobs INT,
+    low_wage_jobs INT,
+    high_wage_jobs_accessible_45min INT,
+    high_wage_jobs_accessible_30min INT,
+    total_jobs_accessible_45min INT,
+    total_jobs_accessible_30min INT,
+    economic_accessibility_score DECIMAL(5,4),
+    job_market_reach_score DECIMAL(5,4),
+    wage_quality_ratio DECIMAL(5,4),
+    pct_regional_high_wage_accessible DECIMAL(5,4),
+    pct_regional_jobs_accessible DECIMAL(5,4),
+    high_wage_sector_concentration DECIMAL(5,4),
+    upward_mobility_score DECIMAL(5,4),
+    job_quality_index DECIMAL(5,4),
+    working_age_pop INT,
+    labor_force_participation DECIMAL(5,4),
+    lodes_year INT,
+    acs_year INT,
+    accessibility_version STRING,
+    -- QWI enrichment
+    qwi_emp_total INT,
+    qwi_hires INT,
+    qwi_separations INT,
+    qwi_hire_rate DECIMAL(8,4),
+    qwi_separation_rate DECIMAL(8,4),
+    qwi_turnover_rate DECIMAL(8,4),
+    qwi_net_job_growth_rate DECIMAL(8,4),
+    qwi_year INT,
+    -- composite columns
     economic_opportunity_index DECIMAL(10,6),
     high_wage_job_accessibility DECIMAL(10,6),
-    qwi_net_job_growth_rate DECIMAL(10,6),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Employment structure, sector diversity, and federal spending persistence';
@@ -91,13 +120,98 @@ CREATE TABLE IF NOT EXISTS layer2_mobility_optionality (
     has_frequent_bus BOOLEAN,
     transit_stations_count INT,
     mode_count INT,
+    -- v2 accessibility metrics
+    jobs_accessible_transit_45min INT,
+    jobs_accessible_transit_30min INT,
+    jobs_accessible_walk_30min INT,
+    jobs_accessible_bike_30min INT,
+    jobs_accessible_car_30min INT,
+    transit_accessibility_score DECIMAL(5,4),
+    walk_accessibility_score DECIMAL(5,4),
+    bike_accessibility_score DECIMAL(5,4),
+    multimodal_accessibility_score DECIMAL(5,4),
+    pct_regional_jobs_by_transit DECIMAL(5,4),
+    transit_car_accessibility_ratio DECIMAL(5,4),
+    transit_stop_density DECIMAL(8,2),
+    frequent_transit_area_pct DECIMAL(5,4),
+    average_headway_minutes DECIMAL(6,2),
+    highway_access_score DECIMAL(5,4),
+    mode_diversity_score DECIMAL(5,4),
+    gtfs_feed_date DATE,
+    osm_extract_date DATE,
+    lodes_year INT,
+    accessibility_version STRING,
     mobility_optionality_index DECIMAL(5,4),
     aadt_major_corridors INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Transportation modal redundancy and job-change resilience indicators';
+
+-- ============================================================================
+-- LAYER 1/2 TRACT-LEVEL SUPPORT TABLES
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS layer1_economic_opportunity_tract (
+    id BIGINT GENERATED ALWAYS AS IDENTITY,
+    tract_geoid STRING NOT NULL,
+    fips_code STRING NOT NULL,
+    data_year INT NOT NULL,
+    total_jobs INT,
+    high_wage_jobs INT,
+    mid_wage_jobs INT,
+    low_wage_jobs INT,
+    high_wage_jobs_accessible_45min INT,
+    high_wage_jobs_accessible_30min INT,
+    total_jobs_accessible_45min INT,
+    total_jobs_accessible_30min INT,
+    economic_accessibility_score DECIMAL(5,4),
+    job_market_reach_score DECIMAL(5,4),
+    wage_quality_ratio DECIMAL(5,4),
+    pct_regional_high_wage_accessible DECIMAL(5,4),
+    pct_regional_jobs_accessible DECIMAL(5,4),
+    sector_diversity_entropy DECIMAL(6,4),
+    high_wage_sector_concentration DECIMAL(5,4),
+    upward_mobility_score DECIMAL(5,4),
+    job_quality_index DECIMAL(5,4),
+    tract_population INT,
+    tract_working_age_pop INT,
+    labor_force_participation DECIMAL(5,4),
+    lodes_year INT,
+    acs_year INT,
+    computation_timestamp TIMESTAMP
+)
+USING DELTA
+COMMENT 'Tract-level economic opportunity metrics for Layer 1 v2 ingestion';
+
+CREATE TABLE IF NOT EXISTS layer2_mobility_accessibility_tract (
+    id BIGINT GENERATED ALWAYS AS IDENTITY,
+    tract_geoid STRING NOT NULL,
+    fips_code STRING NOT NULL,
+    data_year INT NOT NULL,
+    jobs_accessible_transit_45min INT,
+    jobs_accessible_transit_30min INT,
+    jobs_accessible_walk_30min INT,
+    jobs_accessible_bike_30min INT,
+    jobs_accessible_car_30min INT,
+    transit_accessibility_score DECIMAL(5,4),
+    walk_accessibility_score DECIMAL(5,4),
+    bike_accessibility_score DECIMAL(5,4),
+    multimodal_accessibility_score DECIMAL(5,4),
+    pct_regional_jobs_by_transit DECIMAL(5,4),
+    transit_car_accessibility_ratio DECIMAL(5,4),
+    transit_stop_density DECIMAL(8,2),
+    frequent_transit_area_pct DECIMAL(5,4),
+    average_headway_minutes DECIMAL(6,2),
+    tract_population INT,
+    gtfs_feed_date DATE,
+    osm_extract_date DATE,
+    lodes_year INT,
+    computation_timestamp TIMESTAMP
+)
+USING DELTA
+COMMENT 'Tract-level mobility accessibility metrics for Layer 2 v2 ingestion';
 
 -- ============================================================================
 -- LAYER 3: SCHOOL SYSTEM TRAJECTORY
@@ -115,6 +229,7 @@ CREATE TABLE IF NOT EXISTS layer3_school_trajectory (
     schools_middle INT,
     schools_high INT,
     capital_investment_total DECIMAL(15,2),
+    capital_investment_score DECIMAL(10,6),
     capital_per_student DECIMAL(10,2),
     expansion_projects_count INT,
     enrollment_momentum_score DECIMAL(10,6),
@@ -123,8 +238,8 @@ CREATE TABLE IF NOT EXISTS layer3_school_trajectory (
     education_opportunity_index DECIMAL(10,6),
     education_accessibility_score DECIMAL(10,6),
     school_supply_score DECIMAL(10,6),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'School enrollment trends and capital investment patterns';
@@ -155,8 +270,8 @@ CREATE TABLE IF NOT EXISTS layer4_housing_elasticity (
     housing_affordability_score DECIMAL(10,6),
     fmr_2br_to_income DECIMAL(8,4),
     lihtc_units_per_1000_households DECIMAL(8,4),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Housing supply responsiveness and growth absorption capacity';
@@ -184,6 +299,16 @@ CREATE TABLE IF NOT EXISTS layer5_demographic_momentum (
     total_addresses INT,
     vacant_addresses INT,
     vacancy_rate DECIMAL(5,4),
+    vacancy_source STRING,
+    vacancy_rate_pred DECIMAL(5,4),
+    vacancy_predicted BOOLEAN,
+    vacancy_pred_method STRING,
+    vacancy_pred_years INT,
+    low_vacancy_county_flag BOOLEAN,
+    low_vacancy_units INT,
+    low_vacancy_occupied_units INT,
+    low_vacancy_percent_occupied DECIMAL(6,2),
+    low_vacancy_fy INT,
     family_household_inflow_rate DECIMAL(6,5),
     working_age_momentum DECIMAL(10,6),
     household_formation_change DECIMAL(6,3),
@@ -193,8 +318,8 @@ CREATE TABLE IF NOT EXISTS layer5_demographic_momentum (
     equity_score DECIMAL(10,6),
     static_demographic_score DECIMAL(10,6),
     migration_dynamics_score DECIMAL(10,6),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Migration patterns and household formation demand signals';
@@ -222,8 +347,8 @@ CREATE TABLE IF NOT EXISTS layer6_risk_drag (
     -- V2 composite columns
     modern_vulnerability_score DECIMAL(10,6),
     static_risk_score DECIMAL(10,6),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Long-term environmental and infrastructure constraints';
@@ -244,8 +369,8 @@ CREATE TABLE IF NOT EXISTS policy_persistence (
     state_funding_volatility DECIMAL(5,4),
     confidence_class STRING,
     confidence_score DECIMAL(5,4),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Policy delivery reliability - modifies confidence, not scores';
@@ -273,11 +398,11 @@ CREATE TABLE IF NOT EXISTS layer_timeseries_features (
     min_year INT,
     max_year INT,
     data_gaps STRING,                 -- JSON array as STRING
-    window_size INT DEFAULT 5,
+    window_size INT,
     computation_method STRING,
     notes STRING,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Multi-year derived features (level, momentum, stability) per layer';
@@ -296,13 +421,13 @@ CREATE TABLE IF NOT EXISTS layer_summary_scores (
     layer_stability_score DECIMAL(5,4),
     layer_overall_score DECIMAL(5,4),
     missingness_penalty DECIMAL(5,4),
-    has_momentum BOOLEAN DEFAULT FALSE,
-    has_stability BOOLEAN DEFAULT FALSE,
+    has_momentum BOOLEAN,
+    has_stability BOOLEAN,
     coverage_years INT,
     weights STRING,                   -- JSON as STRING
     normalization_method STRING,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Normalized layer scores incorporating level, momentum, and stability';
@@ -334,8 +459,8 @@ CREATE TABLE IF NOT EXISTS final_synthesis_current (
     risk_drag_score DECIMAL(5,4),
     classification_version STRING,
     notes STRING,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Current final synthesis grouping per geography (multi-year evidence based)';
@@ -356,8 +481,8 @@ CREATE TABLE IF NOT EXISTS layer_scores (
     risk_drag_score DECIMAL(5,4),
     composite_raw DECIMAL(10,6),
     composite_normalized DECIMAL(5,4),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Normalized layer scores and composite index';
@@ -374,8 +499,8 @@ CREATE TABLE IF NOT EXISTS county_classifications (
     key_trends STRING,                -- JSON array as STRING
     classification_method STRING,
     version STRING,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Final directional classifications with confidence modifiers';
@@ -393,7 +518,7 @@ CREATE TABLE IF NOT EXISTS export_versions (
     record_count INT,
     checksum STRING,
     metadata STRING,                  -- JSON as STRING
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    created_at TIMESTAMP
 )
 USING DELTA
 COMMENT 'Tracks GeoJSON export versions for reproducibility';

@@ -8,6 +8,7 @@ Get the Maryland Viability Atlas running locally in under 15 minutes.
 
 - [Prerequisites](#prerequisites)
 - [Local Setup](#local-setup)
+- [Azure Databricks Setup](#azure-databricks-setup)
 - [Railway Deployment](#railway-deployment)
 - [Verify Installation](#verify-installation)
 - [Troubleshooting](#troubleshooting)
@@ -191,6 +192,24 @@ make frontend
 ```
 
 **Access:** http://localhost:3000
+
+---
+
+## Azure Databricks Setup
+
+For direct-to-Databricks ingestion and scheduled pulls, follow:
+
+- `docs/development/DATABRICKS_PIPELINE_SETUP.md`
+
+Quick command path:
+
+```bash
+make databricks-test
+make databricks-init
+DATA_BACKEND=databricks make ingest-all
+DATA_BACKEND=databricks make pipeline
+make databricks-deploy
+```
 
 ---
 

@@ -9,10 +9,12 @@ so downstream code requires zero changes.
 
 import json
 import re
+import socket
 import logging
 from contextlib import contextmanager
 from datetime import date, datetime
-from typing import Generator, Optional
+from typing import Any, Generator, Optional
+from urllib.parse import urlparse
 
 from config.settings import get_settings
 
@@ -70,6 +72,17 @@ class _ResultProxy:
             yield _Row(row, self._columns)
 
 
+class _EmptyCursor:
+    """Cursor shim used when a translated statement is intentionally skipped."""
+    description = None
+
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+
 # ---------------------------------------------------------------------------
 # SQL translation helpers
 # ---------------------------------------------------------------------------
@@ -81,28 +94,163 @@ def _extract_sql_string(query) -> str:
     return str(query)
 
 
+def _split_sql_csv(raw: str) -> list[str]:
+    """
+    Split a comma-separated SQL list while preserving commas inside
+    parentheses and quoted strings.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_quote = False
+    quote_char = ""
+
+    for ch in raw:
+        if ch in ("'", '"'):
+            if in_quote and ch == quote_char:
+                in_quote = False
+                quote_char = ""
+            elif not in_quote:
+                in_quote = True
+                quote_char = ch
+            current.append(ch)
+            continue
+
+        if not in_quote:
+            if ch == "(":
+                depth += 1
+            elif ch == ")" and depth > 0:
+                depth -= 1
+            elif ch == "," and depth == 0:
+                parts.append("".join(current).strip())
+                current = []
+                continue
+
+        current.append(ch)
+
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+
+    return parts
+
+
+def _coerce_param_value(value: Any) -> Any:
+    """Coerce Python values to Databricks-friendly SQL parameter values."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, default=str)
+    return value
+
+
+def _rewrite_insert_on_conflict(sql: str) -> Optional[list[str]]:
+    """
+    Rewrite common PostgreSQL ON CONFLICT inserts to Databricks-compatible SQL.
+
+    Supported patterns:
+      - INSERT ... ON CONFLICT (k1, k2) DO NOTHING
+      - INSERT ... ON CONFLICT (k1, k2) DO UPDATE SET ...
+      - INSERT ... ON CONFLICT DO NOTHING
+    """
+    pattern = re.compile(
+        r"""
+        ^\s*INSERT\s+INTO\s+(?P<table>[^\s(]+)\s*
+        \((?P<columns>.*?)\)\s*
+        VALUES\s*\((?P<values>.*?)\)\s*
+        ON\s+CONFLICT
+        (?:\s*\((?P<conflict_cols>.*?)\))?
+        \s*DO\s+(?P<action>NOTHING|UPDATE\s+SET\s+.*)\s*$
+        """,
+        flags=re.IGNORECASE | re.DOTALL | re.VERBOSE,
+    )
+
+    match = pattern.match(sql)
+    if not match:
+        return None
+
+    table = match.group("table").strip()
+    columns_raw = match.group("columns").strip()
+    values_raw = match.group("values").strip()
+    conflict_raw = (match.group("conflict_cols") or "").strip()
+    action = match.group("action").strip().upper()
+
+    insert_cols = [c.strip() for c in _split_sql_csv(columns_raw) if c.strip()]
+    insert_vals = [v.strip() for v in _split_sql_csv(values_raw) if v.strip()]
+    if len(insert_cols) != len(insert_vals):
+        return None
+
+    value_by_col = {col: val for col, val in zip(insert_cols, insert_vals)}
+    conflict_cols = [c.strip() for c in _split_sql_csv(conflict_raw) if c.strip()] if conflict_raw else []
+
+    where_terms = []
+    for col in conflict_cols:
+        conflict_expr = value_by_col.get(col)
+        if conflict_expr is None:
+            return None
+        where_terms.append(f"{col} = {conflict_expr}")
+
+    if action.startswith("NOTHING"):
+        if not where_terms:
+            return [f"INSERT INTO {table} ({columns_raw}) VALUES ({values_raw})"]
+        return [
+            f"INSERT INTO {table} ({columns_raw}) "
+            f"SELECT {', '.join(insert_vals)} "
+            f"WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {' AND '.join(where_terms)})"
+        ]
+
+    if not where_terms:
+        return None
+
+    delete_sql = f"DELETE FROM {table} WHERE {' AND '.join(where_terms)}"
+    insert_sql = f"INSERT INTO {table} ({columns_raw}) VALUES ({values_raw})"
+    return [delete_sql, insert_sql]
+
+
 def _translate_params(sql: str, params: Optional[dict]) -> tuple:
     """
-    Convert SQLAlchemy-style :named params to Databricks %s positional params.
+    Convert SQLAlchemy-style :named params to Databricks qmark positional params.
     Returns (translated_sql, param_values_list).
     """
     if not params:
         return sql, []
 
-    # Find all :param_name occurrences (not inside quotes)
-    param_names_in_order = re.findall(r':(\w+)', sql)
-    if not param_names_in_order:
-        return sql, []
+    translated = sql
+    values: list[Any] = []
 
-    values = []
-    for name in param_names_in_order:
-        if name in params:
-            values.append(params[name])
+    # Translate PostgreSQL array predicate: col = ANY(:values) -> col IN (?, ...)
+    any_pattern = re.compile(
+        r'(\b[\w."]+\b)\s*=\s*ANY\(\s*:(\w+)\s*\)',
+        flags=re.IGNORECASE,
+    )
+
+    def _any_repl(match: re.Match) -> str:
+        column_ref = match.group(1)
+        param_name = match.group(2)
+        raw_value = params.get(param_name)
+
+        if raw_value is None:
+            seq = []
+        elif isinstance(raw_value, (list, tuple, set)):
+            seq = list(raw_value)
         else:
-            values.append(None)
+            seq = [raw_value]
 
-    # Replace :param_name with %s
-    translated = re.sub(r':(\w+)', '%s', sql)
+        if not seq:
+            return "1 = 0"
+
+        values.extend(_coerce_param_value(v) for v in seq)
+        placeholders = ", ".join(["?"] * len(seq))
+        return f"{column_ref} IN ({placeholders})"
+
+    translated = any_pattern.sub(_any_repl, translated)
+
+    # Find all remaining :param_name occurrences
+    param_names_in_order = re.findall(r':(\w+)', translated)
+    for name in param_names_in_order:
+        values.append(_coerce_param_value(params.get(name)))
+
+    translated = re.sub(r':(\w+)', '?', translated)
     return translated, values
 
 
@@ -114,8 +262,23 @@ def _translate_pg_to_databricks(sql: str) -> str:
     # Remove PostgreSQL casts like ::float, ::integer, ::text, ::numeric
     sql = re.sub(r'::(\w+)', '', sql)
 
-    # Replace JSONB with STRING (Databricks uses STRING for JSON)
-    sql = sql.replace('JSONB', 'STRING')
+    # Replace JSONB with STRING (Databricks stores JSON as STRING)
+    sql = re.sub(r'\bJSONB\b', 'STRING', sql, flags=re.IGNORECASE)
+
+    # Replace CAST(:x AS jsonb) with :x
+    sql = re.sub(
+        r'CAST\(\s*([^)]+?)\s+AS\s+jsonb\s*\)',
+        r'\1',
+        sql,
+        flags=re.IGNORECASE,
+    )
+    # If JSONB was already rewritten to STRING, strip CAST(... AS STRING) too.
+    sql = re.sub(
+        r'CAST\(\s*([^)]+?)\s+AS\s+STRING\s*\)',
+        r'\1',
+        sql,
+        flags=re.IGNORECASE,
+    )
 
     # Replace SERIAL PRIMARY KEY with BIGINT GENERATED ALWAYS AS IDENTITY
     sql = re.sub(
@@ -143,6 +306,30 @@ def _translate_pg_to_databricks(sql: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Databricks connection helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_databricks_hostname(hostname: str) -> str:
+    """
+    Normalize Databricks hostname from either raw host or full URL values.
+    Examples:
+      - adb-123.4.azuredatabricks.net
+      - https://adb-123.4.azuredatabricks.net/
+    """
+    value = (hostname or "").strip().strip('"').strip("'")
+    if not value:
+        return ""
+
+    if value.startswith(("http://", "https://")):
+        parsed = urlparse(value)
+        value = parsed.netloc or value
+    elif "/" in value:
+        value = value.split("/", 1)[0]
+
+    return value.strip()
+
+
+# ---------------------------------------------------------------------------
 # DatabricksSession — drop-in for SQLAlchemy Session
 # ---------------------------------------------------------------------------
 
@@ -156,29 +343,37 @@ class DatabricksSession:
         self._conn = connection
         self._cursor = None
 
-    def execute(self, query, params=None):
-        """Execute a SQL query, returning a result proxy."""
-        sql = _extract_sql_string(query)
-        sql = _translate_pg_to_databricks(sql)
+    def _execute_single(self, sql: str, params=None):
+        """Execute a single translated SQL statement."""
         translated_sql, param_values = _translate_params(sql, params)
 
         # Skip commented-out statements
         if translated_sql.strip().startswith('--'):
-            return _ResultProxy(type('FakeCursor', (), {
-                'description': None,
-                'fetchone': lambda: None,
-                'fetchall': lambda: [],
-            })())
+            return _ResultProxy(_EmptyCursor())
 
         self._cursor = self._conn.cursor()
+        if param_values:
+            self._cursor.execute(translated_sql, param_values)
+        else:
+            self._cursor.execute(translated_sql)
+        return _ResultProxy(self._cursor)
+
+    def execute(self, query, params=None):
+        """Execute a SQL query, returning a result proxy."""
+        sql = _extract_sql_string(query)
+        sql = _translate_pg_to_databricks(sql)
+        rewritten_statements = _rewrite_insert_on_conflict(sql)
+
         try:
-            if param_values:
-                self._cursor.execute(translated_sql, param_values)
-            else:
-                self._cursor.execute(translated_sql)
-            return _ResultProxy(self._cursor)
+            if rewritten_statements:
+                result = _ResultProxy(_EmptyCursor())
+                for stmt in rewritten_statements:
+                    result = self._execute_single(stmt, params)
+                return result
+
+            return self._execute_single(sql, params)
         except Exception as e:
-            logger.error(f"Databricks SQL error: {e}\nSQL: {translated_sql}")
+            logger.error(f"Databricks SQL error: {e}\nSQL: {sql}")
             raise
 
     def commit(self):
@@ -210,12 +405,30 @@ def _get_connection():
     """Create a new Databricks SQL connection."""
     from databricks import sql as dbsql
 
+    raw_hostname = settings.DATABRICKS_SERVER_HOSTNAME or ""
+    server_hostname = _normalize_databricks_hostname(raw_hostname)
+    if not server_hostname:
+        raise ValueError("DATABRICKS_SERVER_HOSTNAME is required when DATA_BACKEND=databricks")
+
+    # Fail fast on DNS problems instead of waiting through long connector retries.
+    try:
+        socket.getaddrinfo(server_hostname, 443)
+    except socket.gaierror as exc:
+        raise RuntimeError(
+            "Could not resolve DATABRICKS_SERVER_HOSTNAME "
+            f"'{server_hostname}'. Verify workspace URL/VPN/private DNS setup."
+        ) from exc
+
     return dbsql.connect(
-        server_hostname=settings.DATABRICKS_SERVER_HOSTNAME,
+        server_hostname=server_hostname,
         http_path=settings.DATABRICKS_HTTP_PATH,
         access_token=settings.DATABRICKS_ACCESS_TOKEN,
         catalog=settings.DATABRICKS_CATALOG,
         schema=settings.DATABRICKS_SCHEMA,
+        enable_telemetry=settings.DATABRICKS_ENABLE_TELEMETRY,
+        _socket_timeout=settings.DATABRICKS_SOCKET_TIMEOUT_SECONDS,
+        _retry_stop_after_attempts_count=settings.DATABRICKS_RETRY_STOP_AFTER_ATTEMPTS_COUNT,
+        _retry_stop_after_attempts_duration=settings.DATABRICKS_RETRY_STOP_AFTER_ATTEMPTS_DURATION,
     )
 
 
@@ -258,15 +471,21 @@ def test_databricks_connection() -> bool:
             assert val == 1
             logger.info("Databricks connection successful")
 
-            # Check if md_counties table exists
-            result = db.execute(
-                f"SHOW TABLES IN {settings.DATABRICKS_CATALOG}.{settings.DATABRICKS_SCHEMA} LIKE 'md_counties'"
-            )
-            rows = result.fetchall()
-            if rows:
-                result = db.execute("SELECT COUNT(*) FROM md_counties")
-                count = result.scalar()
-                logger.info(f"Found {count} Maryland counties in Databricks")
+            # Best-effort table check; don't fail connectivity if catalog/schema is not yet initialized.
+            try:
+                result = db.execute(
+                    f"SHOW TABLES IN {settings.DATABRICKS_CATALOG}.{settings.DATABRICKS_SCHEMA} LIKE 'md_counties'"
+                )
+                rows = result.fetchall()
+                if rows:
+                    result = db.execute("SELECT COUNT(*) FROM md_counties")
+                    count = result.scalar()
+                    logger.info(f"Found {count} Maryland counties in Databricks")
+            except Exception as check_error:
+                logger.info(
+                    "Databricks connected, but catalog/schema check skipped: %s",
+                    check_error,
+                )
 
             return True
     except Exception as e:
