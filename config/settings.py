@@ -25,6 +25,8 @@ class Settings(BaseSettings):
 
     # Backend selector: "postgresql" or "databricks"
     DATA_BACKEND: str = "postgresql"
+    # Ingestion write mode: "overwrite" for bootstrap runs, "append" for incremental runs
+    INGEST_WRITE_MODE: str = "overwrite"
 
     # Database (required when DATA_BACKEND=postgresql)
     DATABASE_URL: Optional[str] = None

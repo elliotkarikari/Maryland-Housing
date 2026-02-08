@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from src.ingest.write_mode import is_append_mode
 from src.utils.data_sources import fetch_fema_nfhl, fetch_epa_ejscreen
 from src.utils.logging import get_logger
 
@@ -458,11 +459,13 @@ def calculate_risk_indicators(data_year: int = 2025) -> pd.DataFrame:
 def store_risk_data(df: pd.DataFrame):
     """Store risk drag data in database."""
     logger.info(f"Storing {len(df)} risk records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
-        years = df['data_year'].unique().tolist()
-        db.execute(text("DELETE FROM layer6_risk_drag WHERE data_year = ANY(:years)"),
-                   {"years": years})
+        if not append_mode:
+            years = df['data_year'].unique().tolist()
+            db.execute(text("DELETE FROM layer6_risk_drag WHERE data_year = ANY(:years)"),
+                       {"years": years})
 
         insert_sql = text("""
             INSERT INTO layer6_risk_drag (
@@ -482,6 +485,7 @@ def store_risk_data(df: pd.DataFrame):
                 :bridges_total, :bridges_structurally_deficient, :bridges_deficient_pct,
                 :risk_drag_index
             )
+            ON CONFLICT (fips_code, data_year) DO NOTHING
         """)
 
         for _, row in df.iterrows():

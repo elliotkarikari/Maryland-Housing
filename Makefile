@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new databricks-init databricks-reinit databricks-deploy databricks-test
+.PHONY: help install init-db db-setup db-migrate ingest-all ingest-all-overwrite ingest-all-append process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new databricks-init databricks-reinit databricks-deploy databricks-test databricks-bootstrap databricks-monthly
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -16,6 +16,8 @@ help:
 	@echo "  make db-setup       - Initialize PostgreSQL/PostGIS database"
 	@echo "  make db-migrate     - Run database migrations"
 	@echo "  make ingest-all     - Run all data ingestion pipelines"
+	@echo "  make ingest-all-overwrite - Run all ingestions in overwrite mode"
+	@echo "  make ingest-all-append - Run all ingestions in append mode"
 	@echo "  make ingest-layer1  - Ingest Economic Opportunity (v2) data"
 	@echo "  make ingest-layer2  - Ingest Mobility Accessibility (v2) data"
 	@echo "  make ingest-layer3  - Ingest School System data"
@@ -33,6 +35,8 @@ help:
 	@echo "Azure Databricks:"
 	@echo "  make databricks-init   - Initialize Delta tables (requires DATA_BACKEND=databricks)"
 	@echo "  make databricks-reinit - Drop + recreate Delta tables from schema"
+	@echo "  make databricks-bootstrap - Databricks full overwrite ingest-all"
+	@echo "  make databricks-monthly - Databricks append-only ingest-all"
 	@echo "  make databricks-deploy - Build wheel + upload to Databricks"
 	@echo "  make databricks-test   - Test Databricks connectivity"
 	@echo ""
@@ -69,6 +73,14 @@ ingest-all:
 	$(PYTHON) -m src.ingest.layer5_demographics
 	$(PYTHON) -m src.ingest.layer6_risk
 	$(PYTHON) -m src.ingest.policy_persistence
+
+ingest-all-overwrite:
+	@echo "Running all ingestion pipelines in overwrite mode..."
+	INGEST_WRITE_MODE=overwrite $(MAKE) ingest-all
+
+ingest-all-append:
+	@echo "Running all ingestion pipelines in append mode..."
+	INGEST_WRITE_MODE=append $(MAKE) ingest-all
 
 ingest-layer1:
 	$(PYTHON) -m src.ingest.layer1_economic_accessibility
@@ -111,6 +123,14 @@ databricks-init:
 databricks-reinit:
 	@echo "Recreating Databricks Delta tables..."
 	DATA_BACKEND=databricks $(PYTHON) scripts/init_databricks.py --recreate --load-geometries
+
+databricks-bootstrap:
+	@echo "Running Databricks full bootstrap (overwrite mode)..."
+	DATA_BACKEND=databricks INGEST_WRITE_MODE=overwrite $(MAKE) ingest-all
+
+databricks-monthly:
+	@echo "Running Databricks monthly incremental ingest (append mode)..."
+	DATA_BACKEND=databricks INGEST_WRITE_MODE=append $(MAKE) ingest-all
 
 databricks-deploy:
 	@echo "Building and deploying to Databricks..."

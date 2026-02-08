@@ -2993,7 +2993,7 @@ const STORY_CHAPTERS = [
     },
     {
         title: 'Start Exploring',
-        body: 'Click any county to see its full analysis, layer scores, and strengths/weaknesses. Use the sidebar search to jump to a county, or toggle 3D Scores to see composite scores rise off the map.',
+        body: 'Click any county to see its full analysis, layer scores, and strengths/weaknesses. Use the sidebar search to jump to a county, or toggle 3D to see composite scores rise off the map.',
         center: [-77.0, 39.0],
         zoom: 7.2,
         pitch: 0,

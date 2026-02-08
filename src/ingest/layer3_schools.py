@@ -39,6 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from src.ingest.write_mode import is_append_mode
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 
@@ -696,25 +697,52 @@ def calculate_school_indicators(latest_year: Optional[int] = None) -> pd.DataFra
 def store_school_data(df: pd.DataFrame):
     """Store school trajectory data in database"""
     logger.info(f"Storing {len(df)} school trajectory records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
-        # Clear existing data
-        db.execute(text("DELETE FROM layer3_school_trajectory"))
+        if not append_mode:
+            # Bootstrap/overwrite mode replaces current contents.
+            db.execute(text("DELETE FROM layer3_school_trajectory"))
+
+        if append_mode:
+            insert_sql = text("""
+                INSERT INTO layer3_school_trajectory (
+                    fips_code, data_year, total_enrollment, schools_total,
+                    enrollment_3yr_change_pct, enrollment_momentum_score,
+                    capital_investment_score, capacity_strain_indicator
+                ) VALUES (
+                    :fips_code, :data_year, :total_enrollment, :schools_total,
+                    :enrollment_3yr_change_pct, :enrollment_momentum_score,
+                    :capital_investment_score, :capacity_strain_indicator
+                )
+                ON CONFLICT (fips_code, data_year) DO NOTHING
+            """)
+        else:
+            insert_sql = text("""
+                INSERT INTO layer3_school_trajectory (
+                    fips_code, data_year, total_enrollment, schools_total,
+                    enrollment_3yr_change_pct, enrollment_momentum_score,
+                    capital_investment_score, capacity_strain_indicator
+                ) VALUES (
+                    :fips_code, :data_year, :total_enrollment, :schools_total,
+                    :enrollment_3yr_change_pct, :enrollment_momentum_score,
+                    :capital_investment_score, :capacity_strain_indicator
+                )
+                ON CONFLICT (fips_code, data_year)
+                DO UPDATE SET
+                    total_enrollment = EXCLUDED.total_enrollment,
+                    schools_total = EXCLUDED.schools_total,
+                    enrollment_3yr_change_pct = EXCLUDED.enrollment_3yr_change_pct,
+                    enrollment_momentum_score = EXCLUDED.enrollment_momentum_score,
+                    capital_investment_score = EXCLUDED.capital_investment_score,
+                    capacity_strain_indicator = EXCLUDED.capacity_strain_indicator,
+                    updated_at = CURRENT_TIMESTAMP
+            """)
 
         # Insert new records
         for _, row in df.iterrows():
             db.execute(
-                text("""
-                    INSERT INTO layer3_school_trajectory (
-                        fips_code, data_year, total_enrollment, schools_total,
-                        enrollment_3yr_change_pct, enrollment_momentum_score,
-                        capital_investment_score, capacity_strain_indicator
-                    ) VALUES (
-                        :fips_code, :data_year, :total_enrollment, :schools_total,
-                        :enrollment_3yr_change_pct, :enrollment_momentum_score,
-                        :capital_investment_score, :capacity_strain_indicator
-                    )
-                """),
+                insert_sql,
                 {
                     'fips_code': row['fips_code'],
                     'data_year': int(row['data_year']),

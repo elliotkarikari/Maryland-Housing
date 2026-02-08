@@ -51,6 +51,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from src.ingest.write_mode import is_append_mode, has_rows_for_year
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
@@ -1069,13 +1070,21 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
         lodes_year: Year of LODES data used
     """
     logger.info(f"Storing {len(df)} tract accessibility records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
-        # Clear existing data for this year
-        db.execute(text("""
-            DELETE FROM layer2_mobility_accessibility_tract
-            WHERE data_year = :data_year
-        """), {"data_year": data_year})
+        if append_mode and has_rows_for_year(db, "layer2_mobility_accessibility_tract", data_year):
+            logger.info(
+                f"Append mode: year {data_year} already exists in layer2_mobility_accessibility_tract; skipping overwrite."
+            )
+            return
+
+        if not append_mode:
+            # Clear existing data for this year during bootstrap/overwrite runs.
+            db.execute(text("""
+                DELETE FROM layer2_mobility_accessibility_tract
+                WHERE data_year = :data_year
+            """), {"data_year": data_year})
 
         # Insert new records
         for _, row in df.iterrows():
@@ -1102,6 +1111,7 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
                     :average_headway_minutes, :tract_population,
                     :gtfs_date, :osm_date, :lodes_year
                 )
+                ON CONFLICT (tract_geoid, data_year) DO NOTHING
             """), {
                 'tract_geoid': row['tract_geoid'],
                 'fips_code': row['fips_code'],
@@ -1147,11 +1157,37 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
         lodes_year: Year of LODES data used
     """
     logger.info(f"Updating {len(df)} county accessibility records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
-        for _, row in df.iterrows():
-            # Update existing records or insert new
-            db.execute(text("""
+        if append_mode:
+            insert_sql = text("""
+                INSERT INTO layer2_mobility_optionality (
+                    fips_code, data_year,
+                    jobs_accessible_transit_45min, jobs_accessible_transit_30min,
+                    jobs_accessible_walk_30min, jobs_accessible_bike_30min,
+                    jobs_accessible_car_30min,
+                    transit_accessibility_score, walk_accessibility_score,
+                    bike_accessibility_score, multimodal_accessibility_score,
+                    pct_regional_jobs_by_transit, transit_car_accessibility_ratio,
+                    transit_stop_density, frequent_transit_area_pct,
+                    average_headway_minutes,
+                    gtfs_feed_date, osm_extract_date, lodes_year,
+                    accessibility_version, mobility_optionality_index
+                ) VALUES (
+                    :fips_code, :data_year,
+                    :jobs_transit_45, :jobs_transit_30,
+                    :jobs_walk_30, :jobs_bike_30, :jobs_car_30,
+                    :transit_score, :walk_score, :bike_score, :multimodal_score,
+                    :pct_regional, :transit_car_ratio,
+                    :stop_density, :frequent_pct, :avg_headway,
+                    :gtfs_date, :osm_date, :lodes_year,
+                    'v2-accessibility', :multimodal_score
+                )
+                ON CONFLICT (fips_code, data_year) DO NOTHING
+            """)
+        else:
+            insert_sql = text("""
                 INSERT INTO layer2_mobility_optionality (
                     fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
@@ -1196,7 +1232,10 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
                     accessibility_version = 'v2-accessibility',
                     mobility_optionality_index = EXCLUDED.mobility_optionality_index,
                     updated_at = CURRENT_TIMESTAMP
-            """), {
+            """)
+
+        for _, row in df.iterrows():
+            db.execute(insert_sql, {
                 'fips_code': row['fips_code'],
                 'data_year': data_year,
                 'jobs_transit_45': int(row.get('jobs_accessible_transit_45min', 0)),

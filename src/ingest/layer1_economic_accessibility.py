@@ -27,6 +27,7 @@ Version: 2.0
 import os
 import sys
 import hashlib
+import logging
 from pathlib import Path
 from datetime import datetime, date, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -46,7 +47,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
-from src.utils.logging import get_logger
+from src.ingest.write_mode import is_append_mode, has_rows_for_year
+from src.utils.logging import get_logger, setup_logging
 from src.utils.prediction_utils import apply_predictions_to_table
 from src.utils.data_sources import download_file
 
@@ -1054,13 +1056,21 @@ def store_tract_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_yea
         acs_year: Year of ACS data used
     """
     logger.info(f"Storing {len(df)} tract economic opportunity records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
-        # Clear existing data for this year
-        db.execute(text("""
-            DELETE FROM layer1_economic_opportunity_tract
-            WHERE data_year = :data_year
-        """), {"data_year": data_year})
+        if append_mode and has_rows_for_year(db, "layer1_economic_opportunity_tract", data_year):
+            logger.info(
+                f"Append mode: year {data_year} already exists in layer1_economic_opportunity_tract; skipping overwrite."
+            )
+            return
+
+        if not append_mode:
+            # Clear existing data for this year during bootstrap/overwrite runs.
+            db.execute(text("""
+                DELETE FROM layer1_economic_opportunity_tract
+                WHERE data_year = :data_year
+            """), {"data_year": data_year})
 
         # Insert new records
         for _, row in df.iterrows():
@@ -1093,6 +1103,7 @@ def store_tract_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_yea
                     :population, :working_age, :lfp,
                     :lodes_year, :acs_year
                 )
+                ON CONFLICT (tract_geoid, data_year) DO NOTHING
             """), {
                 'tract_geoid': row['tract_geoid'],
                 'fips_code': row['fips_code'],
@@ -1139,6 +1150,7 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
         acs_year: Year of ACS data
     """
     logger.info(f"Updating {len(df)} county economic opportunity records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
         local_strength_scores = {}
@@ -1173,6 +1185,19 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
             local_strength_scores[fips_code] = local_strength
 
         for _, row in df.iterrows():
+            if append_mode:
+                existing_row = db.execute(text("""
+                    SELECT 1
+                    FROM layer1_employment_gravity
+                    WHERE fips_code = :fips_code AND data_year = :data_year
+                    LIMIT 1
+                """), {
+                    'fips_code': row['fips_code'],
+                    'data_year': data_year
+                }).fetchone()
+                if existing_row is not None:
+                    continue
+
             db.execute(text("""
                 INSERT INTO layer1_employment_gravity (fips_code, data_year)
                 VALUES (:fips_code, :data_year)
@@ -1311,15 +1336,15 @@ def calculate_economic_opportunity_indicators(
 
     Args:
         data_year: Year to associate with this data (default: current year)
-        lodes_year: LODES year to use (default: data_year - 2)
-        acs_year: ACS year to use (default: data_year - 2)
+        lodes_year: LODES year to use (default: data_year, capped by availability)
+        acs_year: ACS year to use (default: data_year, capped by availability)
 
     Returns:
         Tuple of (tract_df, county_df) with economic opportunity metrics
     """
     data_year = data_year or datetime.now().year
-    lodes_year = lodes_year or min(data_year - 2, settings.LODES_LATEST_YEAR)
-    acs_year = acs_year or min(data_year - 2, settings.ACS_LATEST_YEAR)
+    lodes_year = lodes_year or min(data_year, settings.LODES_LATEST_YEAR)
+    acs_year = acs_year or min(data_year, settings.ACS_LATEST_YEAR)
 
     logger.info("=" * 60)
     logger.info("LAYER 1 v2: ECONOMIC OPPORTUNITY ACCESSIBILITY ANALYSIS")
@@ -1409,7 +1434,8 @@ def run_layer1_v2_ingestion(
         store_data: Whether to store results in database
         window_years: Window size for multi-year ingestion (default: 5)
     """
-    latest_available_year = min(settings.LODES_LATEST_YEAR, settings.ACS_LATEST_YEAR) + 2
+    # Use the latest shared source year so stored data_year reflects observed data vintages.
+    latest_available_year = min(settings.LODES_LATEST_YEAR, settings.ACS_LATEST_YEAR)
     end_year = data_year or latest_available_year
     if end_year > latest_available_year:
         logger.warning(
@@ -1436,8 +1462,8 @@ def run_layer1_v2_ingestion(
         last_county_df = pd.DataFrame()
 
         for year in years_to_fetch:
-            lodes_year = min(year - 2, settings.LODES_LATEST_YEAR)
-            acs_year = min(year - 2, settings.ACS_LATEST_YEAR)
+            lodes_year = year
+            acs_year = year
 
             logger.info("=" * 70)
             logger.info(f"Processing year {year}")
@@ -1528,6 +1554,10 @@ def run_layer1_v2_ingestion(
 def main():
     """CLI entry point."""
     import argparse
+
+    # Configure console logging for direct CLI execution.
+    if not logging.getLogger().handlers:
+        setup_logging("layer1_economic_accessibility")
 
     parser = argparse.ArgumentParser(
         description='Layer 1 v2: Economic Opportunity Accessibility Analysis'

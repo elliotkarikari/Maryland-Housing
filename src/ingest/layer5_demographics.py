@@ -34,6 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from src.ingest.write_mode import is_append_mode
 from src.utils.data_sources import fetch_census_data, download_file
 from src.utils.logging import get_logger
 
@@ -727,13 +728,15 @@ def calculate_demographic_indicators(data_year: int = 2023) -> pd.DataFrame:
 def store_demographic_data(df: pd.DataFrame):
     """Store demographic momentum data in database."""
     logger.info(f"Storing {len(df)} demographic records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
-        years = df['data_year'].unique().tolist()
-        db.execute(
-            text("DELETE FROM layer5_demographic_momentum WHERE data_year = ANY(:years)"),
-            {"years": years}
-        )
+        if not append_mode:
+            years = df['data_year'].unique().tolist()
+            db.execute(
+                text("DELETE FROM layer5_demographic_momentum WHERE data_year = ANY(:years)"),
+                {"years": years}
+            )
 
         insert_sql = text("""
             INSERT INTO layer5_demographic_momentum (
@@ -761,6 +764,7 @@ def store_demographic_data(df: pd.DataFrame):
                 :family_household_inflow_rate, :working_age_momentum,
                 :household_formation_change, :demographic_momentum_score
             )
+            ON CONFLICT (fips_code, data_year) DO NOTHING
         """)
 
         for _, row in df.iterrows():

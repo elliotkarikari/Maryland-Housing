@@ -18,6 +18,7 @@ from datetime import datetime
 
 from config.database import get_db, log_refresh
 from config.settings import get_settings, MD_COUNTY_FIPS
+from src.ingest.write_mode import is_append_mode
 from src.utils.data_sources import fetch_usaspending_county
 from src.utils.logging import get_logger
 
@@ -347,9 +348,23 @@ def merge_and_store_policy_persistence(
     results_df = pd.DataFrame(confidence_results)
 
     # Store in database
+    append_mode = is_append_mode()
     with get_db() as db:
+        conflict_clause = """
+                ON CONFLICT (fips_code, data_year)
+                DO NOTHING
+        """ if append_mode else """
+                ON CONFLICT (fips_code, data_year)
+                DO UPDATE SET
+                    federal_awards_yoy_consistency = EXCLUDED.federal_awards_yoy_consistency,
+                    cip_follow_through_rate = EXCLUDED.cip_follow_through_rate,
+                    confidence_score = EXCLUDED.confidence_score,
+                    confidence_class = EXCLUDED.confidence_class,
+                    updated_at = CURRENT_TIMESTAMP
+        """
+
         for _, row in results_df.iterrows():
-            sql = text("""
+            sql = text(f"""
                 INSERT INTO policy_persistence (
                     fips_code, data_year,
                     federal_awards_yoy_consistency,
@@ -363,13 +378,7 @@ def merge_and_store_policy_persistence(
                     :confidence_score,
                     :confidence_class
                 )
-                ON CONFLICT (fips_code, data_year)
-                DO UPDATE SET
-                    federal_awards_yoy_consistency = EXCLUDED.federal_awards_yoy_consistency,
-                    cip_follow_through_rate = EXCLUDED.cip_follow_through_rate,
-                    confidence_score = EXCLUDED.confidence_score,
-                    confidence_class = EXCLUDED.confidence_class,
-                    updated_at = CURRENT_TIMESTAMP
+                {conflict_clause}
             """)
 
             params = row.to_dict()

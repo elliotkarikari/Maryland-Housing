@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from src.ingest.write_mode import is_append_mode
 from src.utils.data_sources import fetch_census_data, download_file
 from src.utils.logging import get_logger
 
@@ -218,9 +219,32 @@ def store_housing_data(df: pd.DataFrame):
         df: DataFrame with housing indicators
     """
     logger.info(f"Storing {len(df)} housing records")
+    append_mode = is_append_mode()
 
     with get_db() as db:
-        insert_sql = text("""
+        conflict_clause = """
+            ON CONFLICT (fips_code, data_year)
+            DO NOTHING
+        """ if append_mode else """
+            ON CONFLICT (fips_code, data_year)
+            DO UPDATE SET
+                permits_total = EXCLUDED.permits_total,
+                permits_single_family = EXCLUDED.permits_single_family,
+                permits_multifamily = EXCLUDED.permits_multifamily,
+                permits_per_1000_households = EXCLUDED.permits_per_1000_households,
+                permits_3yr_trend = EXCLUDED.permits_3yr_trend,
+                median_home_value = EXCLUDED.median_home_value,
+                median_household_income = EXCLUDED.median_household_income,
+                price_to_income_ratio = EXCLUDED.price_to_income_ratio,
+                price_to_income_5yr_change = EXCLUDED.price_to_income_5yr_change,
+                has_open_zoning_gis = EXCLUDED.has_open_zoning_gis,
+                zoning_capacity_indicator = EXCLUDED.zoning_capacity_indicator,
+                supply_responsiveness_score = EXCLUDED.supply_responsiveness_score,
+                housing_elasticity_index = EXCLUDED.housing_elasticity_index,
+                updated_at = CURRENT_TIMESTAMP
+        """
+
+        insert_sql = text(f"""
             INSERT INTO layer4_housing_elasticity (
                 fips_code, data_year,
                 permits_total, permits_single_family, permits_multifamily,
@@ -238,22 +262,7 @@ def store_housing_data(df: pd.DataFrame):
                 :has_open_zoning_gis, :zoning_capacity_indicator,
                 :supply_responsiveness_score, :housing_elasticity_index
             )
-            ON CONFLICT (fips_code, data_year)
-            DO UPDATE SET
-                permits_total = EXCLUDED.permits_total,
-                permits_single_family = EXCLUDED.permits_single_family,
-                permits_multifamily = EXCLUDED.permits_multifamily,
-                permits_per_1000_households = EXCLUDED.permits_per_1000_households,
-                permits_3yr_trend = EXCLUDED.permits_3yr_trend,
-                median_home_value = EXCLUDED.median_home_value,
-                median_household_income = EXCLUDED.median_household_income,
-                price_to_income_ratio = EXCLUDED.price_to_income_ratio,
-                price_to_income_5yr_change = EXCLUDED.price_to_income_5yr_change,
-                has_open_zoning_gis = EXCLUDED.has_open_zoning_gis,
-                zoning_capacity_indicator = EXCLUDED.zoning_capacity_indicator,
-                supply_responsiveness_score = EXCLUDED.supply_responsiveness_score,
-                housing_elasticity_index = EXCLUDED.housing_elasticity_index,
-                updated_at = CURRENT_TIMESTAMP
+            {conflict_clause}
         """)
 
         for _, row in df.iterrows():
