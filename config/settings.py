@@ -38,9 +38,9 @@ class Settings(BaseSettings):
     DATABRICKS_CATALOG: str = "maryland_atlas"
     DATABRICKS_SCHEMA: str = "default"
     DATABRICKS_ENABLE_TELEMETRY: bool = False
-    DATABRICKS_SOCKET_TIMEOUT_SECONDS: float = 60.0
+    DATABRICKS_SOCKET_TIMEOUT_SECONDS: float = 120.0
     DATABRICKS_RETRY_STOP_AFTER_ATTEMPTS_COUNT: int = 6
-    DATABRICKS_RETRY_STOP_AFTER_ATTEMPTS_DURATION: float = 120.0
+    DATABRICKS_RETRY_STOP_AFTER_ATTEMPTS_DURATION: float = 900.0
 
     # Azure Blob Storage (for GeoJSON export when using Databricks)
     AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None

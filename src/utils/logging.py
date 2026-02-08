@@ -69,6 +69,12 @@ def setup_logging(name: str = "maryland_atlas") -> logging.Logger:
     for handler in logger.handlers:
         root_logger.addHandler(handler)
 
+    # Reduce very noisy connector/HTTP logs during long Databricks ingestions.
+    logging.getLogger("databricks.sql.auth.retry").setLevel(logging.WARNING)
+    logging.getLogger("databricks.sql.auth.thrift_http_client").setLevel(logging.WARNING)
+    logging.getLogger("databricks.sql.backend.thrift_backend").setLevel(logging.WARNING)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+
     return logger
 
 
