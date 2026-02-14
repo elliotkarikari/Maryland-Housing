@@ -162,10 +162,8 @@
             top: 12px;
             right: 12px;
             z-index: 36;
-            width: min(338px, calc(100% - 24px));
-            display: grid;
-            gap: 8px;
-            justify-items: end;
+            width: auto;
+            display: flex;
             pointer-events: none;
         }
 
@@ -206,16 +204,65 @@
             color: #f0f8ff;
         }
 
-        .compare-builder {
+        .compare-builder-card {
+            overflow: hidden;
+        }
+
+        .compare-builder-toggle {
             width: 100%;
-            border: 1px solid rgba(19, 42, 63, 0.2);
-            border-radius: 12px;
-            background: rgba(252, 254, 255, 0.94);
-            box-shadow: 0 10px 20px rgba(12, 28, 43, 0.17);
-            padding: 9px 9px 8px;
+            border: none;
+            border-radius: 14px;
+            background: linear-gradient(180deg, rgba(245, 251, 255, 0.95), rgba(252, 254, 255, 0.95));
+            color: #1d3a55;
+            padding: 11px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .compare-builder-toggle:hover {
+            background: linear-gradient(180deg, rgba(241, 248, 254, 0.96), rgba(250, 253, 255, 0.96));
+        }
+
+        .compare-builder-toggle-left {
+            font-family: 'Sora', sans-serif;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            color: #294864;
+        }
+
+        .compare-builder-toggle-right {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .compare-builder-chevron {
+            color: #5f768b;
+            font-size: 12px;
+            transform: rotate(0deg);
+            transition: transform 160ms ease;
+        }
+
+        .compare-builder-card.expanded .compare-builder-chevron {
+            transform: rotate(180deg);
+        }
+
+        .compare-builder {
+            border-top: 1px solid rgba(18, 40, 58, 0.12);
+            padding: 10px 12px 11px;
             display: grid;
             gap: 8px;
             transition: opacity 180ms ease, transform 180ms ease;
+        }
+
+        .compare-builder-card.collapsed .compare-builder {
+            display: none;
         }
 
         .compare-builder-row {
@@ -423,7 +470,6 @@
             line-height: 1.25;
         }
 
-        .map-stage.table-view-active #compare-builder,
         .map-stage.table-view-active .tour-launch-btn {
             opacity: 0;
             pointer-events: none;
@@ -750,11 +796,11 @@
             left: 18px;
             bottom: 22px;
             z-index: 26;
-            width: 268px;
+            width: 242px;
             background: var(--surface-strong);
             border: 1px solid var(--stroke);
             border-radius: 13px;
-            padding: 10px 11px 9px;
+            padding: 9px 8px 8px;
             box-shadow: var(--shadow-soft);
             transition: var(--panel-transition);
         }
@@ -786,10 +832,10 @@
 
         .legend-matrix {
             display: grid;
-            grid-template-columns: 15px auto 26px;
+            grid-template-columns: 12px auto 22px;
             align-items: center;
             justify-content: center;
-            gap: 7px;
+            gap: 6px;
             margin: 1px 0 0;
         }
 
@@ -806,7 +852,7 @@
 
         .legend-row-labels {
             display: grid;
-            grid-template-rows: repeat(3, 27px);
+            grid-template-rows: repeat(3, 25px);
             gap: 4px;
             justify-items: start;
             align-items: center;
@@ -823,15 +869,15 @@
 
         .legend-grid {
             display: grid;
-            grid-template-columns: repeat(3, 27px);
-            grid-template-rows: repeat(3, 27px);
+            grid-template-columns: repeat(3, 25px);
+            grid-template-rows: repeat(3, 25px);
             gap: 4px;
             justify-content: center;
         }
 
         .legend-cell {
-            width: 27px;
-            height: 27px;
+            width: 25px;
+            height: 25px;
             border-radius: 6px;
             border: 1px solid rgba(16, 37, 56, 0.14);
             cursor: pointer;
@@ -857,7 +903,7 @@
         }
 
         .legend-axis-x {
-            width: 89px;
+            width: 83px;
             display: grid;
             grid-template-columns: repeat(3, 1fr);
             gap: 4px;
@@ -1875,7 +1921,7 @@
         .compare-table th:first-child,
         .compare-table td:first-child {
             text-align: left;
-            width: 36%;
+            width: 39%;
         }
 
         .compare-table th {
@@ -2284,7 +2330,7 @@
             }
 
             .legend-bivariate {
-                width: 230px;
+                width: 220px;
                 left: 10px;
                 bottom: 12px;
             }
@@ -2303,7 +2349,7 @@
             .map-top-controls {
                 top: 8px;
                 right: 8px;
-                width: min(308px, calc(100% - 16px));
+                width: auto;
             }
 
             .map-top-actions {
@@ -2316,8 +2362,12 @@
                 padding: 6px 9px;
             }
 
+            .compare-builder-toggle {
+                padding: 9px 10px;
+            }
+
             .compare-builder {
-                padding: 8px;
+                padding: 8px 10px 9px;
             }
 
             .compare-layer-row {
@@ -2374,28 +2424,6 @@
                 <button id="tour-launch-btn" class="tour-launch-btn" type="button">Guided Tour</button>
                 <button id="map-table-toggle" class="map-table-toggle" type="button" aria-expanded="false" aria-controls="county-table-panel">Table View</button>
             </div>
-            <section id="compare-builder" class="compare-builder" role="region" aria-label="Compare counties">
-                <div class="compare-builder-row">
-                    <div class="compare-builder-title">Compare Builder</div>
-                    <div id="compare-builder-meta" class="compare-builder-meta">0 of 4</div>
-                </div>
-                <div class="compare-builder-row">
-                    <button id="split-view-toggle" class="split-view-toggle" type="button" aria-pressed="false">Split View</button>
-                </div>
-                <div class="compare-builder-search">
-                    <input
-                        id="compare-search-input"
-                        class="compare-builder-input"
-                        type="search"
-                        placeholder="Add county to compare..."
-                        autocomplete="off"
-                        aria-label="Search county to add to compare"
-                    >
-                    <div id="compare-autocomplete" class="compare-autocomplete" role="listbox" aria-label="County suggestions"></div>
-                </div>
-                <div id="compare-chip-list" class="compare-chip-list empty" aria-live="polite"></div>
-                <div class="compare-builder-hint">Drag county chips to reorder baseline and comparators.</div>
-            </section>
         </div>
 
         <div id="county-table-panel" class="county-table-panel" role="dialog" aria-label="County table view" aria-hidden="true">
@@ -2477,6 +2505,34 @@
                 <p>Real-data structural trajectories across Maryland counties. <strong>Click a county</strong> for detailed breakdown.</p>
                 <input id="county-search" class="atlas-search" type="search" list="county-search-list" placeholder="Search county..." autocomplete="off">
                 <datalist id="county-search-list"></datalist>
+            </section>
+
+            <section id="compare-builder-card" class="atlas-card compare-builder-card collapsed" aria-label="Compare counties builder">
+                <button id="compare-builder-toggle" class="compare-builder-toggle" type="button" aria-expanded="false" aria-controls="compare-builder">
+                    <span class="compare-builder-toggle-left">Compare Builder</span>
+                    <span class="compare-builder-toggle-right">
+                        <span id="compare-builder-meta" class="compare-builder-meta">0 of 4</span>
+                        <span class="compare-builder-chevron" aria-hidden="true">▾</span>
+                    </span>
+                </button>
+                <section id="compare-builder" class="compare-builder" role="region" aria-label="Compare counties">
+                    <div class="compare-builder-row">
+                        <button id="split-view-toggle" class="split-view-toggle" type="button" aria-pressed="false">Split View</button>
+                    </div>
+                    <div class="compare-builder-search">
+                        <input
+                            id="compare-search-input"
+                            class="compare-builder-input"
+                            type="search"
+                            placeholder="Add county to compare..."
+                            autocomplete="off"
+                            aria-label="Search county to add to compare"
+                        >
+                        <div id="compare-autocomplete" class="compare-autocomplete" role="listbox" aria-label="County suggestions"></div>
+                    </div>
+                    <div id="compare-chip-list" class="compare-chip-list empty" aria-live="polite"></div>
+                    <div class="compare-builder-hint">Drag county chips to reorder baseline and comparators.</div>
+                </section>
             </section>
 
             <section id="atlas-panel" class="atlas-card atlas-panel" data-state="empty" data-compare-ready="false">

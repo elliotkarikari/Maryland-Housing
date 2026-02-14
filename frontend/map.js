@@ -124,6 +124,22 @@ const BIVARIATE_MAP_COLORS = {
 };
 
 const COMPARE_SERIES_COLORS = ['#2f6fb4', '#5d9a3b', '#dd7f31', '#6e859b'];
+const FLOW_DASH_SEQUENCE = [
+    [0, 4, 3],
+    [0.5, 4, 2.5],
+    [1, 4, 2],
+    [1.5, 4, 1.5],
+    [2, 4, 1],
+    [2.5, 4, 0.5],
+    [3, 4, 0],
+    [0, 0.5, 3, 3.5],
+    [0, 1, 3, 3],
+    [0, 1.5, 3, 2.5],
+    [0, 2, 3, 2],
+    [0, 2.5, 3, 1.5],
+    [0, 3, 3, 1],
+    [0, 3.5, 3, 0.5]
+];
 
 const FALLBACK_COLOR = 'rgba(117, 117, 117, 0.5)';
 const FALLBACK_MAP_COLOR = '#757575';
@@ -234,6 +250,7 @@ const appState = {
         counties: [],
         maxCount: 4,
         splitView: false,
+        builderExpanded: false,
         dragFips: null,
         splitMaps: {
             left: null,
@@ -256,6 +273,7 @@ const appState = {
     pendingCountyRequest: null,
     moveOpacityTimer: null,
     clickOpacityTimer: null,
+    flowAnimationTimer: null,
     hoverPopupFips: null,
     apiBaseUrl: null,
     tableViewOpen: false,
@@ -311,6 +329,8 @@ const dom = {
     tourBack: document.getElementById('tour-back'),
     tourNext: document.getElementById('tour-next'),
     tourSkip: document.getElementById('tour-skip'),
+    compareBuilderCard: document.getElementById('compare-builder-card'),
+    compareBuilderToggle: document.getElementById('compare-builder-toggle'),
     compareBuilder: document.getElementById('compare-builder'),
     compareBuilderMeta: document.getElementById('compare-builder-meta'),
     compareSearchInput: document.getElementById('compare-search-input'),
@@ -994,6 +1014,9 @@ function initializeMap() {
     appState.map.on('zoom', () => {
         updatePitch();
     });
+    appState.map.on('remove', () => {
+        stopDemographicFlowAnimation();
+    });
 
     appState.map.on('error', (event) => {
         const maybeMessage = event && event.error && event.error.message;
@@ -1109,6 +1132,7 @@ async function loadCountyLayer() {
             }
         });
 
+        addDemographicFlowLayers();
         await addCountyIllustrationLayers();
         wireCountyInteractions();
         applyLegendFilter();
@@ -1320,6 +1344,265 @@ function buildCountyIllustrationGeoJson(features) {
         type: 'FeatureCollection',
         features: iconFeatures
     };
+}
+
+function addDemographicFlowLayers() {
+    if (!appState.map || !appState.geojson || !Array.isArray(appState.geojson.features)) {
+        return;
+    }
+
+    const sourceId = 'demographic-flows';
+    const data = buildDemographicFlowGeoJson(appState.geojson.features);
+
+    if (appState.map.getSource(sourceId)) {
+        appState.map.getSource(sourceId).setData(data);
+        if (data.features.length) {
+            startDemographicFlowAnimation();
+        } else {
+            stopDemographicFlowAnimation();
+        }
+        return;
+    }
+
+    appState.map.addSource(sourceId, {
+        type: 'geojson',
+        data
+    });
+
+    const beforeLayerId = appState.map.getLayer('counties-hover-fill') ? 'counties-hover-fill' : undefined;
+
+    appState.map.addLayer({
+        id: 'demographic-flow-line-glow',
+        type: 'line',
+        source: sourceId,
+        layout: {
+            'line-cap': 'round',
+            'line-join': 'round'
+        },
+        paint: {
+            'line-color': 'rgba(90, 173, 232, 0.38)',
+            'line-width': [
+                'interpolate',
+                ['linear'],
+                ['coalesce', ['get', 'flow_strength'], 0],
+                0, 1.4,
+                1, 4.2
+            ],
+            'line-opacity': 0.36,
+            'line-blur': 0.55
+        }
+    }, beforeLayerId);
+
+    appState.map.addLayer({
+        id: 'demographic-flow-line',
+        type: 'line',
+        source: sourceId,
+        layout: {
+            'line-cap': 'round',
+            'line-join': 'round'
+        },
+        paint: {
+            'line-color': 'rgba(61, 153, 223, 0.95)',
+            'line-width': [
+                'interpolate',
+                ['linear'],
+                ['coalesce', ['get', 'flow_strength'], 0],
+                0, 1.1,
+                1, 3
+            ],
+            'line-opacity': 0.88,
+            'line-dasharray': FLOW_DASH_SEQUENCE[0]
+        }
+    }, beforeLayerId);
+
+    appState.map.addLayer({
+        id: 'demographic-flow-arrows',
+        type: 'symbol',
+        source: sourceId,
+        layout: {
+            'symbol-placement': 'line',
+            'symbol-spacing': 78,
+            'text-field': '▶',
+            'text-size': 11,
+            'text-keep-upright': false,
+            'text-allow-overlap': true,
+            'text-ignore-placement': true
+        },
+        paint: {
+            'text-color': '#4ba6e8',
+            'text-opacity': 0.86,
+            'text-halo-color': 'rgba(250, 253, 255, 0.84)',
+            'text-halo-width': 0.65
+        }
+    }, beforeLayerId);
+
+    if (data.features.length) {
+        startDemographicFlowAnimation();
+    }
+}
+
+function buildDemographicFlowGeoJson(features) {
+    const counties = features.map((feature) => {
+        const props = feature.properties || {};
+        const fipsCode = props.fips_code || props.geoid;
+        if (!fipsCode) {
+            return null;
+        }
+
+        const center = appState.countyCentersByFips.get(fipsCode) || getFeatureCenter(feature);
+        if (!center) {
+            return null;
+        }
+
+        const score = safeNumber(
+            props.demographic_momentum_score ??
+            (props.layer_scores && props.layer_scores.demographic_momentum)
+        );
+        if (score === null) {
+            return null;
+        }
+
+        return {
+            fips_code: fipsCode,
+            county_name: props.county_name || countyNameFromFips(fipsCode),
+            center,
+            score
+        };
+    }).filter(Boolean);
+
+    if (counties.length < 2) {
+        return { type: 'FeatureCollection', features: [] };
+    }
+
+    counties.sort((a, b) => b.score - a.score);
+    const hubs = counties.slice(0, Math.max(4, Math.min(9, Math.ceil(counties.length * 0.35))));
+    const lines = [];
+    const seen = new Set();
+
+    hubs.forEach((hub) => {
+        const candidates = counties
+            .filter((county) => county.fips_code !== hub.fips_code && county.score <= hub.score - 0.01)
+            .map((county) => ({
+                county,
+                distanceKm: distanceBetweenPointsKm(county.center, hub.center)
+            }))
+            .filter((entry) => entry.distanceKm <= 225)
+            .sort((a, b) => a.distanceKm - b.distanceKm)
+            .slice(0, 2);
+
+        candidates.forEach(({ county, distanceKm }) => {
+            const key = `${county.fips_code}->${hub.fips_code}`;
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+
+            const scoreGap = Math.max(0, hub.score - county.score);
+            const normalizedGap = Math.max(0, Math.min(1, scoreGap / 0.45));
+            const distanceBias = Math.max(0, 1 - (distanceKm / 225));
+            const strength = Math.max(0.2, Math.min(1, normalizedGap * 0.72 + distanceBias * 0.28));
+
+            lines.push({
+                type: 'Feature',
+                geometry: {
+                    type: 'LineString',
+                    coordinates: [county.center, hub.center]
+                },
+                properties: {
+                    from_fips: county.fips_code,
+                    to_fips: hub.fips_code,
+                    from_name: county.county_name,
+                    to_name: hub.county_name,
+                    flow_strength: strength
+                }
+            });
+        });
+    });
+
+    if (lines.length < 5 && counties.length >= 3) {
+        for (let index = 0; index < Math.min(6, counties.length - 1); index += 1) {
+            const fromCounty = counties[index + 1];
+            const toCounty = counties[index];
+            const key = `${fromCounty.fips_code}->${toCounty.fips_code}`;
+            if (seen.has(key)) {
+                continue;
+            }
+            seen.add(key);
+            lines.push({
+                type: 'Feature',
+                geometry: {
+                    type: 'LineString',
+                    coordinates: [fromCounty.center, toCounty.center]
+                },
+                properties: {
+                    from_fips: fromCounty.fips_code,
+                    to_fips: toCounty.fips_code,
+                    from_name: fromCounty.county_name,
+                    to_name: toCounty.county_name,
+                    flow_strength: 0.34
+                }
+            });
+        }
+    }
+
+    return {
+        type: 'FeatureCollection',
+        features: lines
+    };
+}
+
+function startDemographicFlowAnimation() {
+    if (!appState.map || !appState.map.getLayer('demographic-flow-line')) {
+        return;
+    }
+
+    stopDemographicFlowAnimation();
+
+    let step = 0;
+    appState.flowAnimationTimer = window.setInterval(() => {
+        if (!appState.map || !appState.map.getLayer('demographic-flow-line')) {
+            stopDemographicFlowAnimation();
+            return;
+        }
+
+        appState.map.setPaintProperty(
+            'demographic-flow-line',
+            'line-dasharray',
+            FLOW_DASH_SEQUENCE[step]
+        );
+        step = (step + 1) % FLOW_DASH_SEQUENCE.length;
+    }, 170);
+}
+
+function stopDemographicFlowAnimation() {
+    if (appState.flowAnimationTimer) {
+        window.clearInterval(appState.flowAnimationTimer);
+        appState.flowAnimationTimer = null;
+    }
+}
+
+function distanceBetweenPointsKm(pointA, pointB) {
+    if (
+        !Array.isArray(pointA) ||
+        !Array.isArray(pointB) ||
+        pointA.length < 2 ||
+        pointB.length < 2
+    ) {
+        return Number.POSITIVE_INFINITY;
+    }
+
+    const toRadians = (value) => (value * Math.PI) / 180;
+    const earthRadiusKm = 6371;
+
+    const dLat = toRadians(pointB[1] - pointA[1]);
+    const dLon = toRadians(pointB[0] - pointA[0]);
+    const lat1 = toRadians(pointA[1]);
+    const lat2 = toRadians(pointB[1]);
+
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return earthRadiusKm * c;
 }
 
 function offsetLngLatByKm(center, offsetXKm, offsetYKm) {
@@ -1613,6 +1896,30 @@ function applyLegendFilter() {
             ? ['case', activeCondition, 0.24, 0.08]
             : 0.2;
         appState.map.setPaintProperty('county-illustration-glow', 'circle-opacity', glowOpacity);
+    }
+
+    if (appState.map.getLayer('demographic-flow-line')) {
+        appState.map.setPaintProperty(
+            'demographic-flow-line',
+            'line-opacity',
+            activeKey ? 0.46 : 0.88
+        );
+    }
+
+    if (appState.map.getLayer('demographic-flow-line-glow')) {
+        appState.map.setPaintProperty(
+            'demographic-flow-line-glow',
+            'line-opacity',
+            activeKey ? 0.18 : 0.36
+        );
+    }
+
+    if (appState.map.getLayer('demographic-flow-arrows')) {
+        appState.map.setPaintProperty(
+            'demographic-flow-arrows',
+            'text-opacity',
+            activeKey ? 0.4 : 0.86
+        );
     }
 }
 
@@ -2428,7 +2735,7 @@ function renderComparePanel(options = {}) {
                     <span class="signal-chip" style="background:${anchorCounty.bivariate_color}; color:#15334f;">${escapeHtml(anchorCounty.bivariate_label)}</span>
                     <button class="exit-compare-btn" type="button" id="exit-compare-btn">Exit Compare</button>
                 </div>
-                <div class="empty-state">Baseline selected: <strong>${escapeHtml(anchorCounty.county_name)}</strong>. Add one or more comparator counties from the top-right search.</div>
+                <div class="empty-state">Baseline selected: <strong>${escapeHtml(anchorCounty.county_name)}</strong>. Add one or more comparator counties from Compare Builder.</div>
                 ${options.error ? `<div class="error-inline">${escapeHtml(options.error)}</div>` : ''}
             </div>
         `;
@@ -2478,13 +2785,10 @@ function renderComparePanel(options = {}) {
             return `<td class="${diffClass(diff)}">${value === null ? 'N/A' : value.toFixed(3)}${diffText}</td>`;
         }).join('');
 
-        const spread = calculateSpread(values);
-
         return `
             <tr>
                 <td>${renderLayerLabelWithIcon(key, label)}</td>
                 ${comparatorCells}
-                <td>${spread === null ? 'N/A' : spread.toFixed(3)}</td>
             </tr>
         `;
     }).join('');
@@ -2569,7 +2873,6 @@ function renderComparePanel(options = {}) {
                         <tr>
                             <th>Layer</th>
                             ${tableHead}
-                            <th>Spread</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -2716,8 +3019,28 @@ function bindExitCompareButton() {
     });
 }
 
+function setCompareBuilderExpanded(expanded) {
+    if (!dom.compareBuilderCard || !dom.compareBuilderToggle || !dom.compareBuilder) {
+        return;
+    }
+
+    const isExpanded = Boolean(expanded);
+    appState.compare.builderExpanded = isExpanded;
+
+    dom.compareBuilderCard.classList.toggle('expanded', isExpanded);
+    dom.compareBuilderCard.classList.toggle('collapsed', !isExpanded);
+    dom.compareBuilderToggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+    dom.compareBuilder.hidden = !isExpanded;
+
+    if (!isExpanded) {
+        closeCompareAutocomplete();
+    }
+}
+
 function setupCompareBuilder() {
     if (
+        !dom.compareBuilderCard ||
+        !dom.compareBuilderToggle ||
         !dom.compareBuilder ||
         !dom.compareBuilderMeta ||
         !dom.compareSearchInput ||
@@ -2727,6 +3050,12 @@ function setupCompareBuilder() {
     ) {
         return;
     }
+
+    setCompareBuilderExpanded(appState.compare.builderExpanded);
+
+    dom.compareBuilderToggle.addEventListener('click', () => {
+        setCompareBuilderExpanded(!appState.compare.builderExpanded);
+    });
 
     dom.compareSearchInput.addEventListener('focus', () => {
         updateCompareAutocomplete(dom.compareSearchInput.value);
@@ -3052,6 +3381,7 @@ async function addCountyToCompareByFips(fipsCode) {
             upsertCompareCounty(appState.selectedCounty);
         }
     }
+    setCompareBuilderExpanded(true);
 
     await handleCountySelection(fipsCode, feature.properties);
 }
@@ -3288,14 +3618,6 @@ function getCompareCountyColor(county, index = 0) {
     return COMPARE_SERIES_COLORS[index % COMPARE_SERIES_COLORS.length];
 }
 
-function calculateSpread(values) {
-    const numeric = values.filter((value) => value !== null && Number.isFinite(value));
-    if (!numeric.length) {
-        return null;
-    }
-    return Math.max(...numeric) - Math.min(...numeric);
-}
-
 function setupPanelControls() {
     dom.compareBtn.addEventListener('click', async () => {
         if (appState.chat.open) {
@@ -3310,6 +3632,7 @@ function setupPanelControls() {
             appState.compare.active = true;
             appState.compare.counties = [];
             upsertCompareCounty(appState.selectedCounty);
+            setCompareBuilderExpanded(true);
             renderCompareBuilder();
             renderComparePanel();
             return;
@@ -3399,6 +3722,7 @@ function clearSelection() {
     appState.compare.counties = [];
     appState.compare.splitView = false;
     destroySplitMaps();
+    setCompareBuilderExpanded(false);
     closeCompareAutocomplete();
     if (dom.compareSearchInput) {
         dom.compareSearchInput.value = '';
@@ -3435,6 +3759,7 @@ function disableCompareMode() {
     appState.compare.counties = [];
     appState.compare.splitView = false;
     destroySplitMaps();
+    setCompareBuilderExpanded(false);
     closeCompareAutocomplete();
     if (dom.compareSearchInput) {
         dom.compareSearchInput.value = '';
