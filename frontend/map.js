@@ -147,11 +147,35 @@ const LAYER_ICONS = {
 const LAYER_EXPLANATIONS = {
     employment_gravity: 'Employment Gravity: Access to jobs and local labor-market pull for residents.',
     mobility_optionality: 'Mobility Optionality: How many practical transportation choices families have.',
-    school_trajectory: 'School Trajectory: Direction and consistency of school system outcomes over time.',
+    school_trajectory: 'School Trajectory: Measures education trends supporting family futures.',
     housing_elasticity: 'Housing Elasticity: How responsive local housing supply is to demand and price pressure.',
     demographic_momentum: 'Demographic Momentum: Population and household trends that support long-term growth.',
     risk_drag: 'Risk Drag: Factors slowing growth like high costs or structural barriers.'
 };
+
+const MAP_ILLUSTRATION_DEFINITIONS = [
+    {
+        key: 'momentum',
+        iconId: 'atlas-icon-momentum-up',
+        tooltip: 'Positive Momentum: Signals point to improving county trajectory.',
+        accent: '#5d9a3b',
+        offsetKm: [-4.8, 3.8]
+    },
+    {
+        key: 'viability',
+        iconId: 'atlas-icon-family',
+        tooltip: 'Family Viability: Composite conditions support stronger family outcomes.',
+        accent: '#2f6fb4',
+        offsetKm: [4.8, 3.8]
+    },
+    {
+        key: 'housing',
+        iconId: 'atlas-icon-house',
+        tooltip: 'Housing Elasticity: Local housing conditions appear comparatively resilient.',
+        accent: '#bb7f2a',
+        offsetKm: [0, -5.2]
+    }
+];
 
 const TOUR_STEPS = [
     {
@@ -168,7 +192,7 @@ const TOUR_STEPS = [
     },
     {
         title: 'Read Layer Stories',
-        body: 'Open the Scores tab and hover a layer icon to see plain-language explanations for each signal.',
+        body: 'Open the Layers tab and hover a layer icon to see plain-language explanations for each signal.',
         target: '#atlas-panel',
         preferMapView: true
     },
@@ -1065,11 +1089,226 @@ async function loadCountyLayer() {
             }
         });
 
+        await addCountyIllustrationLayers();
         wireCountyInteractions();
         applyLegendFilter();
     } catch (error) {
         renderTransientPanelError(getReadableFetchError(error, '/layers/counties/latest'));
     }
+}
+
+async function addCountyIllustrationLayers() {
+    if (!appState.map || !appState.geojson || !Array.isArray(appState.geojson.features)) {
+        return;
+    }
+
+    await ensureIllustrationIcons();
+
+    const data = buildCountyIllustrationGeoJson(appState.geojson.features);
+    const sourceId = 'county-illustrations';
+
+    if (appState.map.getSource(sourceId)) {
+        appState.map.getSource(sourceId).setData(data);
+        return;
+    }
+
+    appState.map.addSource(sourceId, {
+        type: 'geojson',
+        data
+    });
+
+    appState.map.addLayer({
+        id: 'county-illustration-glow',
+        type: 'circle',
+        source: sourceId,
+        paint: {
+            'circle-color': ['get', 'accent'],
+            'circle-radius': 10,
+            'circle-opacity': 0.2,
+            'circle-blur': 0.35
+        }
+    });
+
+    appState.map.addLayer({
+        id: 'county-illustration-hover',
+        type: 'circle',
+        source: sourceId,
+        filter: ['==', 'feature_id', ''],
+        paint: {
+            'circle-color': '#ffffff',
+            'circle-radius': 12,
+            'circle-opacity': 0.28,
+            'circle-stroke-color': 'rgba(30, 71, 109, 0.65)',
+            'circle-stroke-width': 1.4
+        }
+    });
+
+    appState.map.addLayer({
+        id: 'county-illustration-symbols',
+        type: 'symbol',
+        source: sourceId,
+        layout: {
+            'icon-image': ['get', 'icon_id'],
+            'icon-size': 1,
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true
+        },
+        paint: {
+            'icon-opacity': 0.94
+        }
+    });
+
+    wireIllustrationInteractions();
+}
+
+async function ensureIllustrationIcons() {
+    const iconSvgs = {
+        'atlas-icon-momentum-up': `
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+                <g fill="none" stroke="none">
+                    <circle cx="32" cy="32" r="30" fill="rgba(96,160,73,0.24)"/>
+                    <path d="M32 13l14 14h-8v21h-12V27h-8z" fill="#5d9a3b"/>
+                </g>
+            </svg>
+        `,
+        'atlas-icon-family': `
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+                <g fill="none" stroke="none">
+                    <circle cx="32" cy="32" r="30" fill="rgba(47,111,180,0.22)"/>
+                    <circle cx="25" cy="24" r="6" fill="#2f6fb4"/>
+                    <circle cx="38" cy="22" r="5" fill="#2f6fb4"/>
+                    <path d="M16 45c0-6 4-11 9-11s9 5 9 11H16z" fill="#2f6fb4"/>
+                    <path d="M31 45c0-5 3.2-9.2 7.2-9.2S45.4 40 45.4 45H31z" fill="#2f6fb4"/>
+                </g>
+            </svg>
+        `,
+        'atlas-icon-house': `
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+                <g fill="none" stroke="none">
+                    <circle cx="32" cy="32" r="30" fill="rgba(187,127,42,0.22)"/>
+                    <path d="M15 31L32 17l17 14v16a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="#bb7f2a"/>
+                    <rect x="28" y="36" width="8" height="14" rx="1.2" fill="#f6f0e7"/>
+                </g>
+            </svg>
+        `
+    };
+
+    const loads = Object.entries(iconSvgs).map(([id, svg]) => loadSvgIcon(id, svg));
+    await Promise.all(loads);
+}
+
+function loadSvgIcon(iconId, svgMarkup) {
+    return new Promise((resolve, reject) => {
+        if (!appState.map) {
+            resolve();
+            return;
+        }
+
+        if (appState.map.hasImage(iconId)) {
+            resolve();
+            return;
+        }
+
+        const image = new Image(64, 64);
+        image.onload = () => {
+            if (!appState.map || appState.map.hasImage(iconId)) {
+                resolve();
+                return;
+            }
+            appState.map.addImage(iconId, image, { pixelRatio: 2 });
+            resolve();
+        };
+        image.onerror = () => {
+            reject(new Error(`Could not load map icon: ${iconId}`));
+        };
+        image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgMarkup)}`;
+    });
+}
+
+function buildCountyIllustrationGeoJson(features) {
+    const housingValues = features
+        .map((feature) => safeNumber(
+            feature.properties &&
+            (feature.properties.housing_elasticity_score ||
+            (feature.properties.layer_scores && feature.properties.layer_scores.housing_elasticity))
+        ))
+        .filter((value) => value !== null)
+        .sort((a, b) => a - b);
+
+    const housingThreshold = housingValues.length
+        ? housingValues[Math.floor(housingValues.length * 0.6)]
+        : 0.5;
+
+    const iconFeatures = [];
+
+    features.forEach((feature) => {
+        const props = feature.properties || {};
+        const fips = props.fips_code || props.geoid;
+        if (!fips) {
+            return;
+        }
+
+        const countyName = props.county_name || countyNameFromFips(fips);
+        const center = appState.countyCentersByFips.get(fips) || getFeatureCenter(feature);
+        if (!center) {
+            return;
+        }
+
+        const trajectory = normalizeTrajectory(props.directional_class || props.directional_status);
+        const score = safeNumber(props.composite_score);
+        const housingScore = safeNumber(
+            props.housing_elasticity_score ||
+            (props.layer_scores && props.layer_scores.housing_elasticity)
+        );
+        const strength = props.signal_strength || deriveStrength(score);
+
+        const shouldAdd = {
+            momentum: trajectory === 'improving',
+            viability: score !== null && score >= appState.strengthThresholds.q2,
+            housing: housingScore !== null && housingScore >= housingThreshold
+        };
+
+        MAP_ILLUSTRATION_DEFINITIONS.forEach((definition) => {
+            if (!shouldAdd[definition.key]) {
+                return;
+            }
+
+            const [lng, lat] = offsetLngLatByKm(center, definition.offsetKm[0], definition.offsetKm[1]);
+            iconFeatures.push({
+                type: 'Feature',
+                geometry: {
+                    type: 'Point',
+                    coordinates: [lng, lat]
+                },
+                properties: {
+                    feature_id: `${fips}-${definition.key}`,
+                    fips_code: fips,
+                    county_name: countyName,
+                    icon_key: definition.key,
+                    icon_id: definition.iconId,
+                    tooltip: definition.tooltip,
+                    accent: definition.accent,
+                    directional_class: trajectory,
+                    composite_score: score,
+                    signal_strength: strength
+                }
+            });
+        });
+    });
+
+    return {
+        type: 'FeatureCollection',
+        features: iconFeatures
+    };
+}
+
+function offsetLngLatByKm(center, offsetXKm, offsetYKm) {
+    const [lng, lat] = center;
+    const latRad = (lat * Math.PI) / 180;
+    const latDelta = offsetYKm / 110.574;
+    const denom = Math.max(0.1, 111.320 * Math.cos(latRad));
+    const lngDelta = offsetXKm / denom;
+    return [lng + lngDelta, lat + latDelta];
 }
 
 async function loadCountyGeoJson() {
@@ -1341,6 +1580,20 @@ function applyLegendFilter() {
 
     appState.map.setPaintProperty('counties-fill', 'fill-opacity', fillOpacity);
     appState.map.setPaintProperty('counties-border', 'line-opacity', borderOpacity);
+
+    if (appState.map.getLayer('county-illustration-symbols')) {
+        const iconOpacity = activeKey
+            ? ['case', activeCondition, 0.96, 0.2]
+            : 0.94;
+        appState.map.setPaintProperty('county-illustration-symbols', 'icon-opacity', iconOpacity);
+    }
+
+    if (appState.map.getLayer('county-illustration-glow')) {
+        const glowOpacity = activeKey
+            ? ['case', activeCondition, 0.24, 0.08]
+            : 0.2;
+        appState.map.setPaintProperty('county-illustration-glow', 'circle-opacity', glowOpacity);
+    }
 }
 
 function countCountiesForLegendKey(key) {
@@ -1382,6 +1635,13 @@ function wireCountyInteractions() {
     });
 
     appState.map.on('mousemove', 'counties-fill', (event) => {
+        if (appState.map.getLayer('county-illustration-symbols')) {
+            const iconHits = appState.map.queryRenderedFeatures(event.point, { layers: ['county-illustration-symbols'] });
+            if (iconHits.length) {
+                return;
+            }
+        }
+
         const feature = event.features && event.features[0];
         if (!feature || !feature.properties) {
             appState.popup.remove();
@@ -1433,6 +1693,22 @@ function wireCountyInteractions() {
         await handleCountySelection(feature.properties.fips_code, feature.properties);
     });
 
+    appState.map.on('click', 'county-illustration-symbols', async (event) => {
+        const feature = event.features && event.features[0];
+        if (!feature || !feature.properties) {
+            return;
+        }
+        const fipsCode = feature.properties.fips_code;
+        if (!fipsCode) {
+            return;
+        }
+        const countyFeature = appState.countyFeaturesByFips.get(fipsCode);
+        if (!countyFeature || !countyFeature.properties) {
+            return;
+        }
+        await handleCountySelection(fipsCode, countyFeature.properties);
+    });
+
     appState.map.on('click', (event) => {
         const features = appState.map.queryRenderedFeatures(event.point, { layers: ['counties-fill'] });
         if (features.length === 0) {
@@ -1440,6 +1716,63 @@ function wireCountyInteractions() {
             appState.map.setFilter('counties-hover-fill', ['==', 'fips_code', '']);
             appState.hoverPopupFips = null;
             appState.popup.remove();
+        }
+    });
+}
+
+function wireIllustrationInteractions() {
+    if (!appState.map) {
+        return;
+    }
+
+    appState.map.on('mouseenter', 'county-illustration-symbols', () => {
+        appState.map.getCanvas().style.cursor = 'pointer';
+    });
+
+    appState.map.on('mouseleave', 'county-illustration-symbols', () => {
+        appState.map.getCanvas().style.cursor = '';
+        if (appState.map.getLayer('county-illustration-hover')) {
+            appState.map.setFilter('county-illustration-hover', ['==', 'feature_id', '']);
+        }
+        appState.hoverPopupFips = null;
+        appState.popup.remove();
+    });
+
+    appState.map.on('mousemove', 'county-illustration-symbols', (event) => {
+        const feature = event.features && event.features[0];
+        if (!feature || !feature.properties) {
+            return;
+        }
+
+        const props = feature.properties;
+        const featureId = props.feature_id || '';
+        const countyName = props.county_name || 'County';
+        const tooltip = props.tooltip || 'County signal indicator';
+        const html = `
+            <div style="font-family:'Work Sans',sans-serif; color:#1c3a56; min-width:190px;">
+                <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${escapeHtml(countyName)}</div>
+                <div style="font-size:12px; color:#48637c;">${escapeHtml(tooltip)}</div>
+            </div>
+        `;
+
+        if (appState.map.getLayer('county-illustration-hover')) {
+            appState.map.setFilter('county-illustration-hover', ['==', 'feature_id', featureId]);
+        }
+
+        if (!appState.popup.isOpen()) {
+            appState.popup
+                .setLngLat(event.lngLat)
+                .setHTML(html)
+                .addTo(appState.map);
+            appState.hoverPopupFips = `icon:${featureId}`;
+            return;
+        }
+
+        appState.popup.setLngLat(event.lngLat);
+        const popupKey = `icon:${featureId}`;
+        if (appState.hoverPopupFips !== popupKey) {
+            appState.popup.setHTML(html);
+            appState.hoverPopupFips = popupKey;
         }
     });
 }
@@ -1731,6 +2064,13 @@ function renderStoryPanel(county, options = {}) {
     const synthesisTextColor = synthesisGrouping === 'stable_constrained' ? '#3f3f3f' : '#ffffff';
     const confidenceLabel = CONFIDENCE_LABELS[county.confidence_class] || 'Unknown';
     const trajectorySummary = TRAJECTORY_SUMMARY_LABELS[county.directional_class] || 'Unknown';
+    const projection = buildProjectionModel(county);
+    const rankedLayers = LAYER_ROWS
+        .map(([key, label]) => ({ key, label, value: safeNumber(county.layer_scores && county.layer_scores[key]) }))
+        .filter((item) => item.value !== null)
+        .sort((a, b) => b.value - a.value);
+    const strongestLayer = rankedLayers[0] || null;
+    const weakestLayer = rankedLayers[rankedLayers.length - 1] || null;
 
     const layerScoresHtml = LAYER_ROWS.map(([key, label]) => {
         const value = safeNumber(county.layer_scores && county.layer_scores[key]);
@@ -1745,6 +2085,7 @@ function renderStoryPanel(county, options = {}) {
     }).join('');
 
     dom.panel.dataset.state = 'story';
+    dom.panel.classList.add('detailed');
     dom.panel.classList.remove('chat-mode');
     dom.panelTitle.textContent = county.county_name || 'County Story';
     dom.panelSubtitle.textContent = `Data Year: ${county.data_year || 'N/A'}`;
@@ -1757,6 +2098,13 @@ function renderStoryPanel(county, options = {}) {
         ? '<span style="font-size:12px;color:#607286;">Refreshing county story...</span>'
         : '';
 
+    const strongestLayerHtml = strongestLayer
+        ? `${renderLayerLabelWithIcon(strongestLayer.key, strongestLayer.label)} <strong>${strongestLayer.value.toFixed(3)}</strong>`
+        : 'Not enough data to determine strongest layer.';
+    const weakestLayerHtml = weakestLayer
+        ? `${renderLayerLabelWithIcon(weakestLayer.key, weakestLayer.label)} <strong>${weakestLayer.value.toFixed(3)}</strong>`
+        : 'Not enough data to determine pressure layer.';
+
     dom.panelBody.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
             <span class="signal-chip" style="background:${county.bivariate_color}; color:#15334f;">${escapeHtml(county.bivariate_label)}</span>
@@ -1767,11 +2115,12 @@ function renderStoryPanel(county, options = {}) {
         ${errorHtml}
 
         <div class="story-tabs" role="tablist" aria-label="County panel tabs">
-            <button class="story-tab active" type="button" data-story-tab="summary" aria-selected="true">Summary</button>
-            <button class="story-tab" type="button" data-story-tab="scores" aria-selected="false">Scores</button>
+            <button class="story-tab active" type="button" data-story-tab="overview" aria-selected="true">Overview</button>
+            <button class="story-tab" type="button" data-story-tab="layers" aria-selected="false">Layers</button>
+            <button class="story-tab" type="button" data-story-tab="projections" aria-selected="false">Projections</button>
         </div>
 
-        <div class="story-tab-content active" data-story-tab-content="summary">
+        <div class="story-tab-content active" data-story-tab-content="overview">
             <section class="story-section">
                 <h4>County Growth Synthesis</h4>
                 <span class="synthesis-badge" style="background:${synthesisColor}; color:${synthesisTextColor};">${escapeHtml(synthesisLabel)}</span>
@@ -1806,8 +2155,11 @@ function renderStoryPanel(county, options = {}) {
             </section>
 
             <section class="story-section">
-                <h4>Analysis Detail</h4>
-                <p>Detailed strengths, weaknesses, and trend notes are shown in the floating analysis panel on the map.</p>
+                <h4>Top Signal Drivers</h4>
+                <div class="story-list" style="margin-top:4px;">
+                    <div class="story-list-item">Strongest Layer: ${strongestLayerHtml}</div>
+                    <div class="story-list-item">Pressure Layer: ${weakestLayerHtml}</div>
+                </div>
             </section>
 
             <section class="story-section">
@@ -1818,11 +2170,38 @@ function renderStoryPanel(county, options = {}) {
             </section>
         </div>
 
-        <div class="story-tab-content" data-story-tab-content="scores">
+        <div class="story-tab-content" data-story-tab-content="layers">
             <section class="story-section">
                 <h4>Layer Scores</h4>
+                <p>Hover an icon for plain-language layer meaning, then click a row for full factor breakdown.</p>
                 <div class="story-score-grid">
                     ${layerScoresHtml}
+                </div>
+            </section>
+        </div>
+
+        <div class="story-tab-content" data-story-tab-content="projections">
+            <section class="story-section">
+                <h4>Indicative Outlook</h4>
+                <p>${escapeHtml(projection.summary)}</p>
+                <div class="projection-grid">
+                    <article class="projection-card">
+                        <div class="projection-horizon">12-Month Signal</div>
+                        <div class="projection-score">${projection.oneYearScore}</div>
+                        <div class="projection-status ${projection.oneYearClass}">${escapeHtml(projection.oneYearLabel)}</div>
+                    </article>
+                    <article class="projection-card">
+                        <div class="projection-horizon">36-Month Signal</div>
+                        <div class="projection-score">${projection.threeYearScore}</div>
+                        <div class="projection-status ${projection.threeYearClass}">${escapeHtml(projection.threeYearLabel)}</div>
+                    </article>
+                </div>
+            </section>
+
+            <section class="story-section">
+                <h4>Projection Notes</h4>
+                <div class="story-list">
+                    ${projection.notes.map((note) => `<div class="story-list-item">• ${escapeHtml(note)}</div>`).join('')}
                 </div>
             </section>
         </div>
@@ -2003,6 +2382,7 @@ function getTrendText(direction, slope) {
 function renderComparePanel(options = {}) {
     appState.panelState = 'compare';
     dom.panel.dataset.state = 'compare';
+    dom.panel.classList.add('detailed');
     dom.panel.classList.remove('chat-mode');
     hideFloatingAnalysisPanel();
 
@@ -2119,6 +2499,78 @@ function describeTrajectory(trajectory, score) {
     }
 
     return `${trajectoryText} Overall Signal Score is ${score.toFixed(3)}, suggesting elevated pressure on family viability and housing resilience.`;
+}
+
+function buildProjectionModel(county) {
+    const score = safeNumber(county.composite_score);
+    const baseline = score === null ? 0.36 : score;
+    const direction = normalizeTrajectory(county.directional_class);
+    const confidence = normalizeConfidenceClass(county.confidence_class);
+    const confidenceMultiplier = {
+        strong: 1,
+        conditional: 0.72,
+        fragile: 0.46,
+        unknown: 0.58
+    }[confidence] || 0.58;
+
+    const directionalVelocity = {
+        improving: 0.045,
+        stable: 0.008,
+        at_risk: -0.038
+    }[direction] || 0;
+
+    const oneYear = clamp01(baseline + directionalVelocity * confidenceMultiplier);
+    const threeYear = clamp01(baseline + directionalVelocity * 3 * confidenceMultiplier);
+    const oneYearClass = classifyProjectionSignal(oneYear);
+    const threeYearClass = classifyProjectionSignal(threeYear);
+
+    const summary = direction === 'improving'
+        ? 'Current direction suggests upside if strengths persist and pressure points remain controlled.'
+        : direction === 'at_risk'
+            ? 'Signals suggest continued headwinds unless risk factors are reduced through targeted interventions.'
+            : 'Signals suggest relative stability with incremental movement unless major conditions shift.';
+
+    const confidenceLabel = CONFIDENCE_LABELS[confidence] || 'Unknown';
+    const notes = [
+        `Confidence level: ${confidenceLabel}.`,
+        'Projection is directional and based on current layer signal pattern, not a deterministic forecast.',
+        'Use with local context, policy updates, and recent on-the-ground changes before making decisions.'
+    ];
+
+    return {
+        summary,
+        oneYearScore: oneYear.toFixed(3),
+        threeYearScore: threeYear.toFixed(3),
+        oneYearClass,
+        threeYearClass,
+        oneYearLabel: projectionLabelFromClass(oneYearClass),
+        threeYearLabel: projectionLabelFromClass(threeYearClass),
+        notes
+    };
+}
+
+function classifyProjectionSignal(score) {
+    if (score >= 0.5) {
+        return 'improving';
+    }
+    if (score >= 0.32) {
+        return 'stable';
+    }
+    return 'at_risk';
+}
+
+function projectionLabelFromClass(signalClass) {
+    if (signalClass === 'improving') {
+        return 'Growth-supportive signal range';
+    }
+    if (signalClass === 'stable') {
+        return 'Balanced but mixed signal range';
+    }
+    return 'Constrained signal range';
+}
+
+function clamp01(value) {
+    return Math.max(0, Math.min(1, value));
 }
 
 function bindQuickPromptButtons() {
@@ -2253,6 +2705,7 @@ function clearSelection() {
 
     setCompareButtonState(false, false);
     dom.panel.dataset.state = 'empty';
+    dom.panel.classList.remove('detailed');
     dom.panel.classList.remove('chat-mode');
     dom.panelTitle.textContent = 'County Selected';
     dom.panelSubtitle.textContent = 'No county selected yet';
