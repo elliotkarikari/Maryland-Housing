@@ -5,7 +5,6 @@ const MAPBOX_TOKEN =
     (window.ATLAS_RUNTIME_CONFIG && window.ATLAS_RUNTIME_CONFIG.MAPBOX_ACCESS_TOKEN) ||
     '';
 const MAPBOX_STYLE_URL = 'mapbox://styles/elkari23/cmlapbzzr005001s57o3mdhxk';
-const PAGE_THEME_STORAGE_KEY = 'atlas.page.theme';
 
 const API_BASE_OVERRIDE =
     typeof window.ATLAS_API_BASE_URL === 'string'
@@ -70,6 +69,36 @@ const STRENGTH_LABELS = {
     high: 'High Strength',
     mid: 'Mid Strength',
     low: 'Low Strength'
+};
+
+const SYNTHESIS_LABELS = {
+    emerging_tailwinds: 'Emerging Tailwinds',
+    conditional_growth: 'Conditional Growth',
+    stable_constrained: 'Stable but Constrained',
+    at_risk_headwinds: 'At Risk / Headwinds',
+    high_uncertainty: 'High Uncertainty'
+};
+
+const SYNTHESIS_COLORS = {
+    emerging_tailwinds: '#5b8c38',
+    conditional_growth: '#78a94e',
+    stable_constrained: '#edd252',
+    at_risk_headwinds: '#e66336',
+    high_uncertainty: '#8d97a2'
+};
+
+const CONFIDENCE_LABELS = {
+    strong: 'Strong',
+    conditional: 'Conditional',
+    fragile: 'Fragile',
+    unknown: 'Unknown'
+};
+
+const TRAJECTORY_SUMMARY_LABELS = {
+    improving: 'Improving',
+    stable: 'Stable',
+    at_risk: 'At Risk',
+    unknown: 'Unknown'
 };
 
 const BIVARIATE_COLORS = {
@@ -141,7 +170,9 @@ const appState = {
     },
     pendingCountyRequest: null,
     moveOpacityTimer: null,
-    apiBaseUrl: null
+    clickOpacityTimer: null,
+    apiBaseUrl: null,
+    tableViewOpen: false
 };
 
 const dom = {
@@ -161,14 +192,25 @@ const dom = {
     askInput: document.getElementById('ask-atlas-inline-input'),
     askSend: document.getElementById('ask-atlas-send'),
     askClose: document.getElementById('ask-atlas-close'),
-    mapThemeToggle: document.getElementById('map-theme-toggle'),
+    mapTableToggle: document.getElementById('map-table-toggle'),
+    countyTablePanel: document.getElementById('county-table-panel'),
+    countyTableClose: document.getElementById('county-table-close'),
+    countyTableBody: document.getElementById('county-table-body'),
+    countyTableSubtitle: document.getElementById('county-table-subtitle'),
     analysisFloat: document.getElementById('analysis-float'),
     analysisFloatHandle: document.getElementById('analysis-float-handle'),
     analysisFloatClose: document.getElementById('analysis-float-close'),
     analysisFloatTitle: document.getElementById('analysis-float-title'),
     analysisFloatContent: document.getElementById('analysis-float-content'),
+    layerModal: document.getElementById('layer-modal'),
+    layerModalContent: document.getElementById('layer-modal-content'),
+    layerModalClose: document.getElementById('layer-modal-close'),
+    layerModalTitle: document.getElementById('layer-modal-title'),
+    layerModalDesc: document.getElementById('layer-modal-desc'),
+    layerModalBody: document.getElementById('layer-modal-body'),
     mapControlsHost: document.getElementById('map-controls'),
-    resizeHandle: document.getElementById('sidebar-resize-handle')
+    resizeHandle: document.getElementById('sidebar-resize-handle'),
+    mapStage: document.querySelector('.map-stage')
 };
 
 if (!MAPBOX_TOKEN) {
@@ -182,9 +224,10 @@ function initialize() {
     setupLegendSwatches();
     setupLegendInteractions();
     setupPanelControls();
+    setupCountyTableView();
     setupAskAtlasPill();
-    setupPageThemeToggle();
     setupAnalysisFloat();
+    setupLayerModal();
     setupSidebarResize();
     setupGlobalEvents();
     setCompareButtonState(false, false);
@@ -213,46 +256,6 @@ function updatePitch() {
     if (Math.abs(appState.map.getPitch() - pitch) > 0.5) {
         appState.map.setPitch(pitch);
     }
-}
-
-function applyPageTheme(theme, options = {}) {
-    const normalized = theme === 'dark' ? 'dark' : 'light';
-    document.body.classList.toggle('theme-dark', normalized === 'dark');
-
-    if (dom.mapThemeToggle) {
-        dom.mapThemeToggle.textContent = normalized === 'dark' ? 'Light Mode' : 'Dark Mode';
-        dom.mapThemeToggle.setAttribute('aria-pressed', normalized === 'dark' ? 'true' : 'false');
-    }
-
-    if (options.persist !== false) {
-        try {
-            window.localStorage.setItem(PAGE_THEME_STORAGE_KEY, normalized);
-        } catch (_error) {
-            // Ignore localStorage write errors.
-        }
-    }
-}
-
-function setupPageThemeToggle() {
-    if (!dom.mapThemeToggle) {
-        return;
-    }
-
-    let preferred = 'light';
-    try {
-        const stored = window.localStorage.getItem(PAGE_THEME_STORAGE_KEY);
-        if (stored === 'dark' || stored === 'light') {
-            preferred = stored;
-        }
-    } catch (_error) {
-        // Ignore localStorage read errors.
-    }
-
-    applyPageTheme(preferred, { persist: false });
-    dom.mapThemeToggle.addEventListener('click', () => {
-        const next = document.body.classList.contains('theme-dark') ? 'light' : 'dark';
-        applyPageTheme(next);
-    });
 }
 
 function setupAnalysisFloat() {
@@ -353,9 +356,12 @@ function setupAnalysisFloat() {
 }
 
 function hideFloatingAnalysisPanel() {
-    if (dom.analysisFloat) {
-        dom.analysisFloat.classList.add('hidden');
+    appState.chat.open = false;
+    if (!dom.analysisFloat) {
+        return;
     }
+    dom.analysisFloat.classList.remove('chat-mode');
+    dom.analysisFloat.classList.add('hidden');
 }
 
 function renderAnalysisList(items, emptyText, iconPrefix = '') {
@@ -372,6 +378,11 @@ function showFloatingAnalysisPanel(county) {
     if (!dom.analysisFloat || !dom.analysisFloatContent || !dom.analysisFloatTitle) {
         return;
     }
+
+    if (appState.chat.open) {
+        appState.chat.open = false;
+    }
+    dom.analysisFloat.classList.remove('chat-mode');
 
     const strengths = Array.isArray(county.primary_strengths) ? county.primary_strengths : [];
     const weaknesses = Array.isArray(county.primary_weaknesses) ? county.primary_weaknesses : [];
@@ -397,6 +408,213 @@ function showFloatingAnalysisPanel(county) {
     }
 
     dom.analysisFloat.classList.remove('hidden');
+}
+
+function setupLayerModal() {
+    if (!dom.layerModal || !dom.layerModalClose || !dom.layerModalContent) {
+        return;
+    }
+
+    dom.layerModal.addEventListener('pointerdown', (event) => {
+        if (event.target === dom.layerModal) {
+            closeLayerModal();
+        }
+    });
+
+    dom.layerModalClose.addEventListener('click', () => {
+        closeLayerModal();
+    });
+}
+
+function closeLayerModal() {
+    if (!dom.layerModal) {
+        return;
+    }
+    dom.layerModal.classList.remove('open');
+    dom.layerModal.setAttribute('aria-hidden', 'true');
+}
+
+function setupCountyTableView() {
+    if (!dom.mapTableToggle || !dom.countyTablePanel || !dom.countyTableBody) {
+        return;
+    }
+
+    dom.mapTableToggle.addEventListener('click', () => {
+        if (appState.tableViewOpen) {
+            closeCountyTableView();
+            return;
+        }
+        openCountyTableView();
+    });
+
+    if (dom.countyTableClose) {
+        dom.countyTableClose.addEventListener('click', () => {
+            closeCountyTableView();
+        });
+    }
+
+    dom.countyTableBody.addEventListener('click', async (event) => {
+        const row = event.target.closest('tr[data-fips-code]');
+        if (!row) {
+            return;
+        }
+
+        const fipsCode = row.dataset.fipsCode;
+        if (!fipsCode) {
+            return;
+        }
+
+        const feature = appState.countyFeaturesByFips.get(fipsCode);
+        if (!feature || !feature.properties) {
+            return;
+        }
+
+        await handleCountySelection(fipsCode, feature.properties);
+        closeCountyTableView();
+    });
+
+    dom.countyTableBody.addEventListener('keydown', async (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+            return;
+        }
+        const row = event.target.closest('tr[data-fips-code]');
+        if (!row) {
+            return;
+        }
+        event.preventDefault();
+        const fipsCode = row.dataset.fipsCode;
+        if (!fipsCode) {
+            return;
+        }
+        const feature = appState.countyFeaturesByFips.get(fipsCode);
+        if (!feature || !feature.properties) {
+            return;
+        }
+        await handleCountySelection(fipsCode, feature.properties);
+        closeCountyTableView();
+    });
+
+    renderCountyTableView();
+}
+
+function openCountyTableView() {
+    appState.tableViewOpen = true;
+    if (dom.countyTablePanel) {
+        dom.countyTablePanel.classList.add('open');
+        dom.countyTablePanel.setAttribute('aria-hidden', 'false');
+    }
+    if (dom.mapStage) {
+        dom.mapStage.classList.add('table-view-active');
+    }
+    if (dom.mapTableToggle) {
+        dom.mapTableToggle.textContent = 'Map View';
+        dom.mapTableToggle.setAttribute('aria-expanded', 'true');
+    }
+    renderCountyTableView();
+}
+
+function closeCountyTableView() {
+    appState.tableViewOpen = false;
+    if (dom.countyTablePanel) {
+        dom.countyTablePanel.classList.remove('open');
+        dom.countyTablePanel.setAttribute('aria-hidden', 'true');
+    }
+    if (dom.mapStage) {
+        dom.mapStage.classList.remove('table-view-active');
+    }
+    if (dom.mapTableToggle) {
+        dom.mapTableToggle.textContent = 'Table View';
+        dom.mapTableToggle.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function renderCountyTableView() {
+    if (!dom.countyTableBody || !dom.countyTableSubtitle) {
+        return;
+    }
+
+    const features = appState.geojson && Array.isArray(appState.geojson.features)
+        ? appState.geojson.features
+        : [];
+
+    if (!features.length) {
+        dom.countyTableSubtitle.textContent = 'No county data loaded';
+        dom.countyTableBody.innerHTML = '<div class="county-table-empty">County data is loading.</div>';
+        return;
+    }
+
+    const counties = features
+        .map((feature) => toCountyStateModel(feature.properties || {}))
+        .filter((county) => county.fips_code && county.county_name)
+        .sort((a, b) => {
+            const scoreA = safeNumber(a.composite_score);
+            const scoreB = safeNumber(b.composite_score);
+            if (scoreA === null && scoreB === null) {
+                return a.county_name.localeCompare(b.county_name);
+            }
+            if (scoreA === null) {
+                return 1;
+            }
+            if (scoreB === null) {
+                return -1;
+            }
+            if (scoreA !== scoreB) {
+                return scoreB - scoreA;
+            }
+            return a.county_name.localeCompare(b.county_name);
+        });
+
+    const filteredCounties = appState.legendFilter
+        ? counties.filter((county) => county.bivariate_key === appState.legendFilter.key)
+        : counties;
+
+    dom.countyTableSubtitle.textContent = appState.legendFilter
+        ? `${filteredCounties.length} of ${counties.length} counties ranked best to worst`
+        : `${counties.length} counties ranked best to worst`;
+
+    if (!filteredCounties.length) {
+        dom.countyTableBody.innerHTML = '<div class="county-table-empty">No counties match the current legend filter.</div>';
+        return;
+    }
+
+    const selectedFips = appState.selectedCounty ? appState.selectedCounty.fips_code : '';
+    const rows = filteredCounties.map((county, index) => {
+        const score = safeNumber(county.composite_score);
+        const scoreText = score === null ? 'N/A' : score.toFixed(3);
+        const trajectoryLabel = TRAJECTORY_SUMMARY_LABELS[county.directional_class] || 'Unknown';
+        const selectedClass = county.fips_code === selectedFips ? ' selected' : '';
+        const trajectoryClass = TRAJECTORY_ORDER.includes(county.directional_class)
+            ? county.directional_class
+            : 'stable';
+        const scoreFill = score === null ? 0 : Math.max(0, Math.min(100, Math.round(score * 100)));
+        const scoreColor = county.bivariate_color || getBivariateColor(county.bivariate_key || '', 'ui');
+        return `
+            <tr class="trajectory-${escapeHtml(trajectoryClass)}${selectedClass}" data-fips-code="${escapeHtml(county.fips_code)}" tabindex="0" role="button" aria-label="Select ${escapeHtml(county.county_name)} county">
+                <td class="rank-cell">#${index + 1}</td>
+                <td class="county-cell">${escapeHtml(county.county_name)}</td>
+                <td class="trajectory-cell">
+                    <span class="trajectory-pill trajectory-${escapeHtml(trajectoryClass)}">${escapeHtml(trajectoryLabel)}</span>
+                </td>
+                <td class="score-cell">
+                    <span class="score-chip" style="--score-fill:${scoreFill}%; --score-color:${escapeHtml(scoreColor)};">${scoreText}</span>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    dom.countyTableBody.innerHTML = `
+        <table class="county-table-grid" aria-label="Maryland county table">
+            <thead>
+                <tr>
+                    <th>Rank</th>
+                    <th>County</th>
+                    <th>Trajectory</th>
+                    <th>Score</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
 }
 
 function initializeMap() {
@@ -474,8 +692,21 @@ function wireMapMotionTransparency() {
         }, 130);
     };
 
+    const flashLegendTransparency = (duration = 180) => {
+        if (appState.clickOpacityTimer) {
+            clearTimeout(appState.clickOpacityTimer);
+        }
+        document.body.classList.add('map-clicking');
+        appState.clickOpacityTimer = window.setTimeout(() => {
+            document.body.classList.remove('map-clicking');
+        }, duration);
+    };
+
     appState.map.on('movestart', () => setMoving(true));
     appState.map.on('moveend', () => setMoving(false));
+    appState.map.on('mousedown', () => flashLegendTransparency(220));
+    appState.map.on('touchstart', () => flashLegendTransparency(240));
+    appState.map.on('click', () => flashLegendTransparency(190));
 }
 
 async function loadCountyLayer() {
@@ -483,6 +714,7 @@ async function loadCountyLayer() {
         const geojson = await loadCountyGeoJson();
         appState.geojson = decorateGeoJson(geojson);
         populateCountySearch();
+        renderCountyTableView();
 
         appState.map.addSource('counties', {
             type: 'geojson',
@@ -641,8 +873,18 @@ function decorateGeoJson(geojson) {
         const score = safeNumber(props.composite_score);
         const strength = deriveStrength(score);
         const key = `${trajectory}|${strength}`;
+        const synthesisGrouping = normalizeSynthesisGrouping(
+            props.synthesis_grouping || props.final_grouping,
+            trajectory,
+            score
+        );
+        const confidenceClass = normalizeConfidenceClass(
+            props.confidence_class || props.confidence_level
+        );
 
         props.directional_class = trajectory;
+        props.synthesis_grouping = synthesisGrouping;
+        props.confidence_class = confidenceClass;
         props.signal_strength = strength;
         props.bivariate_key = key;
         props.bivariate_label = buildSignalLabel(trajectory, strength);
@@ -783,6 +1025,8 @@ function applyLegendFilter() {
         dom.legendFilterNote.textContent = 'No filter active.';
     }
 
+    renderCountyTableView();
+
     if (!appState.map || !appState.map.getLayer('counties-fill')) {
         return;
     }
@@ -891,6 +1135,10 @@ async function handleCountySelection(fipsCode, featureProps) {
         return;
     }
 
+    if (appState.chat.open) {
+        exitChatMode();
+    }
+
     const optimistic = toCountyStateModel(featureProps);
     if (optimistic.county_name) {
         dom.searchInput.value = optimistic.county_name;
@@ -912,6 +1160,7 @@ async function handleCountySelection(fipsCode, featureProps) {
         appState.selectedCounty = optimistic;
         renderStoryPanel(optimistic, { loading: true });
     }
+    renderCountyTableView();
 
     const detailResult = await fetchCountyDetail(fipsCode);
     if (!detailResult.ok) {
@@ -940,6 +1189,7 @@ async function handleCountySelection(fipsCode, featureProps) {
         appState.selectedCounty = merged;
         renderStoryPanel(merged);
     }
+    renderCountyTableView();
 }
 
 function getSidebarPaddingRight() {
@@ -991,12 +1241,20 @@ function toCountyStateModel(raw) {
     const strength = raw.signal_strength || deriveStrength(score);
     const key = raw.bivariate_key || `${trajectory}|${strength}`;
     const layerScores = raw.layer_scores || {};
+    const synthesisGrouping = normalizeSynthesisGrouping(
+        raw.synthesis_grouping || raw.final_grouping,
+        trajectory,
+        score
+    );
+    const confidenceClass = normalizeConfidenceClass(raw.confidence_class || raw.confidence_level);
 
     return {
         fips_code: fips,
         county_name: raw.county_name || countyNameFromFips(fips),
         data_year: raw.data_year || null,
         directional_class: trajectory,
+        confidence_class: confidenceClass,
+        synthesis_grouping: synthesisGrouping,
         composite_score: score,
         signal_strength: strength,
         bivariate_key: key,
@@ -1025,10 +1283,18 @@ function mergeCountyData(base, detail) {
 
     const score = safeNumber(merged.composite_score);
     const trajectory = normalizeTrajectory(merged.directional_class);
+    const confidenceClass = normalizeConfidenceClass(merged.confidence_class || merged.confidence_level);
+    const synthesisGrouping = normalizeSynthesisGrouping(
+        merged.synthesis_grouping || merged.final_grouping,
+        trajectory,
+        score
+    );
     const strength = deriveStrength(score);
     const key = `${trajectory}|${strength}`;
 
     merged.directional_class = trajectory;
+    merged.confidence_class = confidenceClass;
+    merged.synthesis_grouping = synthesisGrouping;
     merged.composite_score = score;
     merged.signal_strength = strength;
     merged.bivariate_key = key;
@@ -1044,6 +1310,44 @@ function mergeCountyData(base, detail) {
 function normalizeTrajectory(value) {
     const normalized = (value || 'stable').toLowerCase();
     return TRAJECTORY_ORDER.includes(normalized) ? normalized : 'stable';
+}
+
+function normalizeConfidenceClass(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'strong' || normalized === 'conditional' || normalized === 'fragile') {
+        return normalized;
+    }
+    return 'unknown';
+}
+
+function normalizeSynthesisGrouping(value, trajectory = 'stable', score = null) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized && SYNTHESIS_LABELS[normalized]) {
+        return normalized;
+    }
+
+    if (score === null) {
+        return 'high_uncertainty';
+    }
+    if (trajectory === 'improving') {
+        return score >= 0.5 ? 'emerging_tailwinds' : 'conditional_growth';
+    }
+    if (trajectory === 'at_risk') {
+        return 'at_risk_headwinds';
+    }
+    return 'stable_constrained';
+}
+
+function getSynthesisDescription(grouping) {
+    const descriptions = {
+        emerging_tailwinds: 'Multiple reinforcing tailwinds are present across available real-data layers. Persistence is likely if current conditions hold.',
+        conditional_growth: 'Upside exists, but delivery risk and local context drive outcomes. Signals are mixed across layers.',
+        stable_constrained: 'Systems are steady with balanced pressures, but upside is limited under current conditions.',
+        at_risk_headwinds: 'Structural headwinds dominate, creating challenges for growth capacity and resilience.',
+        high_uncertainty: 'Coverage is thin or inconsistent across layers; interpret cautiously and prioritize local validation.'
+    };
+
+    return descriptions[grouping] || 'No synthesis description available.';
 }
 
 async function fetchCountyDetail(fipsCode) {
@@ -1103,6 +1407,28 @@ function renderStoryPanel(county, options = {}) {
     const strengths = county.primary_strengths.length
         ? county.primary_strengths.slice(0, 2)
         : ['No named reinforcing strengths available yet.'];
+    const synthesisGrouping = normalizeSynthesisGrouping(
+        county.synthesis_grouping,
+        county.directional_class,
+        score
+    );
+    const synthesisLabel = SYNTHESIS_LABELS[synthesisGrouping] || 'Unclassified';
+    const synthesisColor = SYNTHESIS_COLORS[synthesisGrouping] || '#8d97a2';
+    const synthesisTextColor = synthesisGrouping === 'stable_constrained' ? '#3f3f3f' : '#ffffff';
+    const confidenceLabel = CONFIDENCE_LABELS[county.confidence_class] || 'Unknown';
+    const trajectorySummary = TRAJECTORY_SUMMARY_LABELS[county.directional_class] || 'Unknown';
+
+    const layerScoresHtml = LAYER_ROWS.map(([key, label]) => {
+        const value = safeNumber(county.layer_scores && county.layer_scores[key]);
+        const displayValue = value === null ? 'No Data' : value.toFixed(3);
+        return `
+            <button class="story-score-item story-score-clickable" type="button" data-layer-key="${escapeHtml(key)}" title="Click for factor breakdown">
+                <div class="story-score-label">${escapeHtml(label)}</div>
+                <div class="story-score-value ${value === null ? 'null' : ''}">${displayValue}</div>
+                ${renderStoryScoreBar(value)}
+            </button>
+        `;
+    }).join('');
 
     dom.panel.dataset.state = 'story';
     dom.panel.classList.remove('chat-mode');
@@ -1126,29 +1452,237 @@ function renderStoryPanel(county, options = {}) {
         ${loadingLabel}
         ${errorHtml}
 
-        <section class="story-section">
-            <h4>Trajectory Snapshot</h4>
-            <p>${escapeHtml(trendText)}</p>
-            <div class="story-list" style="margin-top:8px;">
-                ${strengths.map((item) => `<div class="story-list-item">• ${escapeHtml(item)}</div>`).join('')}
-            </div>
-        </section>
+        <div class="story-tabs" role="tablist" aria-label="County panel tabs">
+            <button class="story-tab active" type="button" data-story-tab="summary" aria-selected="true">Summary</button>
+            <button class="story-tab" type="button" data-story-tab="scores" aria-selected="false">Scores</button>
+        </div>
 
-        <section class="story-section">
-            <h4>Analysis Detail</h4>
-            <p>Full strengths, weaknesses, and trend notes are shown in the floating analysis panel on the map.</p>
-        </section>
+        <div class="story-tab-content active" data-story-tab-content="summary">
+            <section class="story-section">
+                <h4>County Growth Synthesis</h4>
+                <span class="synthesis-badge" style="background:${synthesisColor}; color:${synthesisTextColor};">${escapeHtml(synthesisLabel)}</span>
+                <p style="margin-top:8px;">${escapeHtml(getSynthesisDescription(synthesisGrouping))}</p>
+            </section>
 
-        <section class="story-section">
-            <h4>Ask Atlas</h4>
-            <div class="quick-prompts">
-                ${QUICK_PROMPTS.map((prompt, idx) => `<button class="quick-prompt" type="button" data-quick-prompt="${idx}">${escapeHtml(shortPromptLabel(prompt))}</button>`).join('')}
-            </div>
-        </section>
+            <section class="story-section">
+                <h4>Classification Details</h4>
+                <div class="story-score-grid">
+                    <div class="story-score-item">
+                        <div class="story-score-label">Directional Trajectory</div>
+                        <div class="story-score-value">${escapeHtml(trajectorySummary)}</div>
+                    </div>
+                    <div class="story-score-item">
+                        <div class="story-score-label">Evidence Confidence</div>
+                        <div class="story-score-value">${escapeHtml(confidenceLabel)}</div>
+                    </div>
+                    <div class="story-score-item">
+                        <div class="story-score-label">Composite Score</div>
+                        <div class="story-score-value">${scoreText}</div>
+                        ${renderStoryScoreBar(score)}
+                    </div>
+                </div>
+            </section>
+
+            <section class="story-section">
+                <h4>Trajectory Snapshot</h4>
+                <p>${escapeHtml(trendText)}</p>
+                <div class="story-list" style="margin-top:8px;">
+                    ${strengths.map((item) => `<div class="story-list-item">• ${escapeHtml(item)}</div>`).join('')}
+                </div>
+            </section>
+
+            <section class="story-section">
+                <h4>Analysis Detail</h4>
+                <p>Detailed strengths, weaknesses, and trend notes are shown in the floating analysis panel on the map.</p>
+            </section>
+
+            <section class="story-section">
+                <h4>Ask Atlas</h4>
+                <div class="quick-prompts">
+                    ${QUICK_PROMPTS.map((prompt, idx) => `<button class="quick-prompt" type="button" data-quick-prompt="${idx}">${escapeHtml(shortPromptLabel(prompt))}</button>`).join('')}
+                </div>
+            </section>
+        </div>
+
+        <div class="story-tab-content" data-story-tab-content="scores">
+            <section class="story-section">
+                <h4>Layer Scores</h4>
+                <div class="story-score-grid">
+                    ${layerScoresHtml}
+                </div>
+            </section>
+        </div>
     `;
 
+    bindStoryTabButtons();
+    bindLayerScoreButtons(county);
     bindQuickPromptButtons();
     showFloatingAnalysisPanel(county);
+}
+
+function bindStoryTabButtons() {
+    const tabs = Array.from(dom.panelBody.querySelectorAll('[data-story-tab]'));
+    const panels = Array.from(dom.panelBody.querySelectorAll('[data-story-tab-content]'));
+    if (!tabs.length || !panels.length) {
+        return;
+    }
+
+    const activateTab = (tabId) => {
+        tabs.forEach((tab) => {
+            const isActive = tab.dataset.storyTab === tabId;
+            tab.classList.toggle('active', isActive);
+            tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+
+        panels.forEach((panel) => {
+            const isActive = panel.dataset.storyTabContent === tabId;
+            panel.classList.toggle('active', isActive);
+        });
+    };
+
+    tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+            activateTab(tab.dataset.storyTab);
+        });
+    });
+}
+
+function bindLayerScoreButtons(county) {
+    const layerButtons = Array.from(dom.panelBody.querySelectorAll('[data-layer-key]'));
+    if (!layerButtons.length || !county || !county.fips_code) {
+        return;
+    }
+
+    layerButtons.forEach((button) => {
+        button.addEventListener('click', async () => {
+            const layerKey = button.dataset.layerKey;
+            if (!layerKey) {
+                return;
+            }
+            await loadLayerDetail(county.fips_code, layerKey);
+        });
+    });
+}
+
+async function loadLayerDetail(fipsCode, layerKey) {
+    if (!fipsCode || !layerKey) {
+        return;
+    }
+    if (!dom.layerModal || !dom.layerModalBody || !dom.layerModalTitle || !dom.layerModalDesc) {
+        return;
+    }
+
+    dom.layerModalTitle.textContent = 'Loading layer detail...';
+    dom.layerModalDesc.textContent = '';
+    dom.layerModalBody.innerHTML = '<div class="empty-state">Fetching factor-level breakdown...</div>';
+    dom.layerModal.classList.add('open');
+    dom.layerModal.setAttribute('aria-hidden', 'false');
+
+    try {
+        const { response } = await fetchApi(`/areas/${fipsCode}/layers/${layerKey}`);
+        if (!response.ok) {
+            let detail = `HTTP ${response.status}`;
+            try {
+                const errorPayload = await response.json();
+                detail = errorPayload.detail || detail;
+            } catch (_error) {
+                // Keep default detail.
+            }
+            throw new Error(detail);
+        }
+
+        const data = await response.json();
+        const trendIcon = getTrendIcon(data.momentum_direction);
+        const trendText = getTrendText(data.momentum_direction, data.momentum_slope);
+        const factors = Array.isArray(data.factors) ? data.factors : [];
+
+        const factorHtml = factors.length
+            ? factors.map((factor) => {
+                const weightText = Number.isFinite(factor.weight) ? `Weight: ${(factor.weight * 100).toFixed(0)}%` : '';
+                return `
+                    <div class="factor-item">
+                        <div class="factor-info">
+                            <div class="factor-name">${escapeHtml(factor.name || 'Factor')}</div>
+                            <div class="factor-desc">${escapeHtml(factor.description || '')}</div>
+                        </div>
+                        <div class="factor-value">
+                            <div class="factor-value-main">${escapeHtml(formatFactorValue(factor))}</div>
+                            <div class="factor-weight">${escapeHtml(weightText)}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('')
+            : '<div class="empty-state">No factor-level details available for this layer.</div>';
+
+        const scoreText = Number.isFinite(data.score) ? Number(data.score).toFixed(3) : 'N/A';
+
+        dom.layerModalTitle.textContent = data.display_name || formatLayerName(layerKey);
+        dom.layerModalDesc.textContent = data.description || '';
+        dom.layerModalBody.innerHTML = `
+            <div class="layer-score-main">
+                <div>
+                    <div style="font-size:11px; color:#5a6f84; margin-bottom:4px;">Overall Score</div>
+                    <div class="layer-score-value">${scoreText}</div>
+                </div>
+                <div class="layer-score-trend">
+                    <span class="layer-trend-icon ${escapeHtml(data.momentum_direction || '')}">${escapeHtml(trendIcon)}</span>
+                    <span>${escapeHtml(trendText)}</span>
+                </div>
+            </div>
+
+            <div class="layer-formula"><strong>Formula:</strong> ${escapeHtml(data.formula || 'N/A')}</div>
+
+            <div class="layer-factors">
+                <h4>Contributing Factors</h4>
+                ${factorHtml}
+            </div>
+
+            <div class="layer-metadata">
+                <span>Version: ${escapeHtml(data.version || 'N/A')}</span>
+                <span>Data Year: ${escapeHtml(String(data.data_year || 'N/A'))}</span>
+                <span>Coverage: ${escapeHtml(String(data.coverage_years || 'N/A'))} years</span>
+            </div>
+        `;
+    } catch (error) {
+        dom.layerModalTitle.textContent = formatLayerName(layerKey);
+        dom.layerModalDesc.textContent = 'Unable to load detailed layer breakdown.';
+        dom.layerModalBody.innerHTML = `<div class="error-inline">${escapeHtml(getReadableFetchError(error, `/areas/${fipsCode}/layers/${layerKey}`))}</div>`;
+    }
+}
+
+function formatFactorValue(factor) {
+    if (factor && factor.formatted_value) {
+        return factor.formatted_value;
+    }
+    const value = factor ? safeNumber(factor.value) : null;
+    return value === null ? 'N/A' : value.toFixed(3);
+}
+
+function getTrendIcon(direction) {
+    if (direction === 'up') {
+        return '↑';
+    }
+    if (direction === 'down') {
+        return '↓';
+    }
+    if (direction === 'stable') {
+        return '→';
+    }
+    return '•';
+}
+
+function getTrendText(direction, slope) {
+    const slopeNum = safeNumber(slope);
+    if (direction === 'up') {
+        return slopeNum === null ? 'Improving trend' : `Improving trend (${(slopeNum * 100).toFixed(1)}%)`;
+    }
+    if (direction === 'down') {
+        return slopeNum === null ? 'Declining trend' : `Declining trend (${(slopeNum * 100).toFixed(1)}%)`;
+    }
+    if (direction === 'stable') {
+        return 'Stable trend';
+    }
+    return 'Trend unavailable';
 }
 
 function renderComparePanel(options = {}) {
@@ -1286,6 +1820,16 @@ function bindQuickPromptButtons() {
     });
 }
 
+function renderStoryScoreBar(value) {
+    if (value === null || !Number.isFinite(value)) {
+        return '';
+    }
+
+    const bounded = Math.max(0, Math.min(1, value));
+    const width = `${(bounded * 100).toFixed(0)}%`;
+    return `<div class="story-score-bar" aria-hidden="true"><div class="story-score-bar-fill" style="width:${width};"></div></div>`;
+}
+
 function bindExitCompareButton() {
     const button = document.getElementById('exit-compare-btn');
     if (!button) {
@@ -1403,6 +1947,7 @@ function clearSelection() {
         </div>
     `;
     hideFloatingAnalysisPanel();
+    renderCountyTableView();
 }
 
 function highlightSelectedCounty(fipsCode) {
@@ -1481,14 +2026,18 @@ async function submitAtlasQuestion(question) {
 }
 
 function enterChatMode() {
-    if (!appState.chat.open) {
-        appState.chat.returnMode = appState.panelState;
-    }
-
     appState.chat.open = true;
-    appState.panelState = 'chat';
-    dom.panel.dataset.state = 'chat';
-    dom.panel.classList.add('chat-mode');
+    if (dom.analysisFloat) {
+        dom.analysisFloat.classList.remove('hidden');
+        dom.analysisFloat.classList.add('chat-mode');
+        if (!window.matchMedia('(max-width: 1040px)').matches && dom.analysisFloat.dataset.positioned !== 'true') {
+            dom.analysisFloat.style.left = '12px';
+            dom.analysisFloat.style.top = '12px';
+            dom.analysisFloat.style.right = 'auto';
+            dom.analysisFloat.style.bottom = 'auto';
+            dom.analysisFloat.dataset.positioned = 'true';
+        }
+    }
     renderChatPanel();
 }
 
@@ -1498,26 +2047,24 @@ function exitChatMode() {
     }
 
     appState.chat.open = false;
-    dom.panel.classList.remove('chat-mode');
-
-    if (appState.compare.active) {
-        renderComparePanel();
-        return;
+    if (dom.analysisFloat) {
+        dom.analysisFloat.classList.remove('chat-mode');
     }
 
     if (appState.selectedCounty) {
-        renderStoryPanel(appState.selectedCounty);
-        return;
+        showFloatingAnalysisPanel(appState.selectedCounty);
+    } else {
+        hideFloatingAnalysisPanel();
     }
-
-    clearSelection();
 }
 
 function renderChatPanel() {
-    dom.panelTitle.textContent = 'Ask Atlas';
-    dom.panelSubtitle.textContent = appState.selectedCounty
-        ? `Context: ${appState.selectedCounty.county_name}`
-        : 'General Atlas mode';
+    if (!dom.analysisFloat || !dom.analysisFloatTitle || !dom.analysisFloatContent) {
+        return;
+    }
+
+    dom.analysisFloatTitle.textContent = 'Ask Atlas';
+    dom.analysisFloat.classList.add('chat-mode');
 
     const contextText = appState.selectedCounty
         ? `${appState.selectedCounty.county_name} context enabled`
@@ -1530,7 +2077,7 @@ function renderChatPanel() {
         }).join('')
         : '<div class="chat-msg assistant">Hi, I\'m Atlas. Ask me anything about Maryland county signals and what they mean for families and housing.</div>';
 
-    dom.panelBody.innerHTML = `
+    dom.analysisFloatContent.innerHTML = `
         <div class="chat-context-chip">${escapeHtml(contextText)}</div>
         <div id="chat-messages" class="chat-messages">${messagesHtml}</div>
         <form id="chat-form" class="chat-panel-input" autocomplete="off">
@@ -1652,6 +2199,8 @@ function buildChatContext() {
         county_name: county.county_name,
         data_year: county.data_year,
         directional_class: county.directional_class,
+        confidence_class: county.confidence_class,
+        synthesis_grouping: county.synthesis_grouping,
         composite_score: county.composite_score,
         signal_label: county.bivariate_label,
         layer_scores: county.layer_scores,
@@ -1667,8 +2216,18 @@ function setupGlobalEvents() {
             return;
         }
 
+        if (dom.layerModal && dom.layerModal.classList.contains('open')) {
+            closeLayerModal();
+            return;
+        }
+
         if (dom.askShell.classList.contains('expanded')) {
             closeAskInput();
+            return;
+        }
+
+        if (appState.tableViewOpen) {
+            closeCountyTableView();
             return;
         }
 
@@ -1695,14 +2254,23 @@ function setupGlobalEvents() {
             }
         }
 
+        if (appState.tableViewOpen) {
+            const insideTable =
+                (dom.countyTablePanel && dom.countyTablePanel.contains(target)) ||
+                (dom.mapTableToggle && dom.mapTableToggle.contains(target));
+            if (!insideTable) {
+                closeCountyTableView();
+            }
+        }
+
         if (!appState.chat.open) {
             return;
         }
 
-        const insideSidebar = document.getElementById('atlas-sidebar').contains(target);
+        const insideAnalysis = dom.analysisFloat && dom.analysisFloat.contains(target);
         const insideAsk = dom.askShell.contains(target) || dom.askPill.contains(target);
 
-        if (!insideSidebar && !insideAsk) {
+        if (!insideAnalysis && !insideAsk) {
             exitChatMode();
         }
     });
@@ -1816,6 +2384,11 @@ function shortPromptLabel(prompt) {
         return prompt;
     }
     return `${prompt.slice(0, 41)}...`;
+}
+
+function formatLayerName(layerKey) {
+    const match = LAYER_ROWS.find(([key]) => key === layerKey);
+    return match ? match[1] : layerKey;
 }
 
 function countyNameFromFips(fipsCode) {

@@ -143,11 +143,11 @@
             display: none !important;
         }
 
-        .map-theme-toggle {
+        .map-table-toggle {
             position: absolute;
             top: 12px;
             right: 12px;
-            z-index: 29;
+            z-index: 35;
             border: 1px solid rgba(18, 40, 58, 0.22);
             background: rgba(252, 254, 255, 0.94);
             border-radius: 999px;
@@ -162,9 +162,231 @@
             transition: transform 150ms ease, box-shadow 180ms ease, opacity 180ms ease;
         }
 
-        .map-theme-toggle:hover {
+        .map-table-toggle:hover {
             transform: translateY(-1px);
             box-shadow: 0 8px 17px rgba(11, 27, 40, 0.22);
+        }
+
+        .map-stage.table-view-active .map-table-toggle {
+            border-color: rgba(245, 252, 255, 0.34);
+            background: rgba(32, 90, 142, 0.9);
+            color: #f0f8ff;
+            right: 52px;
+        }
+
+        .county-table-panel {
+            position: absolute;
+            inset: 0;
+            z-index: 32;
+            border-radius: 0;
+            border: none;
+            background:
+                radial-gradient(circle at 14% 16%, rgba(255, 240, 204, 0.75), transparent 42%),
+                radial-gradient(circle at 88% 8%, rgba(216, 236, 252, 0.72), transparent 39%),
+                linear-gradient(180deg, rgba(244, 250, 255, 0.98) 0%, rgba(237, 245, 252, 0.98) 100%);
+            box-shadow: none;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 160ms ease;
+        }
+
+        .county-table-panel.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .county-table-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 13px 15px 11px;
+            background: linear-gradient(135deg, rgba(20, 68, 111, 0.9), rgba(53, 120, 178, 0.9));
+            border-bottom: 1px solid rgba(16, 37, 56, 0.12);
+        }
+
+        .county-table-title-wrap {
+            min-width: 0;
+        }
+
+        .county-table-title {
+            font-family: 'Sora', sans-serif;
+            font-size: 15px;
+            font-weight: 800;
+            color: #f7fbff;
+            line-height: 1.2;
+        }
+
+        .county-table-subtitle {
+            margin-top: 3px;
+            font-size: 12px;
+            color: rgba(234, 244, 253, 0.92);
+        }
+
+        .county-table-close {
+            width: 28px;
+            height: 28px;
+            border: 1px solid rgba(245, 252, 255, 0.34);
+            border-radius: 9px;
+            background: rgba(244, 251, 255, 0.16);
+            color: #f0f8ff;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .county-table-close:hover {
+            background: rgba(244, 251, 255, 0.26);
+        }
+
+        .county-table-scroll {
+            overflow: auto;
+            max-height: 100%;
+            padding: 9px 10px 10px;
+        }
+
+        table.county-table-grid {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 12px;
+            color: #274460;
+        }
+
+        .county-table-grid thead th {
+            position: sticky;
+            top: -9px;
+            z-index: 1;
+            text-align: left;
+            padding: 9px 10px;
+            background: rgba(247, 251, 255, 0.95);
+            border-bottom: 1px solid rgba(18, 40, 58, 0.12);
+            color: #3f5b75;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-weight: 700;
+        }
+
+        .county-table-grid tbody td {
+            padding: 10px 10px;
+            vertical-align: middle;
+            background: rgba(255, 255, 255, 0.86);
+            border-bottom: 1px solid rgba(18, 40, 58, 0.1);
+        }
+
+        .county-table-grid tbody tr {
+            cursor: pointer;
+            transition: transform 140ms ease, box-shadow 140ms ease;
+        }
+
+        .county-table-grid tbody tr:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 14px rgba(31, 66, 96, 0.12);
+        }
+
+        .county-table-grid tbody tr.selected {
+            box-shadow: 0 0 0 2px rgba(47, 111, 180, 0.4);
+        }
+
+        .county-table-grid tbody tr.trajectory-improving td:first-child {
+            box-shadow: inset 4px 0 0 #6fa63d;
+        }
+
+        .county-table-grid tbody tr.trajectory-stable td:first-child {
+            box-shadow: inset 4px 0 0 #d0a83d;
+        }
+
+        .county-table-grid tbody tr.trajectory-at_risk td:first-child {
+            box-shadow: inset 4px 0 0 #df6a3d;
+        }
+
+        .county-table-grid td.rank-cell {
+            width: 54px;
+            text-align: right;
+            font-family: 'Sora', sans-serif;
+            color: #46627a;
+            font-weight: 700;
+            font-size: 11px;
+        }
+
+        .county-table-grid td.county-cell {
+            font-size: 13px;
+            font-weight: 700;
+            color: #193550;
+        }
+
+        .county-table-grid td.score-cell {
+            text-align: right;
+        }
+
+        .score-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            min-width: 74px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(18, 40, 58, 0.18);
+            font-family: 'Sora', sans-serif;
+            font-size: 12px;
+            font-weight: 700;
+            color: #12314a;
+            background:
+                linear-gradient(90deg, var(--score-color) 0%, var(--score-color) var(--score-fill), rgba(255, 255, 255, 0.9) var(--score-fill), rgba(255, 255, 255, 0.9) 100%);
+        }
+
+        .county-table-grid td.trajectory-cell {
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .trajectory-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 5px 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(18, 40, 58, 0.18);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            color: #17314a;
+            min-width: 88px;
+        }
+
+        .trajectory-pill.trajectory-improving {
+            background: rgba(138, 186, 90, 0.42);
+        }
+
+        .trajectory-pill.trajectory-stable {
+            background: rgba(238, 205, 108, 0.44);
+        }
+
+        .trajectory-pill.trajectory-at_risk {
+            background: rgba(240, 133, 97, 0.42);
+        }
+
+        .county-table-empty {
+            padding: 12px;
+            font-size: 13px;
+            color: #2f5070;
+            border: 1px dashed rgba(26, 63, 95, 0.22);
+            border-radius: 12px;
+            background: rgba(247, 251, 255, 0.8);
+        }
+
+        .map-stage.table-view-active #map,
+        .map-stage.table-view-active #map-controls,
+        .map-stage.table-view-active #analysis-float,
+        .map-stage.table-view-active #ask-atlas-pill,
+        .map-stage.table-view-active #ask-atlas-input-shell,
+        .map-stage.table-view-active #legend-bivariate {
+            opacity: 0;
+            pointer-events: none;
         }
 
         .analysis-float {
@@ -272,53 +494,53 @@
             left: 18px;
             bottom: 22px;
             z-index: 26;
-            width: 236px;
+            width: 268px;
             background: var(--surface-strong);
             border: 1px solid var(--stroke);
             border-radius: 13px;
-            padding: 8px 9px 8px;
+            padding: 10px 11px 9px;
             box-shadow: var(--shadow-soft);
             transition: var(--panel-transition);
         }
 
         .legend-bivariate h3 {
             font-family: 'Sora', sans-serif;
-            font-size: 15px;
+            font-size: 16px;
             line-height: 1.12;
-            margin-bottom: 2px;
+            margin-bottom: 3px;
             text-align: center;
         }
 
         .legend-subtitle {
-            font-size: 9px;
+            font-size: 10px;
             color: var(--text-muted);
-            margin-bottom: 1px;
+            margin-bottom: 2px;
             line-height: 1.2;
             letter-spacing: 0.01em;
             text-align: center;
         }
 
         .legend-subhint {
-            font-size: 9px;
+            font-size: 10px;
             color: #607286;
-            margin-bottom: 6px;
+            margin-bottom: 7px;
             line-height: 1.2;
             text-align: center;
         }
 
         .legend-matrix {
             display: grid;
-            grid-template-columns: 13px auto 24px;
+            grid-template-columns: 15px auto 26px;
             align-items: center;
             justify-content: center;
-            gap: 6px;
+            gap: 7px;
             margin: 1px 0 0;
         }
 
         .legend-y-title {
             transform: rotate(-90deg);
             transform-origin: center;
-            font-size: 9px;
+            font-size: 10px;
             letter-spacing: 0.05em;
             color: #5c6f83;
             font-weight: 600;
@@ -328,11 +550,11 @@
 
         .legend-row-labels {
             display: grid;
-            grid-template-rows: repeat(3, 24px);
-            gap: 3px;
+            grid-template-rows: repeat(3, 27px);
+            gap: 4px;
             justify-items: start;
             align-items: center;
-            font-size: 9px;
+            font-size: 10px;
             font-weight: 600;
             color: #5a7086;
         }
@@ -345,16 +567,16 @@
 
         .legend-grid {
             display: grid;
-            grid-template-columns: repeat(3, 24px);
-            grid-template-rows: repeat(3, 24px);
-            gap: 3px;
+            grid-template-columns: repeat(3, 27px);
+            grid-template-rows: repeat(3, 27px);
+            gap: 4px;
             justify-content: center;
         }
 
         .legend-cell {
-            width: 24px;
-            height: 24px;
-            border-radius: 5px;
+            width: 27px;
+            height: 27px;
+            border-radius: 6px;
             border: 1px solid rgba(16, 37, 56, 0.14);
             cursor: pointer;
             transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, opacity 140ms ease;
@@ -379,18 +601,18 @@
         }
 
         .legend-axis-x {
-            width: 78px;
+            width: 89px;
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 3px;
-            font-size: 9px;
+            gap: 4px;
+            font-size: 10px;
             color: #5f7286;
             font-weight: 600;
             text-align: center;
         }
 
         .legend-axis-title {
-            font-size: 9px;
+            font-size: 10px;
             color: #5b7187;
             text-transform: uppercase;
             letter-spacing: 0.06em;
@@ -401,7 +623,7 @@
 
         .legend-hover {
             margin-top: 6px;
-            font-size: 9px;
+            font-size: 10px;
             color: var(--text-secondary);
             min-height: 15px;
             text-align: center;
@@ -409,13 +631,13 @@
         }
 
         .legend-filter-note {
-            margin-top: 5px;
+            margin-top: 6px;
             border-top: 1px solid rgba(16, 37, 56, 0.12);
-            padding-top: 5px;
-            font-size: 9px;
+            padding-top: 6px;
+            font-size: 10px;
             color: var(--text-muted);
             text-align: center;
-            min-height: 14px;
+            min-height: 16px;
             line-height: 1.25;
         }
 
@@ -728,6 +950,45 @@
             background: rgba(251, 253, 255, 0.82);
         }
 
+        .story-tabs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            border-bottom: 1px solid rgba(18, 40, 58, 0.12);
+            margin-top: 2px;
+        }
+
+        .story-tab {
+            border: none;
+            background: transparent;
+            color: #607286;
+            font-family: 'Sora', sans-serif;
+            font-size: 14px;
+            font-weight: 700;
+            padding: 8px 2px 10px;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: color 140ms ease, border-color 140ms ease;
+        }
+
+        .story-tab:hover {
+            color: #2a455e;
+        }
+
+        .story-tab.active {
+            color: #1a3047;
+            border-bottom-color: #365f20;
+        }
+
+        .story-tab-content {
+            display: none;
+            margin-top: 12px;
+        }
+
+        .story-tab-content.active {
+            display: block;
+        }
+
         .story-section h4 {
             font-family: 'Sora', sans-serif;
             font-size: 15px;
@@ -752,6 +1013,301 @@
             color: #38516b;
             line-height: 1.4;
             padding-left: 2px;
+        }
+
+        .story-score-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 9px;
+        }
+
+        .story-score-item {
+            border: 1px solid rgba(19, 42, 63, 0.12);
+            border-radius: 10px;
+            background: rgba(250, 253, 255, 0.9);
+            padding: 9px 10px;
+            position: relative;
+            display: block;
+            width: 100%;
+            text-align: left;
+            font-family: inherit;
+        }
+
+        .story-score-item.story-score-clickable {
+            cursor: pointer;
+            transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+        }
+
+        .story-score-item.story-score-clickable:hover {
+            transform: translateY(-1px);
+            border-color: rgba(88, 132, 171, 0.34);
+            background: rgba(245, 251, 255, 0.94);
+        }
+
+        .story-score-item.story-score-clickable::after {
+            content: '→';
+            position: absolute;
+            right: 9px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #4c6a86;
+            font-weight: 700;
+            opacity: 0;
+            transition: opacity 140ms ease;
+        }
+
+        .story-score-item.story-score-clickable:hover::after {
+            opacity: 1;
+        }
+
+        .story-score-label {
+            font-size: 12px;
+            color: #5a6f84;
+            margin-bottom: 4px;
+        }
+
+        .story-score-value {
+            font-family: 'Sora', sans-serif;
+            font-size: 14px;
+            color: #1d3852;
+            font-weight: 700;
+        }
+
+        .story-score-value.null {
+            color: #8ca0b4;
+        }
+
+        .story-score-bar {
+            margin-top: 7px;
+            height: 5px;
+            border-radius: 999px;
+            background: rgba(18, 40, 58, 0.12);
+            overflow: hidden;
+        }
+
+        .story-score-bar-fill {
+            height: 100%;
+            width: 0;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #2d5016, #7cb342);
+            transition: width 220ms ease;
+        }
+
+        .synthesis-badge {
+            display: inline-block;
+            padding: 7px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+        }
+
+        .layer-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 90;
+            background: rgba(8, 19, 30, 0.52);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .layer-modal.open {
+            display: flex;
+        }
+
+        .layer-modal-content {
+            width: min(690px, 100%);
+            max-height: min(88vh, 860px);
+            overflow: hidden;
+            border-radius: 14px;
+            border: 1px solid rgba(18, 40, 58, 0.16);
+            background: rgba(253, 254, 255, 0.98);
+            box-shadow: 0 16px 42px rgba(6, 18, 29, 0.32);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .layer-modal-header {
+            position: relative;
+            padding: 14px 16px 12px;
+            border-bottom: 1px solid rgba(18, 40, 58, 0.12);
+            background: linear-gradient(180deg, rgba(245, 250, 255, 0.98), rgba(255, 255, 255, 0.98));
+        }
+
+        .layer-modal-header h3 {
+            font-family: 'Sora', sans-serif;
+            font-size: 18px;
+            line-height: 1.15;
+            color: #1a3047;
+            margin-right: 34px;
+            margin-bottom: 4px;
+        }
+
+        .layer-modal-header p {
+            color: #5a6f84;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .layer-modal-close {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 28px;
+            height: 28px;
+            border: 1px solid rgba(18, 40, 58, 0.2);
+            border-radius: 8px;
+            background: rgba(250, 252, 255, 0.92);
+            color: #2d4a65;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .layer-modal-body {
+            padding: 14px 16px 16px;
+            overflow-y: auto;
+            display: grid;
+            gap: 12px;
+        }
+
+        .layer-score-main {
+            border: 1px solid rgba(18, 40, 58, 0.12);
+            border-radius: 12px;
+            background: rgba(249, 252, 255, 0.92);
+            padding: 12px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .layer-score-value {
+            font-family: 'Sora', sans-serif;
+            font-size: 24px;
+            color: #16324b;
+            line-height: 1;
+        }
+
+        .layer-score-trend {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #48627b;
+            font-size: 12px;
+        }
+
+        .layer-trend-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            background: rgba(68, 101, 130, 0.14);
+            color: #31526f;
+        }
+
+        .layer-trend-icon.up {
+            background: rgba(67, 160, 71, 0.16);
+            color: #2e7d32;
+        }
+
+        .layer-trend-icon.down {
+            background: rgba(229, 115, 115, 0.16);
+            color: #c62828;
+        }
+
+        .layer-trend-icon.stable {
+            background: rgba(251, 192, 45, 0.2);
+            color: #8a6b00;
+        }
+
+        .layer-formula {
+            border: 1px solid rgba(18, 40, 58, 0.12);
+            border-radius: 10px;
+            background: rgba(249, 252, 255, 0.92);
+            padding: 10px 11px;
+            color: #415b74;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .layer-factors {
+            border: 1px solid rgba(18, 40, 58, 0.12);
+            border-radius: 10px;
+            background: rgba(249, 252, 255, 0.92);
+            padding: 11px;
+        }
+
+        .layer-factors h4 {
+            font-family: 'Sora', sans-serif;
+            font-size: 13px;
+            color: #1c3953;
+            margin-bottom: 8px;
+        }
+
+        .factor-item {
+            border: 1px solid rgba(18, 40, 58, 0.1);
+            border-radius: 9px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 8px 9px;
+            margin-bottom: 7px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+        }
+
+        .factor-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .factor-name {
+            font-size: 13px;
+            font-weight: 700;
+            color: #213f5a;
+            margin-bottom: 2px;
+        }
+
+        .factor-desc {
+            font-size: 12px;
+            color: #5a6f84;
+            line-height: 1.3;
+        }
+
+        .factor-value {
+            text-align: right;
+        }
+
+        .factor-value-main {
+            font-family: 'Sora', sans-serif;
+            font-size: 14px;
+            color: #1a344d;
+        }
+
+        .factor-weight {
+            margin-top: 2px;
+            font-size: 11px;
+            color: #6a7e90;
+        }
+
+        .layer-metadata {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            color: #6a7d90;
+            font-size: 12px;
+        }
+
+        .layer-metadata span {
+            border: 1px solid rgba(18, 40, 58, 0.12);
+            border-radius: 999px;
+            background: rgba(248, 252, 255, 0.92);
+            padding: 5px 9px;
         }
 
         .quick-prompts {
@@ -890,6 +1446,17 @@
             font-weight: 600;
         }
 
+        .analysis-float.chat-mode .analysis-float-content {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: calc(100% - 44px);
+        }
+
+        .analysis-float.chat-mode .chat-messages {
+            max-height: min(36vh, 280px);
+        }
+
         .chat-messages {
             display: flex;
             flex-direction: column;
@@ -961,14 +1528,26 @@
         body.map-moving .atlas-card,
         body.map-moving .legend-bivariate,
         body.map-moving .ask-atlas-pill,
-        body.map-moving .ask-atlas-input-shell {
+        body.map-moving .ask-atlas-input-shell,
+        body.map-moving .county-table-panel {
             opacity: 0.74;
         }
 
         body.map-moving .atlas-card:hover,
         body.map-moving .legend-bivariate:hover,
         body.map-moving .ask-atlas-pill:hover,
-        body.map-moving .ask-atlas-input-shell:hover {
+        body.map-moving .ask-atlas-input-shell:hover,
+        body.map-moving .county-table-panel:hover {
+            opacity: 0.9;
+        }
+
+        body.map-clicking .legend-bivariate,
+        body.map-clicking .county-table-panel {
+            opacity: 0.74;
+        }
+
+        body.map-clicking .legend-bivariate:hover,
+        body.map-clicking .county-table-panel:hover {
             opacity: 0.9;
         }
 
@@ -980,69 +1559,6 @@
             color: #8a3a2f;
             font-size: 13px;
             line-height: 1.35;
-        }
-
-        body.theme-dark {
-            background:
-                radial-gradient(circle at 8% 14%, rgba(37, 43, 50, 0.55), transparent 46%),
-                radial-gradient(circle at 86% 7%, rgba(26, 35, 45, 0.5), transparent 44%),
-                linear-gradient(180deg, #0f1822 0%, #111a24 100%);
-            color: #d7e5f2;
-        }
-
-        body.theme-dark .atlas-card,
-        body.theme-dark .legend-bivariate,
-        body.theme-dark .ask-atlas-pill,
-        body.theme-dark .ask-atlas-input-inner,
-        body.theme-dark .compare-card,
-        body.theme-dark .compare-table-wrap,
-        body.theme-dark .story-section,
-        body.theme-dark .empty-state,
-        body.theme-dark .chat-msg.assistant,
-        body.theme-dark .chat-msg.thinking,
-        body.theme-dark .chat-panel-input,
-        body.theme-dark .chat-context-chip,
-        body.theme-dark .analysis-float,
-        body.theme-dark .analysis-float-list li,
-        body.theme-dark .mapboxgl-ctrl-attrib,
-        body.theme-dark .map-theme-toggle {
-            background: rgba(19, 33, 48, 0.92);
-            color: #d7e5f2;
-            border-color: rgba(127, 162, 194, 0.28);
-        }
-
-        body.theme-dark .atlas-intro p,
-        body.theme-dark .atlas-panel-subtitle,
-        body.theme-dark .legend-subtitle,
-        body.theme-dark .legend-subhint,
-        body.theme-dark .legend-y-title,
-        body.theme-dark .legend-axis-x,
-        body.theme-dark .legend-axis-title,
-        body.theme-dark .legend-row-labels,
-        body.theme-dark .legend-hover,
-        body.theme-dark .legend-filter-note,
-        body.theme-dark .story-section p,
-        body.theme-dark .story-list-item,
-        body.theme-dark .compare-table th,
-        body.theme-dark .compare-table td,
-        body.theme-dark .chat-msg,
-        body.theme-dark .analysis-float-content,
-        body.theme-dark .analysis-float-meta {
-            color: #b9cce0;
-        }
-
-        body.theme-dark .legend-filter-note {
-            border-top-color: rgba(127, 162, 194, 0.26);
-        }
-
-        body.theme-dark .atlas-panel-title,
-        body.theme-dark .atlas-intro h1,
-        body.theme-dark .analysis-float-title {
-            color: #eef6ff;
-        }
-
-        body.theme-dark .analysis-float-handle {
-            background: rgba(24, 40, 58, 0.92);
         }
 
         @keyframes spin {
@@ -1096,7 +1612,7 @@
             }
 
             .legend-bivariate {
-                width: 212px;
+                width: 230px;
                 left: 10px;
                 bottom: 12px;
             }
@@ -1112,9 +1628,30 @@
                 bottom: 8px;
             }
 
-            .map-theme-toggle {
+            .map-table-toggle {
                 top: 8px;
                 right: 8px;
+            }
+
+            .map-stage.table-view-active .map-table-toggle {
+                right: 44px;
+            }
+
+            .county-table-head {
+                padding: 11px 12px 10px;
+            }
+
+            .county-table-title {
+                font-size: 14px;
+            }
+
+            .county-table-subtitle {
+                font-size: 11px;
+            }
+
+            .county-table-grid thead th,
+            .county-table-grid tbody td {
+                padding: 8px 8px;
             }
 
             .analysis-float {
@@ -1133,7 +1670,20 @@
     <section class="map-stage">
         <div id="map"></div>
         <div id="map-controls"></div>
-        <button id="map-theme-toggle" class="map-theme-toggle" type="button" aria-pressed="false">Dark Mode</button>
+        <button id="map-table-toggle" class="map-table-toggle" type="button" aria-expanded="false" aria-controls="county-table-panel">Table View</button>
+
+        <div id="county-table-panel" class="county-table-panel" role="dialog" aria-label="County table view" aria-hidden="true">
+            <div class="county-table-head">
+                <div class="county-table-title-wrap">
+                    <div class="county-table-title">County Rankings</div>
+                    <div id="county-table-subtitle" class="county-table-subtitle">Loading best-to-worst county ranking...</div>
+                </div>
+                <button id="county-table-close" class="county-table-close" type="button" aria-label="Return to map view">×</button>
+            </div>
+            <div id="county-table-body" class="county-table-scroll">
+                <div class="county-table-empty">County data will appear here once the map layer loads.</div>
+            </div>
+        </div>
 
         <div id="analysis-float" class="analysis-float hidden" role="dialog" aria-label="County analysis">
             <div id="analysis-float-handle" class="analysis-float-handle">
@@ -1222,6 +1772,17 @@
             </section>
         </div>
     </aside>
+</div>
+
+<div id="layer-modal" class="layer-modal" aria-hidden="true">
+    <div id="layer-modal-content" class="layer-modal-content" role="dialog" aria-label="Layer details">
+        <div class="layer-modal-header">
+            <button id="layer-modal-close" class="layer-modal-close" type="button" aria-label="Close layer detail">×</button>
+            <h3 id="layer-modal-title">Layer Detail</h3>
+            <p id="layer-modal-desc">Layer description</p>
+        </div>
+        <div id="layer-modal-body" class="layer-modal-body"></div>
+    </div>
 </div>
 
 <script src="runtime-config.js"></script>
