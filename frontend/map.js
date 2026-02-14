@@ -46,9 +46,7 @@ const COUNTY_GEOJSON_FALLBACK_STATIC_PATHS = [
 ];
 
 const SIDEBAR_WIDTH_KEY = 'atlas.sidebar.width';
-const PITCH_START_ZOOM = 9.5;
-const PITCH_END_ZOOM = 13.2;
-const MAX_PITCH = 45;
+const TOUR_STORAGE_KEY = 'atlas.guided_tour.dismissed.v1';
 
 const TRAJECTORY_ORDER = ['at_risk', 'stable', 'improving'];
 const STRENGTH_ORDER = ['high', 'mid', 'low'];
@@ -137,6 +135,56 @@ const LAYER_ROWS = [
     ['risk_drag', 'Risk Drag']
 ];
 
+const LAYER_ICONS = {
+    employment_gravity: '⊞',
+    mobility_optionality: '↔',
+    school_trajectory: '✎',
+    housing_elasticity: '⌂',
+    demographic_momentum: '◎',
+    risk_drag: '△'
+};
+
+const LAYER_EXPLANATIONS = {
+    employment_gravity: 'Employment Gravity: Access to jobs and local labor-market pull for residents.',
+    mobility_optionality: 'Mobility Optionality: How many practical transportation choices families have.',
+    school_trajectory: 'School Trajectory: Direction and consistency of school system outcomes over time.',
+    housing_elasticity: 'Housing Elasticity: How responsive local housing supply is to demand and price pressure.',
+    demographic_momentum: 'Demographic Momentum: Population and household trends that support long-term growth.',
+    risk_drag: 'Risk Drag: Factors slowing growth like high costs or structural barriers.'
+};
+
+const TOUR_STEPS = [
+    {
+        title: 'Explore The Map',
+        body: 'Start by clicking any county on the map. The panel updates with a summary and score breakdown.',
+        target: '#map',
+        preferMapView: true
+    },
+    {
+        title: 'Filter By Signal',
+        body: 'Use the bivariate legend to filter counties by trajectory and signal strength.',
+        target: '#legend-bivariate',
+        preferMapView: true
+    },
+    {
+        title: 'Read Layer Stories',
+        body: 'Open the Scores tab and hover a layer icon to see plain-language explanations for each signal.',
+        target: '#atlas-panel',
+        preferMapView: true
+    },
+    {
+        title: 'Ask Atlas',
+        body: 'Use Ask Atlas for narrative insights and follow-up questions grounded in county context.',
+        target: '#ask-atlas-pill',
+        preferMapView: true
+    },
+    {
+        title: 'Switch To Rankings',
+        body: 'Use Table View for a best-to-worst county ranking when you want a quick statewide scan.',
+        target: '#map-table-toggle'
+    }
+];
+
 const QUICK_PROMPTS = [
     'Explain this county signal in plain language for families deciding where to live.',
     'What are the top pressure points this county should address over the next 2 years?',
@@ -171,8 +219,13 @@ const appState = {
     pendingCountyRequest: null,
     moveOpacityTimer: null,
     clickOpacityTimer: null,
+    hoverPopupFips: null,
     apiBaseUrl: null,
-    tableViewOpen: false
+    tableViewOpen: false,
+    tour: {
+        active: false,
+        stepIndex: 0
+    }
 };
 
 const dom = {
@@ -210,7 +263,17 @@ const dom = {
     layerModalBody: document.getElementById('layer-modal-body'),
     mapControlsHost: document.getElementById('map-controls'),
     resizeHandle: document.getElementById('sidebar-resize-handle'),
-    mapStage: document.querySelector('.map-stage')
+    mapStage: document.querySelector('.map-stage'),
+    tourLaunchBtn: document.getElementById('tour-launch-btn'),
+    tourOverlay: document.getElementById('tour-overlay'),
+    tourCard: document.getElementById('tour-card'),
+    tourHighlight: document.getElementById('tour-highlight'),
+    tourStep: document.getElementById('tour-step'),
+    tourTitle: document.getElementById('tour-title'),
+    tourText: document.getElementById('tour-text'),
+    tourBack: document.getElementById('tour-back'),
+    tourNext: document.getElementById('tour-next'),
+    tourSkip: document.getElementById('tour-skip')
 };
 
 if (!MAPBOX_TOKEN) {
@@ -225,6 +288,7 @@ function initialize() {
     setupLegendInteractions();
     setupPanelControls();
     setupCountyTableView();
+    setupGuidedTour();
     setupAskAtlasPill();
     setupAnalysisFloat();
     setupLayerModal();
@@ -250,11 +314,8 @@ function updatePitch() {
     if (!appState.map) {
         return;
     }
-    const zoom = appState.map.getZoom();
-    const t = Math.max(0, Math.min(1, (zoom - PITCH_START_ZOOM) / (PITCH_END_ZOOM - PITCH_START_ZOOM)));
-    const pitch = t * MAX_PITCH;
-    if (Math.abs(appState.map.getPitch() - pitch) > 0.5) {
-        appState.map.setPitch(pitch);
+    if (Math.abs(appState.map.getPitch()) > 0.1) {
+        appState.map.setPitch(0);
     }
 }
 
@@ -511,6 +572,9 @@ function openCountyTableView() {
         dom.mapTableToggle.setAttribute('aria-expanded', 'true');
     }
     renderCountyTableView();
+    if (appState.tour.active) {
+        window.requestAnimationFrame(() => renderTourStep());
+    }
 }
 
 function closeCountyTableView() {
@@ -526,6 +590,228 @@ function closeCountyTableView() {
         dom.mapTableToggle.textContent = 'Table View';
         dom.mapTableToggle.setAttribute('aria-expanded', 'false');
     }
+    if (appState.tour.active) {
+        window.requestAnimationFrame(() => renderTourStep());
+    }
+}
+
+function setupGuidedTour() {
+    if (
+        !dom.tourOverlay ||
+        !dom.tourCard ||
+        !dom.tourHighlight ||
+        !dom.tourStep ||
+        !dom.tourTitle ||
+        !dom.tourText ||
+        !dom.tourBack ||
+        !dom.tourNext ||
+        !dom.tourSkip
+    ) {
+        return;
+    }
+
+    if (dom.tourLaunchBtn) {
+        dom.tourLaunchBtn.addEventListener('click', () => {
+            startGuidedTour({ force: true });
+        });
+    }
+
+    dom.tourBack.addEventListener('click', () => {
+        if (appState.tour.stepIndex > 0) {
+            appState.tour.stepIndex -= 1;
+            renderTourStep();
+        }
+    });
+
+    dom.tourNext.addEventListener('click', () => {
+        if (appState.tour.stepIndex >= TOUR_STEPS.length - 1) {
+            stopGuidedTour({ dismiss: true });
+            return;
+        }
+        appState.tour.stepIndex += 1;
+        renderTourStep();
+    });
+
+    dom.tourSkip.addEventListener('click', () => {
+        stopGuidedTour({ dismiss: true });
+    });
+
+    dom.tourOverlay.addEventListener('pointerdown', (event) => {
+        if (event.target === dom.tourOverlay) {
+            stopGuidedTour({ dismiss: true });
+        }
+    });
+
+    dom.tourCard.addEventListener('pointerdown', (event) => {
+        event.stopPropagation();
+    });
+
+    window.addEventListener('resize', () => {
+        if (appState.tour.active) {
+            renderTourStep();
+        }
+    });
+
+    let dismissed = false;
+    try {
+        dismissed = window.localStorage.getItem(TOUR_STORAGE_KEY) === 'true';
+    } catch (_error) {
+        dismissed = false;
+    }
+
+    if (!dismissed) {
+        window.setTimeout(() => {
+            startGuidedTour({ force: false });
+        }, 520);
+    }
+}
+
+function startGuidedTour(options = {}) {
+    if (!dom.tourOverlay || !dom.tourCard) {
+        return;
+    }
+
+    if (appState.tour.active) {
+        appState.tour.stepIndex = 0;
+        renderTourStep();
+        return;
+    }
+
+    appState.tour.active = true;
+    appState.tour.stepIndex = 0;
+    dom.tourOverlay.classList.add('open');
+    dom.tourOverlay.setAttribute('aria-hidden', 'false');
+    renderTourStep();
+
+    if (options.force) {
+        try {
+            window.localStorage.setItem(TOUR_STORAGE_KEY, 'false');
+        } catch (_error) {
+            // Ignore localStorage write errors.
+        }
+    }
+}
+
+function stopGuidedTour(options = {}) {
+    if (!dom.tourOverlay || !dom.tourHighlight) {
+        return;
+    }
+
+    appState.tour.active = false;
+    dom.tourOverlay.classList.remove('open');
+    dom.tourOverlay.setAttribute('aria-hidden', 'true');
+    dom.tourHighlight.classList.add('hidden');
+
+    if (options.dismiss !== false) {
+        try {
+            window.localStorage.setItem(TOUR_STORAGE_KEY, 'true');
+        } catch (_error) {
+            // Ignore localStorage write errors.
+        }
+    }
+}
+
+function renderTourStep() {
+    if (
+        !appState.tour.active ||
+        !dom.tourStep ||
+        !dom.tourTitle ||
+        !dom.tourText ||
+        !dom.tourBack ||
+        !dom.tourNext ||
+        !dom.tourHighlight ||
+        !dom.tourCard
+    ) {
+        return;
+    }
+
+    const step = TOUR_STEPS[appState.tour.stepIndex];
+    if (!step) {
+        stopGuidedTour({ dismiss: true });
+        return;
+    }
+
+    if (step.preferMapView && appState.tableViewOpen) {
+        closeCountyTableView();
+    }
+
+    dom.tourStep.textContent = `Step ${appState.tour.stepIndex + 1} of ${TOUR_STEPS.length}`;
+    dom.tourTitle.textContent = step.title;
+    dom.tourText.textContent = step.body;
+    dom.tourBack.disabled = appState.tour.stepIndex === 0;
+    dom.tourNext.textContent = appState.tour.stepIndex === TOUR_STEPS.length - 1 ? 'Done' : 'Next';
+
+    const highlightedRect = updateTourHighlight(step.target);
+    positionTourCard(highlightedRect);
+}
+
+function updateTourHighlight(targetSelector) {
+    if (!dom.tourHighlight || !targetSelector) {
+        return null;
+    }
+
+    const target = document.querySelector(targetSelector);
+    if (!target) {
+        dom.tourHighlight.classList.add('hidden');
+        return null;
+    }
+
+    const rect = target.getBoundingClientRect();
+    if (!rect || rect.width < 2 || rect.height < 2) {
+        dom.tourHighlight.classList.add('hidden');
+        return null;
+    }
+
+    const pad = 8;
+    dom.tourHighlight.classList.remove('hidden');
+    dom.tourHighlight.style.left = `${Math.max(6, rect.left - pad)}px`;
+    dom.tourHighlight.style.top = `${Math.max(6, rect.top - pad)}px`;
+    dom.tourHighlight.style.width = `${Math.max(20, rect.width + pad * 2)}px`;
+    dom.tourHighlight.style.height = `${Math.max(20, rect.height + pad * 2)}px`;
+    return rect;
+}
+
+function positionTourCard(targetRect) {
+    if (!dom.tourCard) {
+        return;
+    }
+
+    const margin = 14;
+    const cardRect = dom.tourCard.getBoundingClientRect();
+    const maxLeft = Math.max(margin, window.innerWidth - cardRect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - cardRect.height - margin);
+
+    let left = maxLeft;
+    let top = maxTop;
+
+    if (targetRect) {
+        const rightSpace = window.innerWidth - targetRect.right;
+        const leftSpace = targetRect.left;
+        const canFitRight = rightSpace >= cardRect.width + margin * 2;
+        const canFitLeft = leftSpace >= cardRect.width + margin * 2;
+
+        if (canFitRight) {
+            left = Math.min(maxLeft, targetRect.right + margin);
+            top = Math.min(maxTop, Math.max(margin, targetRect.top));
+        } else if (canFitLeft) {
+            left = Math.max(margin, targetRect.left - cardRect.width - margin);
+            top = Math.min(maxTop, Math.max(margin, targetRect.top));
+        } else {
+            left = Math.min(maxLeft, Math.max(margin, targetRect.left));
+            const belowTop = targetRect.bottom + margin;
+            const aboveTop = targetRect.top - cardRect.height - margin;
+            if (belowTop <= maxTop) {
+                top = belowTop;
+            } else if (aboveTop >= margin) {
+                top = aboveTop;
+            } else {
+                top = maxTop;
+            }
+        }
+    }
+
+    dom.tourCard.style.left = `${Math.max(margin, Math.min(maxLeft, left))}px`;
+    dom.tourCard.style.top = `${Math.max(margin, Math.min(maxTop, top))}px`;
 }
 
 function renderCountyTableView() {
@@ -627,6 +913,8 @@ function initializeMap() {
         maxZoom: 16,
         attributionControl: false
     });
+    appState.map.dragRotate.disable();
+    appState.map.touchZoomRotate.disableRotation();
 
     appState.map.addControl(
         new mapboxgl.NavigationControl({ showCompass: false, visualizePitch: false }),
@@ -728,6 +1016,17 @@ async function loadCountyLayer() {
             paint: {
                 'fill-color': buildBivariateFillExpression(),
                 'fill-opacity': 0.66
+            }
+        });
+
+        appState.map.addLayer({
+            id: 'counties-hover-fill',
+            type: 'fill',
+            source: 'counties',
+            filter: ['==', 'fips_code', ''],
+            paint: {
+                'fill-color': '#ffffff',
+                'fill-opacity': 0.14
             }
         });
 
@@ -1077,6 +1376,8 @@ function wireCountyInteractions() {
     appState.map.on('mouseleave', 'counties-fill', () => {
         appState.map.getCanvas().style.cursor = '';
         appState.map.setFilter('counties-hover', ['==', 'fips_code', '']);
+        appState.map.setFilter('counties-hover-fill', ['==', 'fips_code', '']);
+        appState.hoverPopupFips = null;
         appState.popup.remove();
     });
 
@@ -1090,6 +1391,7 @@ function wireCountyInteractions() {
         const props = feature.properties;
         const fips = props.fips_code;
         appState.map.setFilter('counties-hover', ['==', 'fips_code', fips || '']);
+        appState.map.setFilter('counties-hover-fill', ['==', 'fips_code', fips || '']);
 
         const score = safeNumber(props.composite_score);
         const scoreText = score === null ? 'N/A' : score.toFixed(3);
@@ -1098,19 +1400,29 @@ function wireCountyInteractions() {
         const key = props.bivariate_key || `${trajectory}|${strength}`;
         const label = props.bivariate_label || buildSignalLabel(trajectory, strength);
         const color = props.bivariate_color || getBivariateColor(key);
-
-        appState.popup
-            .setLngLat(event.lngLat)
-            .setHTML(
-                `<div style="font-family:'Work Sans',sans-serif; color:#1c3a56; min-width:170px;">
+        const html = `<div style="font-family:'Work Sans',sans-serif; color:#1c3a56; min-width:170px;">
                     <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${escapeHtml(props.county_name || 'County')}</div>
                     <div style="font-size:12px; color:#48637c; margin-bottom:6px;">Overall Signal Score: <strong>${scoreText}</strong></div>
                     <div style="display:inline-block; border:1px solid rgba(19,38,56,0.16); border-radius:999px; padding:4px 8px; font-size:11px; font-weight:600; background:${color}; color:#18324b;">
                         ${escapeHtml(label || 'County Signal')}
                     </div>
-                </div>`
-            )
-            .addTo(appState.map);
+                </div>`;
+        const popupFips = fips || '';
+
+        if (!appState.popup.isOpen()) {
+            appState.popup
+                .setLngLat(event.lngLat)
+                .setHTML(html)
+                .addTo(appState.map);
+            appState.hoverPopupFips = popupFips;
+            return;
+        }
+
+        appState.popup.setLngLat(event.lngLat);
+        if (appState.hoverPopupFips !== popupFips) {
+            appState.popup.setHTML(html);
+            appState.hoverPopupFips = popupFips;
+        }
     });
 
     appState.map.on('click', 'counties-fill', async (event) => {
@@ -1125,6 +1437,8 @@ function wireCountyInteractions() {
         const features = appState.map.queryRenderedFeatures(event.point, { layers: ['counties-fill'] });
         if (features.length === 0) {
             appState.map.setFilter('counties-hover', ['==', 'fips_code', '']);
+            appState.map.setFilter('counties-hover-fill', ['==', 'fips_code', '']);
+            appState.hoverPopupFips = null;
             appState.popup.remove();
         }
     });
@@ -1423,7 +1737,7 @@ function renderStoryPanel(county, options = {}) {
         const displayValue = value === null ? 'No Data' : value.toFixed(3);
         return `
             <button class="story-score-item story-score-clickable" type="button" data-layer-key="${escapeHtml(key)}" title="Click for factor breakdown">
-                <div class="story-score-label">${escapeHtml(label)}</div>
+                <div class="story-score-label">${renderLayerLabelWithIcon(key, label)}</div>
                 <div class="story-score-value ${value === null ? 'null' : ''}">${displayValue}</div>
                 ${renderStoryScoreBar(value)}
             </button>
@@ -1616,7 +1930,8 @@ async function loadLayerDetail(fipsCode, layerKey) {
 
         const scoreText = Number.isFinite(data.score) ? Number(data.score).toFixed(3) : 'N/A';
 
-        dom.layerModalTitle.textContent = data.display_name || formatLayerName(layerKey);
+        const layerName = data.display_name || formatLayerName(layerKey);
+        dom.layerModalTitle.textContent = `${getLayerIcon(layerKey)} ${layerName}`;
         dom.layerModalDesc.textContent = data.description || '';
         dom.layerModalBody.innerHTML = `
             <div class="layer-score-main">
@@ -1644,7 +1959,7 @@ async function loadLayerDetail(fipsCode, layerKey) {
             </div>
         `;
     } catch (error) {
-        dom.layerModalTitle.textContent = formatLayerName(layerKey);
+        dom.layerModalTitle.textContent = `${getLayerIcon(layerKey)} ${formatLayerName(layerKey)}`;
         dom.layerModalDesc.textContent = 'Unable to load detailed layer breakdown.';
         dom.layerModalBody.innerHTML = `<div class="error-inline">${escapeHtml(getReadableFetchError(error, `/areas/${fipsCode}/layers/${layerKey}`))}</div>`;
     }
@@ -1731,7 +2046,7 @@ function renderComparePanel(options = {}) {
 
         return `
             <tr>
-                <td>${escapeHtml(label)}</td>
+                <td>${renderLayerLabelWithIcon(key, label)}</td>
                 <td>${a === null ? 'N/A' : a.toFixed(3)}</td>
                 <td>${b === null ? 'N/A' : b.toFixed(3)}</td>
                 <td class="${diffClass(diff)}">${formatDiff(diff)}</td>
@@ -2212,6 +2527,13 @@ function buildChatContext() {
 
 function setupGlobalEvents() {
     document.addEventListener('keydown', (event) => {
+        if (appState.tour.active) {
+            if (event.key === 'Escape') {
+                stopGuidedTour({ dismiss: true });
+            }
+            return;
+        }
+
         if (event.key !== 'Escape') {
             return;
         }
@@ -2245,6 +2567,10 @@ function setupGlobalEvents() {
     });
 
     document.addEventListener('pointerdown', (event) => {
+        if (appState.tour.active) {
+            return;
+        }
+
         const target = event.target;
 
         if (dom.askShell.classList.contains('expanded')) {
@@ -2384,6 +2710,24 @@ function shortPromptLabel(prompt) {
         return prompt;
     }
     return `${prompt.slice(0, 41)}...`;
+}
+
+function getLayerIcon(layerKey) {
+    return LAYER_ICONS[layerKey] || '•';
+}
+
+function getLayerExplanation(layerKey) {
+    return LAYER_EXPLANATIONS[layerKey] || 'Layer score and factors for this county.';
+}
+
+function renderLayerLabelWithIcon(layerKey, label) {
+    const explanation = getLayerExplanation(layerKey);
+    return `
+        <span class="layer-label-with-icon">
+            <span class="layer-label-icon" title="${escapeHtml(explanation)}" aria-label="${escapeHtml(explanation)}">${escapeHtml(getLayerIcon(layerKey))}</span>
+            <span class="layer-label-text">${escapeHtml(label)}</span>
+        </span>
+    `;
 }
 
 function formatLayerName(layerKey) {

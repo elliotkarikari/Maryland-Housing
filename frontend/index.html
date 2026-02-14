@@ -143,6 +143,20 @@
             display: none !important;
         }
 
+        .mapboxgl-popup {
+            animation: atlas-popup-fade 160ms ease;
+        }
+
+        .mapboxgl-popup-content {
+            transition: transform 140ms ease, box-shadow 160ms ease, background 160ms ease;
+        }
+
+        .mapboxgl-popup-content:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 18px rgba(15, 37, 57, 0.18);
+            background: rgba(252, 254, 255, 0.96);
+        }
+
         .map-table-toggle {
             position: absolute;
             top: 12px;
@@ -831,6 +845,33 @@
             border-color: rgba(47, 98, 145, 0.55);
         }
 
+        .tour-launch-btn {
+            position: absolute;
+            top: 12px;
+            right: 104px;
+            z-index: 35;
+            border: 1px solid rgba(31, 64, 92, 0.2);
+            background: rgba(244, 250, 255, 0.9);
+            color: #2b4b68;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 140ms ease, box-shadow 160ms ease, background 160ms ease;
+        }
+
+        .tour-launch-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 12px rgba(16, 40, 61, 0.14);
+            background: rgba(236, 246, 255, 0.96);
+        }
+
+        .map-stage.table-view-active .tour-launch-btn {
+            opacity: 0;
+            pointer-events: none;
+        }
+
         .atlas-panel {
             display: flex;
             flex-direction: column;
@@ -948,7 +989,12 @@
             border-radius: 12px;
             padding: 12px;
             background: rgba(251, 253, 255, 0.82);
+            animation: atlas-fade-up 230ms ease both;
         }
+
+        .story-tab-content.active .story-section:nth-of-type(2) { animation-delay: 35ms; }
+        .story-tab-content.active .story-section:nth-of-type(3) { animation-delay: 65ms; }
+        .story-tab-content.active .story-section:nth-of-type(4) { animation-delay: 95ms; }
 
         .story-tabs {
             display: grid;
@@ -1064,6 +1110,33 @@
             font-size: 12px;
             color: #5a6f84;
             margin-bottom: 4px;
+        }
+
+        .layer-label-with-icon {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .layer-label-icon {
+            width: 16px;
+            height: 16px;
+            border-radius: 999px;
+            border: 1px solid rgba(30, 58, 82, 0.2);
+            background: rgba(238, 247, 254, 0.9);
+            color: #4f677f;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            line-height: 1;
+            flex: 0 0 16px;
+            cursor: help;
+        }
+
+        .layer-label-text {
+            line-height: 1.2;
         }
 
         .story-score-value {
@@ -1353,6 +1426,11 @@
             padding: 10px;
             display: grid;
             gap: 8px;
+            animation: atlas-fade-up 240ms ease both;
+        }
+
+        .compare-card:nth-child(2) {
+            animation-delay: 45ms;
         }
 
         .compare-card h5 {
@@ -1398,6 +1476,13 @@
         .compare-table td:first-child {
             text-align: left;
             width: 44%;
+        }
+
+        .compare-table td:first-child .layer-label-icon {
+            width: 15px;
+            height: 15px;
+            font-size: 9px;
+            background: rgba(244, 249, 255, 0.94);
         }
 
         .compare-table tr:last-child td {
@@ -1529,7 +1614,7 @@
         body.map-moving .legend-bivariate,
         body.map-moving .ask-atlas-pill,
         body.map-moving .ask-atlas-input-shell,
-        body.map-moving .county-table-panel {
+        body.map-moving .county-table-panel.open {
             opacity: 0.74;
         }
 
@@ -1537,17 +1622,17 @@
         body.map-moving .legend-bivariate:hover,
         body.map-moving .ask-atlas-pill:hover,
         body.map-moving .ask-atlas-input-shell:hover,
-        body.map-moving .county-table-panel:hover {
+        body.map-moving .county-table-panel.open:hover {
             opacity: 0.9;
         }
 
         body.map-clicking .legend-bivariate,
-        body.map-clicking .county-table-panel {
+        body.map-clicking .county-table-panel.open {
             opacity: 0.74;
         }
 
         body.map-clicking .legend-bivariate:hover,
-        body.map-clicking .county-table-panel:hover {
+        body.map-clicking .county-table-panel.open:hover {
             opacity: 0.9;
         }
 
@@ -1561,9 +1646,129 @@
             line-height: 1.35;
         }
 
+        .tour-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 120;
+            background: rgba(8, 20, 32, 0.44);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 180ms ease;
+        }
+
+        .tour-overlay.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .tour-highlight {
+            position: fixed;
+            border-radius: 12px;
+            border: 2px solid rgba(126, 186, 236, 0.9);
+            box-shadow:
+                0 0 0 4px rgba(126, 186, 236, 0.2),
+                0 12px 30px rgba(8, 24, 38, 0.28);
+            pointer-events: none;
+            transition: left 180ms ease, top 180ms ease, width 180ms ease, height 180ms ease, opacity 140ms ease;
+        }
+
+        .tour-highlight.hidden {
+            opacity: 0;
+        }
+
+        .tour-card {
+            position: fixed;
+            width: min(360px, calc(100vw - 28px));
+            border-radius: 14px;
+            border: 1px solid rgba(30, 62, 89, 0.2);
+            background: rgba(251, 254, 255, 0.98);
+            box-shadow: 0 16px 34px rgba(8, 22, 35, 0.34);
+            padding: 13px 13px 11px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .tour-step {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #55718b;
+            font-weight: 700;
+        }
+
+        .tour-card h3 {
+            font-family: 'Sora', sans-serif;
+            font-size: 17px;
+            line-height: 1.18;
+            color: #16324b;
+        }
+
+        .tour-card p {
+            font-size: 13px;
+            color: #3a566f;
+            line-height: 1.42;
+        }
+
+        .tour-actions {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .tour-actions-right {
+            display: flex;
+            gap: 8px;
+        }
+
+        .tour-btn {
+            border: 1px solid rgba(29, 59, 84, 0.2);
+            border-radius: 999px;
+            background: rgba(248, 252, 255, 0.96);
+            color: #274663;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 6px 11px;
+            cursor: pointer;
+        }
+
+        .tour-btn:hover {
+            background: rgba(238, 247, 255, 0.98);
+        }
+
+        .tour-btn.primary {
+            background: #2f5f8a;
+            color: #f5fbff;
+            border-color: #275274;
+        }
+
+        .tour-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         @keyframes spin {
             to {
                 transform: rotate(360deg);
+            }
+        }
+
+        @keyframes atlas-popup-fade {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        @keyframes atlas-fade-up {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
             }
         }
 
@@ -1633,6 +1838,11 @@
                 right: 8px;
             }
 
+            .tour-launch-btn {
+                top: 8px;
+                right: 92px;
+            }
+
             .map-stage.table-view-active .map-table-toggle {
                 right: 44px;
             }
@@ -1662,6 +1872,10 @@
                 bottom: 52px;
                 max-height: 46%;
             }
+
+            .tour-card {
+                width: min(330px, calc(100vw - 24px));
+            }
         }
     </style>
 </head>
@@ -1670,6 +1884,7 @@
     <section class="map-stage">
         <div id="map"></div>
         <div id="map-controls"></div>
+        <button id="tour-launch-btn" class="tour-launch-btn" type="button">Guided Tour</button>
         <button id="map-table-toggle" class="map-table-toggle" type="button" aria-expanded="false" aria-controls="county-table-panel">Table View</button>
 
         <div id="county-table-panel" class="county-table-panel" role="dialog" aria-label="County table view" aria-hidden="true">
@@ -1772,6 +1987,22 @@
             </section>
         </div>
     </aside>
+</div>
+
+<div id="tour-overlay" class="tour-overlay" aria-hidden="true">
+    <div id="tour-highlight" class="tour-highlight hidden"></div>
+    <div id="tour-card" class="tour-card" role="dialog" aria-label="Guided tour">
+        <div id="tour-step" class="tour-step">Step 1 of 5</div>
+        <h3 id="tour-title">Explore The Map</h3>
+        <p id="tour-text">Click any county to begin.</p>
+        <div class="tour-actions">
+            <button id="tour-skip" class="tour-btn" type="button">Skip</button>
+            <div class="tour-actions-right">
+                <button id="tour-back" class="tour-btn" type="button">Back</button>
+                <button id="tour-next" class="tour-btn primary" type="button">Next</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div id="layer-modal" class="layer-modal" aria-hidden="true">
