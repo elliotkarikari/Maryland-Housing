@@ -128,14 +128,15 @@ class Settings(BaseSettings):
 
     # AI settings
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-4-turbo-preview"  # For document extraction
+    OPENAI_MODEL: str = "gpt-5.1-mini"  # Default OpenAI model
     OPENAI_MAX_TOKENS: int = 4000
     AI_ENABLED: bool = False  # Set True if API key available
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        case_sensitive=True
+        case_sensitive=True,
+        extra="ignore"
     )
 
     def __init__(self, **kwargs):

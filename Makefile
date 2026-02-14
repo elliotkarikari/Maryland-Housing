@@ -95,7 +95,7 @@ export:
 	$(PYTHON) -m src.export.geojson_export
 
 serve:
-	uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+	$(PYTHON) -m uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 
 frontend:
 	$(PYTHON) frontend/serve.py

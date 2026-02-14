@@ -95,7 +95,7 @@ Stores AI extraction results.
 | id | SERIAL | Primary key |
 | doc_id | INTEGER | Foreign key to ai_document |
 | task_name | VARCHAR(100) | Extraction task (e.g., "cip_capital_commitment") |
-| model | VARCHAR(100) | Model used (e.g., "gpt-4-turbo-preview") |
+| model | VARCHAR(100) | Model used (e.g., "gpt-5.1-mini") |
 | prompt_version | VARCHAR(50) | Prompt version ID |
 | output_json | JSONB | Raw model output |
 | extracted_facts_json | JSONB | Validated, structured facts |
@@ -268,7 +268,7 @@ All extractions logged to `ai_extraction` table:
 ```bash
 # OpenAI
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4-turbo-preview  # Default model
+OPENAI_MODEL=gpt-5.1-mini  # Default model
 OPENAI_MAX_TOKENS=4000
 
 # Cost limits

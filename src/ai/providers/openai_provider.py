@@ -8,7 +8,7 @@ Uses OpenAI API for structured document extraction with:
 - Automatic retry logic
 """
 
-from typing import Type, Dict, Any
+from typing import Type, Dict, Any, Optional, List
 from pydantic import BaseModel, ValidationError as PydanticValidationError
 import json
 import time
@@ -31,11 +31,19 @@ class OpenAIProvider(AIProvider):
     """
     OpenAI API provider for document extraction.
 
-    Uses GPT-4 Turbo with JSON mode for structured outputs.
+    Uses OpenAI chat models with JSON mode for structured outputs.
     """
 
     # OpenAI pricing (as of 2026-01, subject to change)
     PRICING = {
+        "gpt-5.1-mini": {
+            "input": 0.00015 / 1000,  # keep aligned with lightweight mini-tier estimate
+            "output": 0.00060 / 1000
+        },
+        "gpt-4o-mini": {
+            "input": 0.00015 / 1000,  # $0.15 per 1M input tokens
+            "output": 0.00060 / 1000  # $0.60 per 1M output tokens
+        },
         "gpt-4-turbo-preview": {
             "input": 0.01 / 1000,   # $0.01 per 1K input tokens
             "output": 0.03 / 1000   # $0.03 per 1K output tokens
@@ -208,6 +216,81 @@ class OpenAIProvider(AIProvider):
             "raw_output": raw_output
         }
 
+    def chat(
+        self,
+        instructions: str,
+        conversation_text: str,
+        previous_response_id: Optional[str] = None,
+        model: str = "gpt-5.1-mini",
+        max_output_tokens: int = 700
+    ) -> Dict[str, Any]:
+        """
+        Generate a conversational response using the OpenAI Responses API.
+
+        Args:
+            instructions: System-style instructions and grounding context
+            conversation_text: Conversation history + latest user prompt
+            previous_response_id: Optional response id for multi-turn continuation
+            model: Chat model name
+            max_output_tokens: Maximum output tokens for response
+
+        Returns:
+            dict with text, response_id, model, token usage, and cost estimate
+
+        Raises:
+            AIProviderError: If chat generation fails
+        """
+        payload: Dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": conversation_text,
+            "max_output_tokens": max_output_tokens
+        }
+
+        if previous_response_id:
+            payload["previous_response_id"] = previous_response_id
+
+        try:
+            response = self.client.responses.create(**payload)
+        except Exception as e:
+            logger.error(f"OpenAI chat call failed: {e}")
+            raise AIProviderError(f"OpenAI chat call failed: {e}") from e
+
+        response_text = self._extract_response_text(response)
+        usage = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", input_tokens + output_tokens) or (input_tokens + output_tokens))
+        cost = self.estimate_cost(input_tokens, output_tokens, model_name=model)
+
+        return {
+            "response": response_text,
+            "response_id": getattr(response, "id", None),
+            "model": model,
+            "tokens_input": input_tokens,
+            "tokens_output": output_tokens,
+            "tokens_total": total_tokens,
+            "cost_estimate": cost
+        }
+
+    def _extract_response_text(self, response: Any) -> str:
+        """
+        Safely extract concatenated text from a Responses API result.
+        """
+        direct_text = getattr(response, "output_text", None)
+        if direct_text:
+            return str(direct_text).strip()
+
+        chunks: List[str] = []
+        for item in getattr(response, "output", []) or []:
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", None)
+                if text:
+                    chunks.append(str(text))
+
+        merged = "\n".join(chunks).strip()
+        return merged or "I could not generate a response right now."
+
     def _build_default_system_prompt(
         self,
         task_name: str,
@@ -257,14 +340,17 @@ Extract the requested information and return as JSON."""
     def estimate_cost(
         self,
         input_tokens: int,
-        output_tokens: int
+        output_tokens: int,
+        model_name: Optional[str] = None
     ) -> float:
         """Estimate cost for token usage"""
-        if self.model not in self.PRICING:
-            logger.warning(f"Unknown model {self.model}, using gpt-4 pricing")
-            pricing = self.PRICING["gpt-4"]
+        price_model = model_name or self.model
+
+        if price_model not in self.PRICING:
+            logger.warning(f"Unknown model {price_model}, using gpt-5.1-mini pricing")
+            pricing = self.PRICING["gpt-5.1-mini"]
         else:
-            pricing = self.PRICING[self.model]
+            pricing = self.PRICING[price_model]
 
         cost = (
             input_tokens * pricing["input"] +
@@ -283,7 +369,10 @@ Extract the requested information and return as JSON."""
             import tiktoken
 
             # Get encoding for model
-            if "gpt-4" in self.model:
+            if "gpt-5" in self.model:
+                # gpt-5 tokenizer is compatible with the cl100k family
+                encoding = tiktoken.encoding_for_model("gpt-4o-mini")
+            elif "gpt-4" in self.model:
                 encoding = tiktoken.encoding_for_model("gpt-4")
             elif "gpt-3.5" in self.model:
                 encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")

@@ -1,326 +1,149 @@
-# Maryland Viability Atlas - Interactive Map Frontend
+# Maryland Atlas Frontend
 
-**Status:** ✅ Production-Ready
-**Framework:** Vanilla JavaScript + Mapbox GL JS
-**Primary Layer:** `synthesis_grouping`
+Interactive map client for the Maryland Growth & Family Viability Atlas.
 
----
+## What Changed
 
-## Overview
+- Single bivariate signal map (no layer switcher, no dark mode toggle)
+- Always-visible interactive 3x3 legend (Trajectory x Signal Strength)
+- Legend click filtering that dims non-matching counties
+- Faster county story mode with optimistic render + cached API detail fetch
+- Compare mode with side-by-side county cards and layer score diff table
+- Floating `Ask Atlas` pill under map controls with sidebar chat mode
+- Smaller Mapbox controls and compact attribution control
+- Resizable desktop sidebar (width persisted locally)
 
-Interactive web map visualizing the Maryland Growth & Family Viability Atlas. The map displays 24 Maryland counties colored by their **Final Synthesis Grouping** - the primary assessment of structural trajectory and confidence.
+## Run Locally
 
----
+### 1) Start API
 
-## Features
-
-### Primary Map Layer (Default)
-- **Synthesis Grouping** - 5-category color-coded classification
-  - 🟢 Emerging Tailwinds
-  - 🟢 Conditional Growth
-  - 🟡 Stable but Constrained
-  - 🔴 At Risk / Headwinds
-  - ⚪ High Uncertainty (current V2.0 state)
-
-### Interactive Elements
-- **Hover** - Tooltip showing county name and grouping
-- **Click** - Side panel with detailed breakdown:
-  - Synthesis grouping explanation
-  - Classification details (directional, confidence)
-  - Layer scores breakdown
-  - Primary strengths and weaknesses
-  - Key trends
-
-### Layer Toggle
-- Switch between visualization modes:
-  - **Synthesis Grouping** (default)
-  - **Directional Status** (improving/stable/at_risk)
-  - **Confidence Level** (strong/conditional/fragile)
-
----
-
-## Quick Start
-
-### 1. Start the API Server
+From repo root:
 
 ```bash
-cd "/Users/elliotkarikari/Dev Projects/Maryland Housing"
-source .venv/bin/activate
-uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+make serve
 ```
 
-API will be available at: `http://localhost:8000`
+This now uses the local virtual environment Python (`.venv/bin/python -m uvicorn ...`).
 
-### 2. Start the Frontend Server
+### 2) Start Frontend
 
 ```bash
-cd frontend
-python3 serve.py
+make frontend
 ```
 
-Frontend will be available at: `http://localhost:3000`
+Frontend URL: `http://localhost:3000`
 
-### 3. Open in Browser
+API URL expected by frontend:
 
-Navigate to: **http://localhost:3000**
+- default: `http://<current-host>:8000/api/v1`
+- override: set `window.ATLAS_API_BASE_URL` before loading `map.js`
 
----
+## UI Behavior
 
-## File Structure
+### Bivariate Coloring
 
-```
-frontend/
-├── index.html          # Main HTML structure
-├── map.js              # Mapbox GL JS logic and interactivity
-├── serve.py            # Local development server
-└── README.md           # This file
-```
+Counties are colored from a fixed 3x3 matrix:
 
----
+- X axis: trajectory (`at_risk`, `stable`, `improving`)
+- Y axis: signal strength (`high`, `mid`, `low`)
 
-## Data Flow
+Strength is derived from county `composite_score` terciles computed from loaded GeoJSON.
 
-```
-GeoJSON Endpoint (API)
-    ↓
-Frontend loads and displays on map
-    ↓
-User clicks county
-    ↓
-API call to /api/v1/areas/{fips_code}
-    ↓
-Side panel displays detailed data
-```
+### Legend Interaction
 
----
+- Click any legend cell to filter to that cell
+- Click same cell again to clear
+- Footer displays active filter + county count
+- Hover legend cells to preview signal label text
 
-## Color Scheme
+### Story Mode
 
-### Synthesis Grouping (Primary)
-- **Emerging Tailwinds:** `#2d5016` (Deep Green)
-- **Conditional Growth:** `#7cb342` (Light Green)
-- **Stable Constrained:** `#fdd835` (Yellow/Amber)
-- **At Risk / Headwinds:** `#f4511e` (Orange/Red)
-- **High Uncertainty:** `#757575` (Gray)
+Selecting a county opens narrative sections:
 
-### Directional Status
-- **Improving:** `#4caf50` (Green)
-- **Stable:** `#ffc107` (Yellow)
-- **At Risk:** `#f44336` (Red)
+- Trajectory Snapshot
+- Pressure Points
+- What to Watch Next
 
-### Confidence Level
-- **Strong:** `#1976d2` (Blue)
-- **Conditional:** `#ff9800` (Orange)
-- **Fragile:** `#e53935` (Red)
+Story mode uses existing backend fields only:
+`directional_class`, `composite_score`, `primary_strengths`, `primary_weaknesses`, `key_trends`, `data_year`.
 
----
+### Compare Mode
 
-## Current State (V2.0)
+Flow:
 
-If multi-year coverage is sparse, counties will show **\"High Uncertainty\"** (gray).
+1. Select County A
+2. Click `Compare`
+3. Click County B
 
-**Why?**
-- V2 requires multi-year evidence for momentum and stability signals
-- Missing years reduce confidence instead of being interpolated
-- This is **intentional and honest** - the system reflects evidence quality
+Panel shows county summaries and score diffs for:
 
-**When multi-year coverage improves:**
-- Counties distribute across all 5 groupings
-- Momentum and stability signal becomes active
-- More nuanced territorial assessments
+- Employment Gravity
+- Mobility Optionality
+- School Trajectory
+- Housing Elasticity
+- Demographic Momentum
+- Risk Drag
 
----
+### Ask Atlas Chat
 
-## API Integration
+- Click `Ask Atlas...` pill below map controls
+- Input expands and auto-focuses
+- Submit message to switch sidebar into chat mode
+- Multi-turn history + `previous_response_id` is maintained
+- Close chat (or click outside sidebar) to return to prior story/compare state
 
-### Endpoints Used
+## Backend Dependency
 
-**GeoJSON Source:**
-```
-../exports/md_counties_latest.geojson
-```
+Chat relies on `POST /api/v1/chat`.
 
-**County Detail API:**
-```
-GET http://localhost:8000/api/v1/areas/{fips_code}
-```
+Request payload:
 
-**Response Structure:**
 ```json
 {
-  "fips_code": "24031",
-  "county_name": "Montgomery County",
-  "synthesis_grouping": "high_uncertainty",
-  "directional_class": "stable",
-  "confidence_class": "conditional",
-  "composite_score": 0.7917,
-  "layer_scores": {...},
-  "primary_strengths": [...],
-  "primary_weaknesses": [...],
-  "key_trends": [...]
+  "message": "string",
+  "context": {},
+  "history": [{"role": "user", "content": "..."}],
+  "previous_response_id": "resp_..."
 }
 ```
 
----
+Response payload:
 
-## Customization
-
-### Change Map Style
-
-Edit `map.js` line 58:
-```javascript
-style: 'mapbox://styles/mapbox/light-v11'
+```json
+{
+  "response": "string",
+  "response_id": "resp_...",
+  "model": "gpt-5.1-mini",
+  "tokens": {"input": 0, "output": 0, "total": 0},
+  "cost": 0.0
+}
 ```
-
-Options:
-- `light-v11` - Light (current)
-- `dark-v11` - Dark
-- `streets-v12` - Streets
-- `outdoors-v12` - Outdoors
-- `satellite-v9` - Satellite
-
-### Change Initial View
-
-Edit `map.js` lines 59-61:
-```javascript
-center: [-77.0, 39.0],  // [longitude, latitude]
-zoom: 7,                 // Zoom level (6-12 recommended)
-```
-
-### Modify Colors
-
-Edit color constants in `map.js` lines 11-38.
-
----
-
-## Browser Requirements
-
-- Modern browser with ES6+ support
-- Tested on:
-  - Chrome 90+
-  - Firefox 88+
-  - Safari 14+
-  - Edge 90+
-
----
-
-## Development
-
-### No Build Step Required
-- Pure HTML/CSS/JavaScript
-- No bundler, no dependencies
-- Mapbox GL JS loaded via CDN
-
-### Hot Reload
-- Server watches for file changes
-- Refresh browser to see updates
-
-### Debugging
-
-Open browser console (F12) to see:
-- Network requests
-- Error messages
-- Map data loading status
-
----
-
-## Deployment
-
-### Option 1: Static Hosting (Netlify, Vercel)
-
-1. Build command: (none required)
-2. Publish directory: `frontend/`
-3. Environment variables:
-   - `API_BASE_URL` (if API hosted elsewhere)
-
-### Option 2: S3 + CloudFront
-
-```bash
-aws s3 sync frontend/ s3://maryland-atlas-frontend --exclude "*.py"
-```
-
-### Option 3: GitHub Pages
-
-1. Push frontend directory to `gh-pages` branch
-2. Enable GitHub Pages in repo settings
-3. Update `map.js` line 6 to point to production API
-
----
-
-## Performance
-
-- **GeoJSON File Size:** 373KB
-- **Initial Load Time:** < 2 seconds on 4G
-- **Time to Interactive:** < 3 seconds
-- **API Response Time:** < 200ms (local)
-
-**Optimizations:**
-- GeoJSON is pre-simplified (not real-time)
-- Mapbox vector tiles for base map
-- Minimal JavaScript dependencies
-
----
-
-## Accessibility
-
-- ✅ Keyboard navigation (ESC to close panel)
-- ✅ Semantic HTML
-- ✅ ARIA labels on interactive elements
-- ✅ High contrast color schemes
-- ⚠️ Screen reader support (partial - map is visual by nature)
-
----
-
-## Known Limitations
-
-### V2.0
-- Mobile layout not optimized (desktop-first)
-- No deep linking to specific counties
-- No search/filter functionality
-- No data export from UI
-
-### Future Enhancements (V2.1+)
-- Mobile-responsive layout
-- URL-based county selection (`?county=24031`)
-- Search bar for county lookup
-- CSV/PDF export of county reports
-- Historical time series view
-- Claims overlay (when claims system implemented)
-
----
 
 ## Troubleshooting
 
-### Map doesn't load
-- Check browser console for errors
-- Verify API server is running on port 8000
-- Verify `http://localhost:8000/api/v1/layers/counties/latest` responds
+### County detail fails to load
 
-### Counties show as gray squares
-- GeoJSON may not have loaded properly
-- Check Network tab in browser DevTools
-- Verify file path is correct
+Verify API is running and reachable:
 
-### Side panel doesn't open on click
-- Check API server is accessible
-- Look for CORS errors in console
-- Verify county FIPS code exists in database
+```bash
+curl -I http://localhost:8000/health
+```
 
-### Colors are wrong
-- Check `synthesis_grouping` values in GeoJSON
-- Verify color mappings in `map.js` match database values
-- Ensure latest export was generated
+### Chat fails with OpenAI errors
 
----
+- Ensure `OPENAI_API_KEY` is set
+- Ensure `AI_ENABLED=true`
+- Reinstall deps after update:
 
-## Support
+```bash
+make install
+```
 
-**Project Repository:** Maryland Viability Atlas
-**Documentation:** See `/docs` directory
-**API Docs:** http://localhost:8000/docs
+### Port 8000 already in use
 
----
+Find and stop stale process:
 
-**Status:** ✅ Ready for Production
-**Last Updated:** 2026-01-28
-**Primary Developer:** Maryland Atlas Team
+```bash
+lsof -i :8000
+kill <pid>
+```
