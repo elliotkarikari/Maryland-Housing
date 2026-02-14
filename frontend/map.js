@@ -123,6 +123,8 @@ const BIVARIATE_MAP_COLORS = {
     'improving|low': '#b8d491'
 };
 
+const COMPARE_SERIES_COLORS = ['#2f6fb4', '#5d9a3b', '#dd7f31', '#6e859b'];
+
 const FALLBACK_COLOR = 'rgba(117, 117, 117, 0.5)';
 const FALLBACK_MAP_COLOR = '#757575';
 
@@ -229,8 +231,19 @@ const appState = {
     panelState: 'empty',
     compare: {
         active: false,
-        countyA: null,
-        countyB: null
+        counties: [],
+        maxCount: 4,
+        splitView: false,
+        dragFips: null,
+        splitMaps: {
+            left: null,
+            right: null
+        }
+    },
+    countySearchIndex: [],
+    compareAutocomplete: {
+        matches: [],
+        activeIndex: -1
     },
     chat: {
         open: false,
@@ -297,7 +310,13 @@ const dom = {
     tourText: document.getElementById('tour-text'),
     tourBack: document.getElementById('tour-back'),
     tourNext: document.getElementById('tour-next'),
-    tourSkip: document.getElementById('tour-skip')
+    tourSkip: document.getElementById('tour-skip'),
+    compareBuilder: document.getElementById('compare-builder'),
+    compareBuilderMeta: document.getElementById('compare-builder-meta'),
+    compareSearchInput: document.getElementById('compare-search-input'),
+    compareAutocomplete: document.getElementById('compare-autocomplete'),
+    compareChipList: document.getElementById('compare-chip-list'),
+    splitViewToggle: document.getElementById('split-view-toggle')
 };
 
 if (!MAPBOX_TOKEN) {
@@ -311,6 +330,7 @@ function initialize() {
     setupLegendSwatches();
     setupLegendInteractions();
     setupPanelControls();
+    setupCompareBuilder();
     setupCountyTableView();
     setupGuidedTour();
     setupAskAtlasPill();
@@ -1794,15 +1814,13 @@ async function handleCountySelection(fipsCode, featureProps) {
     focusCountyByFips(fipsCode);
 
     if (appState.compare.active) {
-        if (!appState.compare.countyA || appState.compare.countyA.fips_code === fipsCode) {
-            appState.compare.countyA = optimistic;
-            appState.compare.countyB = null;
-            appState.selectedCounty = optimistic;
-            renderComparePanel();
-        } else {
-            appState.compare.countyB = optimistic;
-            renderComparePanel();
+        appState.selectedCounty = optimistic;
+        const upsertResult = upsertCompareCounty(optimistic);
+        if (upsertResult.limitReached) {
+            renderTransientPanelError('Compare Builder supports up to 4 counties. Remove one to add another.');
         }
+        renderCompareBuilder();
+        renderComparePanel();
     } else {
         appState.selectedCounty = optimistic;
         renderStoryPanel(optimistic, { loading: true });
@@ -1824,13 +1842,14 @@ async function handleCountySelection(fipsCode, featureProps) {
     appState.areaCache.set(fipsCode, merged);
 
     if (appState.compare.active) {
-        if (appState.compare.countyA && appState.compare.countyA.fips_code === fipsCode) {
-            appState.compare.countyA = merged;
+        const index = appState.compare.counties.findIndex((county) => county.fips_code === fipsCode);
+        if (index !== -1) {
+            appState.compare.counties[index] = merged;
+        }
+        if (appState.selectedCounty && appState.selectedCounty.fips_code === fipsCode) {
             appState.selectedCounty = merged;
         }
-        if (appState.compare.countyB && appState.compare.countyB.fips_code === fipsCode) {
-            appState.compare.countyB = merged;
-        }
+        renderCompareBuilder();
         renderComparePanel();
     } else if (appState.selectedCounty && appState.selectedCounty.fips_code === fipsCode) {
         appState.selectedCounty = merged;
@@ -2044,9 +2063,11 @@ async function fetchCountyDetail(fipsCode) {
 function renderStoryPanel(county, options = {}) {
     appState.panelState = 'story';
     appState.compare.active = false;
-    appState.compare.countyA = null;
-    appState.compare.countyB = null;
+    appState.compare.counties = [];
+    appState.compare.splitView = false;
+    destroySplitMaps();
     setCompareButtonState(false, true);
+    renderCompareBuilder();
 
     const score = county.composite_score;
     const scoreText = score === null ? 'N/A' : score.toFixed(3);
@@ -2386,28 +2407,28 @@ function renderComparePanel(options = {}) {
     dom.panel.classList.remove('chat-mode');
     hideFloatingAnalysisPanel();
 
-    setCompareButtonState(true, Boolean(appState.compare.countyA));
+    const counties = appState.compare.counties.slice(0, appState.compare.maxCount);
+    setCompareButtonState(true, Boolean(counties.length || appState.selectedCounty));
+    renderCompareBuilder();
 
-    const countyA = appState.compare.countyA;
-    const countyB = appState.compare.countyB;
-
-    if (!countyA) {
+    if (!counties.length) {
         dom.panelTitle.textContent = 'County Comparison';
-        dom.panelSubtitle.textContent = 'Select County A on the map to start compare mode.';
-        dom.panelBody.innerHTML = '<div class="empty-state">Click a county to set County A, then click a second county to compare.</div>';
+        dom.panelSubtitle.textContent = 'Add counties from the Compare Builder to start.';
+        dom.panelBody.innerHTML = '<div class="empty-state">Add at least two counties to compare. You can drag chips to reorder baseline vs comparators.</div>';
         return;
     }
 
-    if (!countyB) {
-        dom.panelTitle.textContent = `${countyA.county_name} vs ...`;
-        dom.panelSubtitle.textContent = `Data Year: ${countyA.data_year || 'N/A'}`;
+    const anchorCounty = counties[0];
+    if (counties.length === 1) {
+        dom.panelTitle.textContent = `${anchorCounty.county_name} vs ...`;
+        dom.panelSubtitle.textContent = `Data Year: ${anchorCounty.data_year || 'N/A'}`;
         dom.panelBody.innerHTML = `
             <div class="compare-shell">
                 <div class="compare-header-row">
-                    <span class="signal-chip" style="background:${countyA.bivariate_color}; color:#15334f;">${escapeHtml(countyA.bivariate_label)}</span>
+                    <span class="signal-chip" style="background:${anchorCounty.bivariate_color}; color:#15334f;">${escapeHtml(anchorCounty.bivariate_label)}</span>
                     <button class="exit-compare-btn" type="button" id="exit-compare-btn">Exit Compare</button>
                 </div>
-                <div class="empty-state">County A selected: <strong>${escapeHtml(countyA.county_name)}</strong>. Click another county on the map to set County B.</div>
+                <div class="empty-state">Baseline selected: <strong>${escapeHtml(anchorCounty.county_name)}</strong>. Add one or more comparator counties from the top-right search.</div>
                 ${options.error ? `<div class="error-inline">${escapeHtml(options.error)}</div>` : ''}
             </div>
         `;
@@ -2415,57 +2436,140 @@ function renderComparePanel(options = {}) {
         return;
     }
 
-    const dataYear = countyA.data_year || countyB.data_year || 'N/A';
-    dom.panelTitle.textContent = `${countyA.county_name} vs ${countyB.county_name}`;
+    const compareNames = counties.map((county) => county.county_name).join(' vs ');
+    const dataYear = counties.map((county) => county.data_year).find(Boolean) || 'N/A';
+    dom.panelTitle.textContent = compareNames;
     dom.panelSubtitle.textContent = `Data Year: ${dataYear}`;
 
+    const countyCards = counties.map((county, index) => {
+        const score = safeNumber(county.composite_score);
+        const scoreText = score === null ? 'N/A' : score.toFixed(3);
+        const anchorScore = safeNumber(anchorCounty.composite_score);
+        const diff = index === 0 || score === null || anchorScore === null ? null : score - anchorScore;
+        const diffLabel = index === 0 ? 'Baseline' : formatDiff(diff);
+        const diffCls = index === 0 ? '' : diffClass(diff);
+        const seriesColor = getCompareCountyColor(county, index);
+
+        return `
+            <article class="compare-card">
+                <h5>County ${String.fromCharCode(65 + index)}</h5>
+                <div class="county-name">${escapeHtml(county.county_name)}</div>
+                <span class="signal-chip" style="background:${county.bivariate_color}; color:#16334f;">${escapeHtml(county.bivariate_label)}</span>
+                <div class="compare-score">${scoreText}</div>
+                <span class="compare-diff-pill ${diffCls}" style="box-shadow: inset 3px 0 0 ${seriesColor};">${escapeHtml(diffLabel)}</span>
+            </article>
+        `;
+    }).join('');
+
+    const tableHead = counties.map((county, index) => {
+        const name = county.county_name || `County ${index + 1}`;
+        return `<th title="${escapeHtml(name)}">${String.fromCharCode(65 + index)}</th>`;
+    }).join('');
+
     const tableRows = LAYER_ROWS.map(([key, label]) => {
-        const a = safeNumber(countyA.layer_scores && countyA.layer_scores[key]);
-        const b = safeNumber(countyB.layer_scores && countyB.layer_scores[key]);
-        const diff = a !== null && b !== null ? a - b : null;
+        const anchorValue = safeNumber(anchorCounty.layer_scores && anchorCounty.layer_scores[key]);
+        const values = counties.map((county) => safeNumber(county.layer_scores && county.layer_scores[key]));
+        const comparatorCells = values.map((value, index) => {
+            if (index === 0) {
+                return `<td>${value === null ? 'N/A' : value.toFixed(3)}</td>`;
+            }
+            const diff = value === null || anchorValue === null ? null : value - anchorValue;
+            const diffText = diff === null ? '' : ` <span class="compare-cell-diff ${diffClass(diff)}">${formatDiff(diff)}</span>`;
+            return `<td class="${diffClass(diff)}">${value === null ? 'N/A' : value.toFixed(3)}${diffText}</td>`;
+        }).join('');
+
+        const spread = calculateSpread(values);
 
         return `
             <tr>
                 <td>${renderLayerLabelWithIcon(key, label)}</td>
-                <td>${a === null ? 'N/A' : a.toFixed(3)}</td>
-                <td>${b === null ? 'N/A' : b.toFixed(3)}</td>
-                <td class="${diffClass(diff)}">${formatDiff(diff)}</td>
+                ${comparatorCells}
+                <td>${spread === null ? 'N/A' : spread.toFixed(3)}</td>
             </tr>
         `;
     }).join('');
 
+    const layerChartRows = LAYER_ROWS.map(([key, label]) => {
+        const bars = counties.map((county, index) => {
+            const value = safeNumber(county.layer_scores && county.layer_scores[key]);
+            const width = value === null ? 0 : Math.round(Math.max(0, Math.min(1, value)) * 100);
+            const color = getCompareCountyColor(county, index);
+            const tag = String.fromCharCode(65 + index);
+            const valueText = value === null ? 'N/A' : value.toFixed(2);
+            return `
+                <div class="compare-layer-bar-item" title="${escapeHtml(`${county.county_name}: ${valueText}`)}">
+                    <span class="compare-layer-bar-tag">${tag}</span>
+                    <div class="compare-layer-bar-rail">
+                        <div class="compare-layer-bar" style="width:${width}%; background:${color};"></div>
+                    </div>
+                    <span class="compare-layer-bar-value">${valueText}</span>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="compare-layer-row">
+                <div class="compare-layer-label">${escapeHtml(label)}</div>
+                <div class="compare-layer-track">${bars}</div>
+            </div>
+        `;
+    }).join('');
+
+    const splitPair = chooseSplitComparisonPair(counties);
+    const splitViewHtml = appState.compare.splitView && splitPair
+        ? `
+            <div class="compare-split">
+                <h4>Split View</h4>
+                <div class="compare-split-grid">
+                    <article class="split-mini">
+                        <div class="split-mini-head">
+                            <div class="split-mini-title">${escapeHtml(splitPair.anchor.county_name)}</div>
+                            <div class="split-mini-subtitle">Baseline county</div>
+                        </div>
+                        <div id="split-mini-map-left" class="split-mini-map"></div>
+                    </article>
+                    <article class="split-mini">
+                        <div class="split-mini-head">
+                            <div class="split-mini-title">${escapeHtml(splitPair.comparator.county_name)}</div>
+                            <div class="split-mini-subtitle">Comparator ${escapeHtml(formatDiff(splitPair.diff))}</div>
+                        </div>
+                        <div id="split-mini-map-right" class="split-mini-map"></div>
+                    </article>
+                </div>
+            </div>
+        `
+        : '';
+
     dom.panelBody.innerHTML = `
         <div class="compare-shell">
             <div class="compare-header-row">
-                <div class="signal-chip" style="background:rgba(240,247,253,0.9); color:#224766;">County Comparison</div>
+                <div class="signal-chip" style="background:rgba(240,247,253,0.9); color:#224766;">County Comparison (${counties.length} counties)</div>
                 <button class="exit-compare-btn" type="button" id="exit-compare-btn">Exit Compare</button>
             </div>
 
             ${options.error ? `<div class="error-inline">${escapeHtml(options.error)}</div>` : ''}
 
             <div class="compare-cards">
-                <article class="compare-card">
-                    <h5>County A</h5>
-                    <div class="county-name">${escapeHtml(countyA.county_name)}</div>
-                    <span class="signal-chip" style="background:${countyA.bivariate_color}; color:#16334f;">${escapeHtml(countyA.bivariate_label)}</span>
-                    <div class="compare-score">${countyA.composite_score === null ? 'N/A' : countyA.composite_score.toFixed(3)}</div>
-                </article>
-                <article class="compare-card">
-                    <h5>County B</h5>
-                    <div class="county-name">${escapeHtml(countyB.county_name)}</div>
-                    <span class="signal-chip" style="background:${countyB.bivariate_color}; color:#16334f;">${escapeHtml(countyB.bivariate_label)}</span>
-                    <div class="compare-score">${countyB.composite_score === null ? 'N/A' : countyB.composite_score.toFixed(3)}</div>
-                </article>
+                ${countyCards}
             </div>
+
+            <section class="compare-layer-chart">
+                <h4>Layer Signal Bars</h4>
+                <div class="compare-layer-bars">
+                    ${layerChartRows}
+                </div>
+                <div class="compare-layer-chart-note">Bars show each county's normalized layer score (0 to 1). A is the baseline chip.</div>
+            </section>
+
+            ${splitViewHtml}
 
             <div class="compare-table-wrap">
                 <table class="compare-table">
                     <thead>
                         <tr>
                             <th>Layer</th>
-                            <th>A</th>
-                            <th>B</th>
-                            <th>Diff</th>
+                            ${tableHead}
+                            <th>Spread</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -2477,6 +2581,11 @@ function renderComparePanel(options = {}) {
     `;
 
     bindExitCompareButton();
+    if (appState.compare.splitView && splitPair) {
+        syncSplitViewMaps(splitPair.anchor, splitPair.comparator, splitPair.diff);
+    } else {
+        destroySplitMaps();
+    }
 }
 
 function describeTrajectory(trajectory, score) {
@@ -2607,6 +2716,586 @@ function bindExitCompareButton() {
     });
 }
 
+function setupCompareBuilder() {
+    if (
+        !dom.compareBuilder ||
+        !dom.compareBuilderMeta ||
+        !dom.compareSearchInput ||
+        !dom.compareAutocomplete ||
+        !dom.compareChipList ||
+        !dom.splitViewToggle
+    ) {
+        return;
+    }
+
+    dom.compareSearchInput.addEventListener('focus', () => {
+        updateCompareAutocomplete(dom.compareSearchInput.value);
+    });
+
+    dom.compareSearchInput.addEventListener('input', () => {
+        updateCompareAutocomplete(dom.compareSearchInput.value);
+    });
+
+    dom.compareSearchInput.addEventListener('keydown', async (event) => {
+        if (event.key === 'Escape') {
+            closeCompareAutocomplete();
+            dom.compareSearchInput.blur();
+            return;
+        }
+
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            if (!appState.compareAutocomplete.matches.length) {
+                updateCompareAutocomplete(dom.compareSearchInput.value);
+                return;
+            }
+
+            const direction = event.key === 'ArrowDown' ? 1 : -1;
+            const length = appState.compareAutocomplete.matches.length;
+            const current = appState.compareAutocomplete.activeIndex;
+            appState.compareAutocomplete.activeIndex = (current + direction + length) % length;
+            renderCompareAutocompleteList();
+            return;
+        }
+
+        if (event.key !== 'Enter') {
+            return;
+        }
+
+        event.preventDefault();
+        const matches = appState.compareAutocomplete.matches;
+        if (!matches.length) {
+            await addCountyFromCompareQuery(dom.compareSearchInput.value);
+            closeCompareAutocomplete();
+            return;
+        }
+
+        const activeIndex = appState.compareAutocomplete.activeIndex;
+        const target = matches[activeIndex] || matches[0];
+        if (!target) {
+            return;
+        }
+
+        await addCountyToCompareByFips(target.fips_code);
+        dom.compareSearchInput.value = '';
+        closeCompareAutocomplete();
+    });
+
+    dom.compareAutocomplete.addEventListener('mousedown', async (event) => {
+        event.preventDefault();
+        const button = event.target.closest('button[data-fips-code]');
+        if (!button) {
+            return;
+        }
+
+        const fipsCode = button.dataset.fipsCode;
+        if (!fipsCode) {
+            return;
+        }
+
+        await addCountyToCompareByFips(fipsCode);
+        dom.compareSearchInput.value = '';
+        closeCompareAutocomplete();
+    });
+
+    dom.compareChipList.addEventListener('click', async (event) => {
+        const removeButton = event.target.closest('button[data-remove-fips]');
+        if (removeButton) {
+            const fipsCode = removeButton.dataset.removeFips;
+            if (fipsCode) {
+                removeCompareCounty(fipsCode);
+            }
+            return;
+        }
+
+        const chip = event.target.closest('[data-fips-code]');
+        if (!chip) {
+            return;
+        }
+
+        const fipsCode = chip.dataset.fipsCode;
+        const feature = appState.countyFeaturesByFips.get(fipsCode || '');
+        if (!fipsCode || !feature || !feature.properties) {
+            return;
+        }
+
+        await handleCountySelection(fipsCode, feature.properties);
+    });
+
+    dom.compareChipList.addEventListener('dragstart', (event) => {
+        const chip = event.target.closest('[data-fips-code]');
+        if (!chip) {
+            return;
+        }
+        const fipsCode = chip.dataset.fipsCode;
+        if (!fipsCode) {
+            return;
+        }
+
+        appState.compare.dragFips = fipsCode;
+        chip.classList.add('dragging');
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', fipsCode);
+        }
+    });
+
+    dom.compareChipList.addEventListener('dragover', (event) => {
+        if (!appState.compare.dragFips) {
+            return;
+        }
+        const targetChip = event.target.closest('[data-fips-code]');
+        if (!targetChip) {
+            return;
+        }
+        event.preventDefault();
+        clearCompareDropTargets();
+        if (targetChip.dataset.fipsCode !== appState.compare.dragFips) {
+            targetChip.classList.add('drop-target');
+        }
+    });
+
+    dom.compareChipList.addEventListener('drop', (event) => {
+        if (!appState.compare.dragFips) {
+            return;
+        }
+        event.preventDefault();
+        const targetChip = event.target.closest('[data-fips-code]');
+        if (!targetChip) {
+            clearCompareDropTargets();
+            return;
+        }
+        const targetFips = targetChip.dataset.fipsCode;
+        if (targetFips) {
+            reorderCompareCounties(appState.compare.dragFips, targetFips);
+        }
+        clearCompareDropTargets();
+    });
+
+    dom.compareChipList.addEventListener('dragend', () => {
+        appState.compare.dragFips = null;
+        clearCompareDropTargets();
+        const dragging = dom.compareChipList.querySelector('.compare-chip.dragging');
+        if (dragging) {
+            dragging.classList.remove('dragging');
+        }
+    });
+
+    dom.splitViewToggle.addEventListener('click', () => {
+        if (appState.compare.counties.length < 2) {
+            renderTransientPanelError('Add at least two counties before enabling split view.');
+            return;
+        }
+        if (!appState.compare.active) {
+            appState.compare.active = true;
+        }
+        appState.compare.splitView = !appState.compare.splitView;
+        renderCompareBuilder();
+        if (appState.compare.active) {
+            renderComparePanel();
+        }
+    });
+
+    renderCompareBuilder();
+}
+
+function clearCompareDropTargets() {
+    if (!dom.compareChipList) {
+        return;
+    }
+    dom.compareChipList.querySelectorAll('.compare-chip').forEach((chip) => {
+        chip.classList.remove('drop-target');
+        chip.classList.remove('dragging');
+    });
+}
+
+function renderCompareBuilder() {
+    if (!dom.compareBuilderMeta || !dom.compareChipList || !dom.splitViewToggle) {
+        return;
+    }
+
+    const counties = appState.compare.counties.slice(0, appState.compare.maxCount);
+    const anchorScore = counties.length ? safeNumber(counties[0].composite_score) : null;
+
+    dom.compareBuilderMeta.textContent = `${counties.length} of ${appState.compare.maxCount}`;
+    dom.compareChipList.classList.toggle('empty', counties.length === 0);
+
+    dom.compareChipList.innerHTML = counties.map((county, index) => {
+        const score = safeNumber(county.composite_score);
+        const diff = index === 0 || score === null || anchorScore === null ? null : score - anchorScore;
+        const diffLabel = index === 0 ? 'Base' : formatDiff(diff);
+        const diffCls = index === 0 ? '' : diffClass(diff);
+        const color = getCompareCountyColor(county, index);
+        return `
+            <div class="compare-chip" draggable="true" data-fips-code="${escapeHtml(county.fips_code)}" style="box-shadow: inset 3px 0 0 ${color};">
+                <span class="compare-chip-rank">${index + 1}</span>
+                <span class="compare-chip-name">${escapeHtml(county.county_name)}</span>
+                <span class="compare-chip-diff ${diffCls}">${escapeHtml(diffLabel)}</span>
+                <button class="compare-chip-remove" type="button" data-remove-fips="${escapeHtml(county.fips_code)}" aria-label="Remove ${escapeHtml(county.county_name)}">×</button>
+            </div>
+        `;
+    }).join('');
+
+    const splitReady = appState.compare.counties.length >= 2 && appState.compare.active;
+    if (!splitReady && appState.compare.splitView) {
+        appState.compare.splitView = false;
+        destroySplitMaps();
+    }
+
+    dom.splitViewToggle.disabled = !splitReady;
+    dom.splitViewToggle.classList.toggle('active', splitReady && appState.compare.splitView);
+    dom.splitViewToggle.setAttribute('aria-pressed', splitReady && appState.compare.splitView ? 'true' : 'false');
+}
+
+function updateCompareAutocomplete(rawQuery) {
+    if (!dom.compareAutocomplete || !dom.compareSearchInput) {
+        return;
+    }
+
+    const query = String(rawQuery || '').trim().toLowerCase();
+    const selectedFips = new Set(appState.compare.counties.map((county) => county.fips_code));
+
+    const matches = appState.countySearchIndex
+        .filter((county) => !selectedFips.has(county.fips_code))
+        .filter((county) => {
+            if (!query) {
+                return true;
+            }
+            return county.county_name.toLowerCase().includes(query);
+        })
+        .sort((a, b) => {
+            const aName = a.county_name.toLowerCase();
+            const bName = b.county_name.toLowerCase();
+            const aStarts = query ? aName.startsWith(query) : false;
+            const bStarts = query ? bName.startsWith(query) : false;
+            if (aStarts !== bStarts) {
+                return aStarts ? -1 : 1;
+            }
+            return aName.localeCompare(bName);
+        })
+        .slice(0, 8);
+
+    appState.compareAutocomplete.matches = matches;
+    appState.compareAutocomplete.activeIndex = matches.length ? 0 : -1;
+    renderCompareAutocompleteList();
+}
+
+function renderCompareAutocompleteList() {
+    if (!dom.compareAutocomplete) {
+        return;
+    }
+
+    const matches = appState.compareAutocomplete.matches;
+    if (!matches.length) {
+        dom.compareAutocomplete.classList.remove('open');
+        dom.compareAutocomplete.innerHTML = '';
+        return;
+    }
+
+    dom.compareAutocomplete.classList.add('open');
+    dom.compareAutocomplete.innerHTML = matches.map((county, index) => `
+        <button
+            class="compare-suggestion ${index === appState.compareAutocomplete.activeIndex ? 'active' : ''}"
+            type="button"
+            role="option"
+            data-fips-code="${escapeHtml(county.fips_code)}"
+            aria-selected="${index === appState.compareAutocomplete.activeIndex ? 'true' : 'false'}"
+        >
+            ${escapeHtml(county.county_name)}
+        </button>
+    `).join('');
+}
+
+function closeCompareAutocomplete() {
+    appState.compareAutocomplete.matches = [];
+    appState.compareAutocomplete.activeIndex = -1;
+    if (!dom.compareAutocomplete) {
+        return;
+    }
+    dom.compareAutocomplete.classList.remove('open');
+    dom.compareAutocomplete.innerHTML = '';
+}
+
+async function addCountyFromCompareQuery(query) {
+    const normalized = String(query || '').trim().toLowerCase();
+    if (!normalized) {
+        return;
+    }
+
+    const exact = appState.countySearchIndex.find((county) => county.county_name.toLowerCase() === normalized);
+    if (exact) {
+        await addCountyToCompareByFips(exact.fips_code);
+        dom.compareSearchInput.value = '';
+        return;
+    }
+
+    const fallback = appState.countySearchIndex.find((county) => county.county_name.toLowerCase().includes(normalized));
+    if (!fallback) {
+        renderTransientPanelError(`No county matched "${query}".`);
+        return;
+    }
+
+    await addCountyToCompareByFips(fallback.fips_code);
+    dom.compareSearchInput.value = '';
+}
+
+async function addCountyToCompareByFips(fipsCode) {
+    const feature = appState.countyFeaturesByFips.get(fipsCode || '');
+    if (!feature || !feature.properties) {
+        return;
+    }
+
+    if (!appState.compare.active) {
+        appState.compare.active = true;
+        appState.compare.counties = [];
+        if (appState.selectedCounty && appState.selectedCounty.fips_code !== fipsCode) {
+            upsertCompareCounty(appState.selectedCounty);
+        }
+    }
+
+    await handleCountySelection(fipsCode, feature.properties);
+}
+
+function upsertCompareCounty(county) {
+    if (!county || !county.fips_code) {
+        return { index: -1, added: false, limitReached: false };
+    }
+
+    const existingIndex = appState.compare.counties.findIndex((item) => item.fips_code === county.fips_code);
+    if (existingIndex !== -1) {
+        appState.compare.counties[existingIndex] = county;
+        return { index: existingIndex, added: false, limitReached: false };
+    }
+
+    if (appState.compare.counties.length >= appState.compare.maxCount) {
+        return { index: -1, added: false, limitReached: true };
+    }
+
+    appState.compare.counties.push(county);
+    return {
+        index: appState.compare.counties.length - 1,
+        added: true,
+        limitReached: false
+    };
+}
+
+function removeCompareCounty(fipsCode) {
+    const index = appState.compare.counties.findIndex((county) => county.fips_code === fipsCode);
+    if (index === -1) {
+        return;
+    }
+
+    appState.compare.counties.splice(index, 1);
+    if (appState.selectedCounty && appState.selectedCounty.fips_code === fipsCode) {
+        appState.selectedCounty = appState.compare.counties[0] || null;
+    }
+
+    renderCompareBuilder();
+    renderCountyTableView();
+
+    if (!appState.compare.counties.length) {
+        appState.compare.active = false;
+        appState.compare.splitView = false;
+        destroySplitMaps();
+        if (appState.selectedCounty) {
+            renderStoryPanel(appState.selectedCounty);
+        } else {
+            clearSelection();
+        }
+        return;
+    }
+
+    if (appState.compare.active) {
+        renderComparePanel();
+    }
+}
+
+function reorderCompareCounties(dragFips, targetFips) {
+    if (!dragFips || !targetFips || dragFips === targetFips) {
+        return;
+    }
+
+    const counties = appState.compare.counties.slice();
+    const fromIndex = counties.findIndex((county) => county.fips_code === dragFips);
+    const toIndex = counties.findIndex((county) => county.fips_code === targetFips);
+    if (fromIndex === -1 || toIndex === -1) {
+        return;
+    }
+
+    const [moved] = counties.splice(fromIndex, 1);
+    counties.splice(toIndex, 0, moved);
+    appState.compare.counties = counties;
+
+    renderCompareBuilder();
+    if (appState.compare.active) {
+        renderComparePanel();
+    }
+}
+
+function chooseSplitComparisonPair(counties) {
+    if (!Array.isArray(counties) || counties.length < 2) {
+        return null;
+    }
+
+    const anchor = counties[0];
+    const anchorScore = safeNumber(anchor.composite_score);
+    let best = null;
+
+    counties.slice(1).forEach((county) => {
+        const score = safeNumber(county.composite_score);
+        const diff = score === null || anchorScore === null ? null : score - anchorScore;
+        const magnitude = diff === null ? -1 : Math.abs(diff);
+        if (!best || magnitude > best.magnitude) {
+            best = {
+                comparator: county,
+                diff,
+                magnitude
+            };
+        }
+    });
+
+    if (!best) {
+        return null;
+    }
+
+    return {
+        anchor,
+        comparator: best.comparator,
+        diff: best.diff
+    };
+}
+
+function syncSplitViewMaps(anchorCounty, comparatorCounty, diffValue) {
+    destroySplitMaps();
+
+    const leftContainer = document.getElementById('split-mini-map-left');
+    const rightContainer = document.getElementById('split-mini-map-right');
+    if (!leftContainer || !rightContainer || !appState.geojson) {
+        return;
+    }
+
+    const leftMap = createSplitMiniMap(leftContainer, anchorCounty, 0);
+    const rightMap = createSplitMiniMap(rightContainer, comparatorCounty, 1);
+    appState.compare.splitMaps.left = leftMap;
+    appState.compare.splitMaps.right = rightMap;
+
+    if (diffValue !== null) {
+        const readable = formatDiff(diffValue);
+        leftContainer.setAttribute('title', `${anchorCounty.county_name} baseline`);
+        rightContainer.setAttribute('title', `${comparatorCounty.county_name} diff ${readable} vs baseline`);
+    }
+}
+
+function createSplitMiniMap(container, county, colorIndex) {
+    const map = new mapboxgl.Map({
+        container,
+        style: MAPBOX_STYLE_URL,
+        center: appState.countyCentersByFips.get(county.fips_code) || [-76.9, 39.02],
+        zoom: 7.3,
+        minZoom: 6,
+        maxZoom: 11,
+        interactive: false,
+        attributionControl: false
+    });
+
+    map.on('load', () => {
+        map.addSource('split-counties', {
+            type: 'geojson',
+            data: appState.geojson
+        });
+
+        map.addLayer({
+            id: 'split-counties-fill',
+            type: 'fill',
+            source: 'split-counties',
+            paint: {
+                'fill-color': 'rgba(168, 188, 205, 0.32)',
+                'fill-opacity': 0.38
+            }
+        });
+
+        map.addLayer({
+            id: 'split-counties-line',
+            type: 'line',
+            source: 'split-counties',
+            paint: {
+                'line-color': 'rgba(54, 84, 109, 0.52)',
+                'line-width': 0.9,
+                'line-opacity': 0.65
+            }
+        });
+
+        map.addLayer({
+            id: 'split-focus-fill',
+            type: 'fill',
+            source: 'split-counties',
+            filter: ['==', 'fips_code', county.fips_code],
+            paint: {
+                'fill-color': getCompareCountyColor(county, colorIndex),
+                'fill-opacity': 0.72
+            }
+        });
+
+        map.addLayer({
+            id: 'split-focus-line',
+            type: 'line',
+            source: 'split-counties',
+            filter: ['==', 'fips_code', county.fips_code],
+            paint: {
+                'line-color': '#0f4f93',
+                'line-width': 2.2,
+                'line-opacity': 0.95
+            }
+        });
+
+        const bounds = appState.countyBoundsByFips.get(county.fips_code);
+        if (bounds) {
+            map.fitBounds(
+                [
+                    [bounds.minX, bounds.minY],
+                    [bounds.maxX, bounds.maxY]
+                ],
+                {
+                    padding: 20,
+                    duration: 0,
+                    maxZoom: 9.6
+                }
+            );
+        }
+
+        window.setTimeout(() => {
+            map.resize();
+        }, 24);
+    });
+
+    return map;
+}
+
+function destroySplitMaps() {
+    ['left', 'right'].forEach((slot) => {
+        const map = appState.compare.splitMaps[slot];
+        if (map && typeof map.remove === 'function') {
+            map.remove();
+        }
+        appState.compare.splitMaps[slot] = null;
+    });
+}
+
+function getCompareCountyColor(county, index = 0) {
+    if (county && county.bivariate_key) {
+        return getBivariateColor(county.bivariate_key, 'map');
+    }
+    return COMPARE_SERIES_COLORS[index % COMPARE_SERIES_COLORS.length];
+}
+
+function calculateSpread(values) {
+    const numeric = values.filter((value) => value !== null && Number.isFinite(value));
+    if (!numeric.length) {
+        return null;
+    }
+    return Math.max(...numeric) - Math.min(...numeric);
+}
+
 function setupPanelControls() {
     dom.compareBtn.addEventListener('click', async () => {
         if (appState.chat.open) {
@@ -2619,8 +3308,9 @@ function setupPanelControls() {
                 return;
             }
             appState.compare.active = true;
-            appState.compare.countyA = appState.selectedCounty;
-            appState.compare.countyB = null;
+            appState.compare.counties = [];
+            upsertCompareCounty(appState.selectedCounty);
+            renderCompareBuilder();
             renderComparePanel();
             return;
         }
@@ -2663,13 +3353,23 @@ function setCompareButtonState(active, ready) {
 
 function populateCountySearch() {
     const counties = Array.from(appState.countyFeaturesByFips.values())
-        .map((feature) => feature.properties && feature.properties.county_name)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b));
+        .map((feature) => {
+            const props = feature.properties || {};
+            return {
+                fips_code: props.fips_code || props.geoid || '',
+                county_name: props.county_name || ''
+            };
+        })
+        .filter((county) => county.fips_code && county.county_name)
+        .sort((a, b) => a.county_name.localeCompare(b.county_name));
+
+    appState.countySearchIndex = counties;
 
     dom.searchList.innerHTML = counties
-        .map((name) => `<option value="${escapeHtml(name)}"></option>`)
+        .map((county) => `<option value="${escapeHtml(county.county_name)}"></option>`)
         .join('');
+
+    renderCompareBuilder();
 }
 
 async function runCountySearch(query) {
@@ -2696,14 +3396,20 @@ async function runCountySearch(query) {
 function clearSelection() {
     appState.selectedCounty = null;
     appState.compare.active = false;
-    appState.compare.countyA = null;
-    appState.compare.countyB = null;
+    appState.compare.counties = [];
+    appState.compare.splitView = false;
+    destroySplitMaps();
+    closeCompareAutocomplete();
+    if (dom.compareSearchInput) {
+        dom.compareSearchInput.value = '';
+    }
 
     if (appState.map && appState.map.getLayer('counties-selected')) {
         appState.map.setFilter('counties-selected', ['==', 'fips_code', '']);
     }
 
     setCompareButtonState(false, false);
+    renderCompareBuilder();
     dom.panel.dataset.state = 'empty';
     dom.panel.classList.remove('detailed');
     dom.panel.classList.remove('chat-mode');
@@ -2711,7 +3417,7 @@ function clearSelection() {
     dom.panelSubtitle.textContent = 'No county selected yet';
     dom.panelBody.innerHTML = `
         <div class="empty-state">
-            Click a county on the map to open story mode. Use Compare to select two counties and view layer-by-layer score differences.
+            Click a county on the map to open story mode. Use Compare Builder to add up to four counties and view layer-by-layer score differences.
         </div>
     `;
     hideFloatingAnalysisPanel();
@@ -2726,8 +3432,14 @@ function highlightSelectedCounty(fipsCode) {
 
 function disableCompareMode() {
     appState.compare.active = false;
-    appState.compare.countyA = null;
-    appState.compare.countyB = null;
+    appState.compare.counties = [];
+    appState.compare.splitView = false;
+    destroySplitMaps();
+    closeCompareAutocomplete();
+    if (dom.compareSearchInput) {
+        dom.compareSearchInput.value = '';
+    }
+    renderCompareBuilder();
 
     if (appState.selectedCounty) {
         renderStoryPanel(appState.selectedCounty);
@@ -3025,6 +3737,15 @@ function setupGlobalEvents() {
         }
 
         const target = event.target;
+
+        if (
+            dom.compareAutocomplete &&
+            dom.compareAutocomplete.classList.contains('open') &&
+            dom.compareBuilder &&
+            !dom.compareBuilder.contains(target)
+        ) {
+            closeCompareAutocomplete();
+        }
 
         if (dom.askShell.classList.contains('expanded')) {
             const insideAsk = dom.askShell.contains(target);

@@ -157,11 +157,30 @@
             background: rgba(252, 254, 255, 0.96);
         }
 
-        .map-table-toggle {
+        .map-top-controls {
             position: absolute;
             top: 12px;
             right: 12px;
-            z-index: 35;
+            z-index: 36;
+            width: min(338px, calc(100% - 24px));
+            display: grid;
+            gap: 8px;
+            justify-items: end;
+            pointer-events: none;
+        }
+
+        .map-top-controls > * {
+            pointer-events: auto;
+        }
+
+        .map-top-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .map-table-toggle {
+            position: static;
             border: 1px solid rgba(18, 40, 58, 0.22);
             background: rgba(252, 254, 255, 0.94);
             border-radius: 999px;
@@ -185,7 +204,230 @@
             border-color: rgba(245, 252, 255, 0.34);
             background: rgba(32, 90, 142, 0.9);
             color: #f0f8ff;
-            right: 52px;
+        }
+
+        .compare-builder {
+            width: 100%;
+            border: 1px solid rgba(19, 42, 63, 0.2);
+            border-radius: 12px;
+            background: rgba(252, 254, 255, 0.94);
+            box-shadow: 0 10px 20px rgba(12, 28, 43, 0.17);
+            padding: 9px 9px 8px;
+            display: grid;
+            gap: 8px;
+            transition: opacity 180ms ease, transform 180ms ease;
+        }
+
+        .compare-builder-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .compare-builder-title {
+            font-family: 'Sora', sans-serif;
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #2a4661;
+            font-weight: 700;
+        }
+
+        .compare-builder-meta {
+            font-size: 11px;
+            color: #5c7388;
+        }
+
+        .split-view-toggle {
+            border: 1px solid rgba(27, 60, 85, 0.24);
+            border-radius: 999px;
+            background: rgba(246, 250, 255, 0.92);
+            color: #224766;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 5px 10px;
+            cursor: pointer;
+            transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+        }
+
+        .split-view-toggle.active {
+            background: #2f5f8a;
+            border-color: #244b6c;
+            color: #f1f8ff;
+        }
+
+        .compare-builder-search {
+            position: relative;
+        }
+
+        .compare-builder-input {
+            width: 100%;
+            border-radius: 9px;
+            border: 1px solid rgba(27, 48, 68, 0.24);
+            background: rgba(255, 255, 255, 0.95);
+            color: #16334c;
+            font-size: 13px;
+            font-family: inherit;
+            padding: 8px 10px;
+        }
+
+        .compare-builder-input:focus {
+            outline: 2px solid rgba(79, 136, 183, 0.26);
+            border-color: rgba(47, 98, 145, 0.58);
+        }
+
+        .compare-autocomplete {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            border: 1px solid rgba(18, 40, 58, 0.18);
+            border-radius: 9px;
+            background: rgba(252, 254, 255, 0.98);
+            box-shadow: 0 10px 20px rgba(11, 26, 40, 0.2);
+            max-height: 178px;
+            overflow-y: auto;
+            display: none;
+            z-index: 45;
+        }
+
+        .compare-autocomplete.open {
+            display: block;
+        }
+
+        .compare-suggestion {
+            width: 100%;
+            border: none;
+            background: transparent;
+            text-align: left;
+            cursor: pointer;
+            font-family: inherit;
+            color: #1d3b56;
+            font-size: 13px;
+            padding: 7px 9px;
+        }
+
+        .compare-suggestion + .compare-suggestion {
+            border-top: 1px solid rgba(18, 40, 58, 0.08);
+        }
+
+        .compare-suggestion:hover,
+        .compare-suggestion.active {
+            background: rgba(234, 244, 253, 0.82);
+        }
+
+        .compare-chip-list {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            min-height: 31px;
+        }
+
+        .compare-chip-list.empty::before {
+            content: 'Add up to 4 counties for compare.';
+            color: #607286;
+            font-size: 11px;
+        }
+
+        .compare-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border-radius: 999px;
+            border: 1px solid rgba(18, 40, 58, 0.18);
+            background: rgba(247, 251, 255, 0.95);
+            color: #1f405c;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 5px 8px;
+            user-select: none;
+            cursor: grab;
+            transition: box-shadow 140ms ease, transform 140ms ease;
+        }
+
+        .compare-chip:active {
+            cursor: grabbing;
+        }
+
+        .compare-chip.dragging {
+            opacity: 0.45;
+            transform: scale(0.98);
+        }
+
+        .compare-chip.drop-target {
+            box-shadow: 0 0 0 2px rgba(63, 114, 160, 0.32);
+        }
+
+        .compare-chip-rank {
+            width: 17px;
+            height: 17px;
+            border-radius: 999px;
+            border: 1px solid rgba(27, 56, 80, 0.2);
+            background: rgba(240, 246, 252, 0.92);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: #33526d;
+            flex: 0 0 17px;
+        }
+
+        .compare-chip-name {
+            max-width: 122px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .compare-chip-diff {
+            border-radius: 999px;
+            padding: 2px 6px;
+            font-size: 10px;
+            font-weight: 700;
+            border: 1px solid rgba(18, 40, 58, 0.16);
+            background: rgba(247, 251, 255, 0.92);
+            color: #43617d;
+            min-width: 44px;
+            text-align: center;
+        }
+
+        .compare-chip-diff.diff-pos {
+            border-color: rgba(33, 122, 51, 0.34);
+            background: rgba(226, 246, 230, 0.9);
+            color: #217a33;
+        }
+
+        .compare-chip-diff.diff-neg {
+            border-color: rgba(192, 58, 47, 0.35);
+            background: rgba(253, 235, 231, 0.9);
+            color: #c03a2f;
+        }
+
+        .compare-chip-remove {
+            border: none;
+            background: transparent;
+            color: #506b84;
+            cursor: pointer;
+            font-size: 12px;
+            line-height: 1;
+            width: 14px;
+            height: 14px;
+            padding: 0;
+        }
+
+        .compare-builder-hint {
+            font-size: 10px;
+            color: #607286;
+            line-height: 1.25;
+        }
+
+        .map-stage.table-view-active #compare-builder,
+        .map-stage.table-view-active .tour-launch-btn {
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-6px);
         }
 
         .county-table-panel {
@@ -846,10 +1088,7 @@
         }
 
         .tour-launch-btn {
-            position: absolute;
-            top: 12px;
-            right: 104px;
-            z-index: 35;
+            position: static;
             border: 1px solid rgba(31, 64, 92, 0.2);
             background: rgba(244, 250, 255, 0.9);
             color: #2b4b68;
@@ -865,11 +1104,6 @@
             transform: translateY(-1px);
             box-shadow: 0 6px 12px rgba(16, 40, 61, 0.14);
             background: rgba(236, 246, 255, 0.96);
-        }
-
-        .map-stage.table-view-active .tour-launch-btn {
-            opacity: 0;
-            pointer-events: none;
         }
 
         .atlas-panel {
@@ -1465,11 +1699,12 @@
             align-items: center;
             justify-content: space-between;
             gap: 10px;
+            flex-wrap: wrap;
         }
 
         .compare-cards {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
             gap: 10px;
         }
 
@@ -1481,10 +1716,6 @@
             display: grid;
             gap: 8px;
             animation: atlas-fade-up 240ms ease both;
-        }
-
-        .compare-card:nth-child(2) {
-            animation-delay: 45ms;
         }
 
         .compare-card h5 {
@@ -1503,6 +1734,121 @@
             font-family: 'Sora', sans-serif;
             font-size: 27px;
             color: #172f46;
+        }
+
+        .compare-diff-pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            border: 1px solid rgba(18, 40, 58, 0.16);
+            background: rgba(247, 251, 255, 0.92);
+            color: #4a647d;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 4px 8px;
+            width: fit-content;
+        }
+
+        .compare-card-anchor {
+            color: #46627a;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .compare-diff-pill.diff-pos {
+            border-color: rgba(33, 122, 51, 0.34);
+            background: rgba(226, 246, 230, 0.9);
+            color: #217a33;
+        }
+
+        .compare-diff-pill.diff-neg {
+            border-color: rgba(192, 58, 47, 0.35);
+            background: rgba(253, 235, 231, 0.9);
+            color: #c03a2f;
+        }
+
+        .compare-layer-chart {
+            border: 1px solid rgba(20, 44, 64, 0.15);
+            border-radius: 12px;
+            background: rgba(252, 254, 255, 0.95);
+            padding: 10px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .compare-layer-chart h4 {
+            font-family: 'Sora', sans-serif;
+            font-size: 13px;
+            color: #1d3a55;
+        }
+
+        .compare-layer-bars {
+            display: grid;
+            gap: 7px;
+        }
+
+        .compare-layer-row {
+            display: grid;
+            grid-template-columns: 130px minmax(0, 1fr);
+            gap: 8px;
+            align-items: center;
+        }
+
+        .compare-layer-label {
+            font-size: 11px;
+            color: #476179;
+            line-height: 1.2;
+        }
+
+        .compare-layer-track {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 4px;
+            min-width: 0;
+        }
+
+        .compare-layer-bar-item {
+            display: grid;
+            grid-template-columns: 14px minmax(0, 1fr) 34px;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .compare-layer-bar-tag {
+            font-size: 10px;
+            color: #54708a;
+            font-weight: 700;
+            text-align: center;
+        }
+
+        .compare-layer-bar-rail {
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(18, 40, 58, 0.12);
+            overflow: hidden;
+        }
+
+        .compare-layer-bar {
+            height: 100%;
+            border-radius: inherit;
+            min-width: 4px;
+            opacity: 0.9;
+            transition: width 220ms ease;
+        }
+
+        .compare-layer-bar-value {
+            font-size: 10px;
+            color: #4d6882;
+            text-align: right;
+        }
+
+        .compare-layer-chart-note {
+            font-size: 10px;
+            color: #607286;
+            line-height: 1.3;
         }
 
         .compare-table-wrap {
@@ -1529,7 +1875,11 @@
         .compare-table th:first-child,
         .compare-table td:first-child {
             text-align: left;
-            width: 44%;
+            width: 36%;
+        }
+
+        .compare-table th {
+            white-space: nowrap;
         }
 
         .compare-table td:first-child .layer-label-icon {
@@ -1543,6 +1893,62 @@
             border-bottom: none;
         }
 
+        .compare-cell-diff {
+            font-size: 10px;
+            margin-left: 4px;
+        }
+
+        .compare-split {
+            border: 1px solid rgba(20, 44, 64, 0.15);
+            border-radius: 12px;
+            background: rgba(252, 254, 255, 0.95);
+            padding: 9px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .compare-split h4 {
+            font-family: 'Sora', sans-serif;
+            font-size: 13px;
+            color: #1d3a55;
+        }
+
+        .compare-split-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .split-mini {
+            border: 1px solid rgba(18, 40, 58, 0.16);
+            border-radius: 10px;
+            overflow: hidden;
+            background: rgba(247, 252, 255, 0.9);
+        }
+
+        .split-mini-head {
+            padding: 6px 7px;
+            border-bottom: 1px solid rgba(18, 40, 58, 0.14);
+            background: rgba(240, 248, 255, 0.9);
+            display: grid;
+            gap: 2px;
+        }
+
+        .split-mini-title {
+            font-size: 11px;
+            color: #24425d;
+            font-weight: 700;
+        }
+
+        .split-mini-subtitle {
+            font-size: 10px;
+            color: #607286;
+        }
+
+        .split-mini-map {
+            height: 146px;
+        }
+
         .diff-pos {
             color: #1f7a33 !important;
             font-weight: 700;
@@ -1551,6 +1957,11 @@
         .diff-neg {
             color: #c03a2f !important;
             font-weight: 700;
+        }
+
+        .split-view-toggle:disabled {
+            opacity: 0.42;
+            cursor: not-allowed;
         }
 
         .chat-mode {
@@ -1666,6 +2077,7 @@
 
         body.map-moving .atlas-card,
         body.map-moving .legend-bivariate,
+        body.map-moving .compare-builder,
         body.map-moving .ask-atlas-pill,
         body.map-moving .ask-atlas-input-shell,
         body.map-moving .county-table-panel.open {
@@ -1674,6 +2086,7 @@
 
         body.map-moving .atlas-card:hover,
         body.map-moving .legend-bivariate:hover,
+        body.map-moving .compare-builder:hover,
         body.map-moving .ask-atlas-pill:hover,
         body.map-moving .ask-atlas-input-shell:hover,
         body.map-moving .county-table-panel.open:hover {
@@ -1887,18 +2300,32 @@
                 bottom: 8px;
             }
 
-            .map-table-toggle {
+            .map-top-controls {
                 top: 8px;
                 right: 8px;
+                width: min(308px, calc(100% - 16px));
             }
 
+            .map-top-actions {
+                gap: 6px;
+            }
+
+            .map-table-toggle,
             .tour-launch-btn {
-                top: 8px;
-                right: 92px;
+                font-size: 10px;
+                padding: 6px 9px;
             }
 
-            .map-stage.table-view-active .map-table-toggle {
-                right: 44px;
+            .compare-builder {
+                padding: 8px;
+            }
+
+            .compare-layer-row {
+                grid-template-columns: 102px minmax(0, 1fr);
+            }
+
+            .compare-split-grid {
+                grid-template-columns: 1fr;
             }
 
             .county-table-head {
@@ -1942,8 +2369,34 @@
     <section class="map-stage">
         <div id="map"></div>
         <div id="map-controls"></div>
-        <button id="tour-launch-btn" class="tour-launch-btn" type="button">Guided Tour</button>
-        <button id="map-table-toggle" class="map-table-toggle" type="button" aria-expanded="false" aria-controls="county-table-panel">Table View</button>
+        <div class="map-top-controls">
+            <div class="map-top-actions">
+                <button id="tour-launch-btn" class="tour-launch-btn" type="button">Guided Tour</button>
+                <button id="map-table-toggle" class="map-table-toggle" type="button" aria-expanded="false" aria-controls="county-table-panel">Table View</button>
+            </div>
+            <section id="compare-builder" class="compare-builder" role="region" aria-label="Compare counties">
+                <div class="compare-builder-row">
+                    <div class="compare-builder-title">Compare Builder</div>
+                    <div id="compare-builder-meta" class="compare-builder-meta">0 of 4</div>
+                </div>
+                <div class="compare-builder-row">
+                    <button id="split-view-toggle" class="split-view-toggle" type="button" aria-pressed="false">Split View</button>
+                </div>
+                <div class="compare-builder-search">
+                    <input
+                        id="compare-search-input"
+                        class="compare-builder-input"
+                        type="search"
+                        placeholder="Add county to compare..."
+                        autocomplete="off"
+                        aria-label="Search county to add to compare"
+                    >
+                    <div id="compare-autocomplete" class="compare-autocomplete" role="listbox" aria-label="County suggestions"></div>
+                </div>
+                <div id="compare-chip-list" class="compare-chip-list empty" aria-live="polite"></div>
+                <div class="compare-builder-hint">Drag county chips to reorder baseline and comparators.</div>
+            </section>
+        </div>
 
         <div id="county-table-panel" class="county-table-panel" role="dialog" aria-label="County table view" aria-hidden="true">
             <div class="county-table-head">
@@ -2039,7 +2492,7 @@
                 </header>
                 <div id="atlas-panel-body" class="atlas-panel-body">
                     <div class="empty-state">
-                        Click a county on the map to open story mode. Use Compare to select two counties and view layer-by-layer score differences.
+                        Click a county on the map to open story mode. Use Compare Builder to add up to four counties and view layer-by-layer score differences.
                     </div>
                 </div>
             </section>
