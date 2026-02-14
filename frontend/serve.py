@@ -8,13 +8,51 @@ import http.server
 import socketserver
 import os
 from pathlib import Path
+import json
 
 # Configuration
 PORT = 3000
 FRONTEND_DIR = Path(__file__).parent
+PROJECT_ROOT = FRONTEND_DIR.parent
+DOTENV_PATH = PROJECT_ROOT / ".env"
+
+
+def load_dotenv(path: Path) -> dict:
+    """Load simple KEY=VALUE pairs from .env without importing extra deps."""
+    values = {}
+    if not path.exists():
+        return values
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if not key:
+            continue
+
+        if (
+            len(value) >= 2
+            and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'"))
+        ):
+            value = value[1:-1]
+
+        values[key] = value
+
+    return values
 
 class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP request handler with CORS enabled"""
+
+    def do_GET(self):
+        if self.path in ("/runtime-config.js", "/frontend/runtime-config.js"):
+            self.serve_runtime_config()
+            return
+        super().do_GET()
 
     def end_headers(self):
         # Enable CORS
@@ -27,6 +65,28 @@ class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.end_headers()
+
+    def serve_runtime_config(self):
+        env_values = load_dotenv(DOTENV_PATH)
+        payload = {
+            "MAPBOX_ACCESS_TOKEN": env_values.get("MAPBOX_ACCESS_TOKEN", ""),
+            "ATLAS_API_BASE_URL": env_values.get("ATLAS_API_BASE_URL", "")
+        }
+        body = (
+            "window.ATLAS_RUNTIME_CONFIG = "
+            + json.dumps(payload)
+            + ";\n"
+            + "if (!window.MAPBOX_ACCESS_TOKEN && window.ATLAS_RUNTIME_CONFIG.MAPBOX_ACCESS_TOKEN) { "
+            + "window.MAPBOX_ACCESS_TOKEN = window.ATLAS_RUNTIME_CONFIG.MAPBOX_ACCESS_TOKEN; }\n"
+            + "if (!window.ATLAS_API_BASE_URL && window.ATLAS_RUNTIME_CONFIG.ATLAS_API_BASE_URL) { "
+            + "window.ATLAS_API_BASE_URL = window.ATLAS_RUNTIME_CONFIG.ATLAS_API_BASE_URL; }\n"
+        ).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 def main():
     os.chdir(FRONTEND_DIR)

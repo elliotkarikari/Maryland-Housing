@@ -2,6 +2,7 @@
 
 const MAPBOX_TOKEN =
     window.MAPBOX_ACCESS_TOKEN ||
+    (window.ATLAS_RUNTIME_CONFIG && window.ATLAS_RUNTIME_CONFIG.MAPBOX_ACCESS_TOKEN) ||
     '';
 const MAPBOX_STYLE_URL = 'mapbox://styles/elkari23/cmlapbzzr005001s57o3mdhxk';
 const PAGE_THEME_STORAGE_KEY = 'atlas.page.theme';
@@ -9,6 +10,11 @@ const PAGE_THEME_STORAGE_KEY = 'atlas.page.theme';
 const API_BASE_OVERRIDE =
     typeof window.ATLAS_API_BASE_URL === 'string'
         ? window.ATLAS_API_BASE_URL.trim()
+        : (
+            window.ATLAS_RUNTIME_CONFIG &&
+            typeof window.ATLAS_RUNTIME_CONFIG.ATLAS_API_BASE_URL === 'string'
+        )
+            ? window.ATLAS_RUNTIME_CONFIG.ATLAS_API_BASE_URL.trim()
         : '';
 
 const API_BASE_CANDIDATES = (() => {

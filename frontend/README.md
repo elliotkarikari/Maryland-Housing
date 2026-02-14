@@ -33,6 +33,13 @@ make frontend
 
 Frontend URL: `http://localhost:3000`
 
+The frontend server now exposes `runtime-config.js`, which injects:
+
+- `MAPBOX_ACCESS_TOKEN` from repo-root `.env`
+- optional `ATLAS_API_BASE_URL` from repo-root `.env`
+
+So no Mapbox token should be hardcoded in `frontend/map.js`.
+
 API URL expected by frontend:
 
 - default: `http://<current-host>:8000/api/v1`
