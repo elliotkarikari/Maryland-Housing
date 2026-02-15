@@ -10,6 +10,11 @@ import pytest
 
 # Keep tests backend-stable regardless of developer .env runtime backend.
 os.environ.setdefault("DATA_BACKEND", "postgres")
+# Required app settings for import-time config validation in CI.
+# These defaults avoid coupling tests to developer/runner secrets.
+os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+os.environ.setdefault("MAPBOX_ACCESS_TOKEN", "test-mapbox-token")
+os.environ.setdefault("CENSUS_API_KEY", "test-census-key")
 
 
 # Sample Maryland county FIPS codes for testing
