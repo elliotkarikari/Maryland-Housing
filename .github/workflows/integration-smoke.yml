@@ -43,6 +43,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Ensure SQLAlchemy Databricks dialect entrypoint is available in CI.
+          python -m pip install "databricks-sql-connector[sqlalchemy]>=3.2.0,<4"
+
+      - name: Verify Databricks SQLAlchemy dialect
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+
+          if importlib.util.find_spec("databricks.sqlalchemy") is None:
+              print("::error::Missing databricks.sqlalchemy dialect module in runner env")
+              sys.exit(1)
+          print("Databricks SQLAlchemy dialect is available")
+          PY
 
       - name: Validate required integration secrets
         run: |
