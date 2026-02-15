@@ -425,7 +425,13 @@ CREATE TABLE layer1_employment_gravity (
     high_wage_jobs INTEGER,
     mid_wage_jobs INTEGER,
     low_wage_jobs INTEGER,
+    high_wage_jobs_accessible_45min INTEGER,  -- frontier diagnostic (county max)
+    high_wage_jobs_accessible_45min_weighted_mean FLOAT,  -- primary county accessibility
+    high_wage_jobs_accessible_45min_weighted_median FLOAT,
+    total_jobs_accessible_45min_weighted_mean FLOAT,
+    total_jobs_accessible_45min_weighted_median FLOAT,
     economic_accessibility_score FLOAT,
+    accessibility_method VARCHAR(40),  -- network_od_drive_transit | haversine_proxy
     created_at TIMESTAMP DEFAULT NOW(),
     PRIMARY KEY (fips_code, data_year)
 );

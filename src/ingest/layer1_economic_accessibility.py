@@ -86,6 +86,11 @@ LOCAL_STRENGTH_WEIGHT = 0.4
 REGIONAL_ACCESS_WEIGHT = 0.6
 QWI_BLEND_WEIGHT = 0.15
 
+# Accessibility mode options
+ACCESSIBILITY_MODE_AUTO = "auto"
+ACCESSIBILITY_MODE_NETWORK = "network"
+ACCESSIBILITY_MODE_PROXY = "proxy"
+
 # Sectors for diversity analysis (NAICS 2-digit via CNS codes)
 NAICS_SECTORS = {
     "CNS01": "Agriculture",
@@ -823,130 +828,336 @@ def fetch_acs_demographics(year: int) -> pd.DataFrame:
 # =============================================================================
 
 
-def compute_economic_accessibility(
-    tract_jobs: pd.DataFrame, tract_centroids: pd.DataFrame
+def _resolve_accessibility_thresholds(
+    threshold_30_min: Optional[int] = None,
+    threshold_45_min: Optional[int] = None,
+    proxy_distance_30_km: Optional[float] = None,
+    proxy_distance_45_km: Optional[float] = None,
+) -> Dict[str, float]:
+    t30_min = int(threshold_30_min or settings.LAYER1_THRESHOLD_30_MINUTES)
+    t45_min = int(threshold_45_min or settings.LAYER1_THRESHOLD_45_MINUTES)
+    d30_km = float(
+        proxy_distance_30_km
+        if proxy_distance_30_km is not None
+        else settings.LAYER1_PROXY_DISTANCE_30_KM
+    )
+    d45_km = float(
+        proxy_distance_45_km
+        if proxy_distance_45_km is not None
+        else settings.LAYER1_PROXY_DISTANCE_45_KM
+    )
+
+    if t30_min <= 0 or t45_min <= 0:
+        raise ValueError("Accessibility minute thresholds must be positive")
+    if d30_km <= 0 or d45_km <= 0:
+        raise ValueError("Accessibility proxy distance thresholds must be positive")
+    if t30_min > t45_min:
+        raise ValueError("30-minute threshold cannot exceed 45-minute threshold")
+    if d30_km > d45_km:
+        raise ValueError("30-minute proxy distance cannot exceed 45-minute proxy distance")
+
+    return {
+        "threshold_30_min": t30_min,
+        "threshold_45_min": t45_min,
+        "proxy_distance_30_km": d30_km,
+        "proxy_distance_45_km": d45_km,
+    }
+
+
+def _check_r5py_available() -> bool:
+    try:
+        import r5py  # noqa: F401
+
+        return True
+    except (ImportError, Exception) as exc:
+        if "java" in str(exc).lower():
+            logger.warning("Layer 1 network mode requires Java 11+ for r5py")
+        return False
+
+
+def _load_network_inputs():
+    from src.ingest.layer2_accessibility import download_gtfs_feeds, download_maryland_osm
+
+    osm_path = download_maryland_osm()
+    gtfs_feeds = download_gtfs_feeds()
+    if not gtfs_feeds:
+        raise RuntimeError("No GTFS feeds available for Layer 1 network accessibility")
+    return osm_path, gtfs_feeds
+
+
+def _default_departure_time() -> datetime:
+    return datetime(
+        2026,
+        1,
+        27,  # Tuesday
+        settings.LAYER1_NETWORK_DEPARTURE_HOUR,
+        settings.LAYER1_NETWORK_DEPARTURE_MINUTE,
+    )
+
+
+def _compute_accessibility_network(
+    df: pd.DataFrame,
+    threshold_30_min: int,
+    threshold_45_min: int,
 ) -> pd.DataFrame:
-    """
-    Compute economic accessibility metrics using proximity-based model.
+    import r5py
 
-    This uses a gravity model with distance decay to estimate job accessibility.
-    For each tract, we calculate how many high-wage and total jobs are
-    reachable within various travel time thresholds.
+    logger.info("Computing Layer 1 accessibility with network OD matrix (drive+transit)...")
+    osm_path, gtfs_feeds = _load_network_inputs()
+    network = r5py.TransportNetwork(
+        osm_pbf=str(osm_path),
+        gtfs=[str(feed.path) for feed in gtfs_feeds],
+    )
 
-    Travel time approximations (straight-line distance → time):
-    - 30 min driving: ~30 km (18.6 mi) at 60 km/h avg
-    - 45 min driving: ~45 km (28 mi)
-    - 30 min transit: ~15 km (9.3 mi) at 30 km/h avg
-    - 45 min transit: ~22 km (13.7 mi)
+    origins = gpd.GeoDataFrame(
+        df[["tract_geoid", "fips_code"]].copy(),
+        geometry=gpd.points_from_xy(df["centroid_lon"], df["centroid_lat"]),
+        crs="EPSG:4326",
+    ).rename(columns={"tract_geoid": "id"})
+    destinations = origins[["id", "geometry"]].copy()
+    departure_time = _default_departure_time()
 
-    We use a blended estimate assuming ~70% drive, ~30% transit.
+    max_minutes = max(threshold_30_min, threshold_45_min)
+    drive = r5py.TravelTimeMatrixComputer(
+        network,
+        origins=origins,
+        destinations=destinations,
+        departure=departure_time,
+        transport_modes=[r5py.TransportMode.CAR],
+        max_time=timedelta(minutes=max_minutes),
+    ).compute_travel_times()
 
-    Args:
-        tract_jobs: DataFrame with jobs by tract
-        tract_centroids: DataFrame with tract centroids
+    transit = r5py.TravelTimeMatrixComputer(
+        network,
+        origins=origins,
+        destinations=destinations,
+        departure=departure_time,
+        departure_time_window=timedelta(hours=1),
+        transport_modes=[r5py.TransportMode.TRANSIT, r5py.TransportMode.WALK],
+        max_time=timedelta(minutes=max_minutes),
+    ).compute_travel_times()
 
-    Returns:
-        DataFrame with accessibility metrics
-    """
-    logger.info("Computing economic accessibility (proximity-based model)...")
+    drive_df = drive[["from_id", "to_id", "travel_time"]].rename(
+        columns={"travel_time": "travel_time_drive"}
+    )
+    transit_df = transit[["from_id", "to_id", "travel_time"]].rename(
+        columns={"travel_time": "travel_time_transit"}
+    )
+    drive_df["from_id"] = drive_df["from_id"].astype(str)
+    drive_df["to_id"] = drive_df["to_id"].astype(str)
+    transit_df["from_id"] = transit_df["from_id"].astype(str)
+    transit_df["to_id"] = transit_df["to_id"].astype(str)
 
-    # Ensure both have string types for merge keys
-    tract_centroids["tract_geoid"] = tract_centroids["tract_geoid"].astype(str)
-    tract_centroids["fips_code"] = tract_centroids["fips_code"].astype(str)
-    tract_jobs["tract_geoid"] = tract_jobs["tract_geoid"].astype(str)
-    tract_jobs["fips_code"] = tract_jobs["fips_code"].astype(str)
+    od = drive_df.merge(transit_df, on=["from_id", "to_id"], how="outer")
+    od["travel_time"] = od[["travel_time_drive", "travel_time_transit"]].min(
+        axis=1, skipna=True
+    )
+    od = od.drop(columns=["travel_time_drive", "travel_time_transit"])
 
-    # Merge centroids with jobs
-    df = tract_centroids.merge(tract_jobs, on=["tract_geoid", "fips_code"], how="inner")
-    logger.info(f"Merged {len(df)} tracts with job and location data")
+    jobs_lookup = (
+        df[["tract_geoid", "high_wage_jobs", "total_jobs"]]
+        .rename(columns={"tract_geoid": "to_id"})
+        .copy()
+    )
+    jobs_lookup["to_id"] = jobs_lookup["to_id"].astype(str)
+    od = od.merge(jobs_lookup, on="to_id", how="left")
+    od["high_wage_jobs"] = od["high_wage_jobs"].fillna(0)
+    od["total_jobs"] = od["total_jobs"].fillna(0)
 
-    # Fill missing values
-    df = df.fillna(0)
+    within_30 = od[(od["travel_time"].notna()) & (od["travel_time"] <= threshold_30_min)]
+    within_45 = od[(od["travel_time"].notna()) & (od["travel_time"] <= threshold_45_min)]
 
-    # Distance thresholds (km) - blended car/transit estimate
-    DIST_30MIN = 20  # ~30 min travel (blended)
-    DIST_45MIN = 35  # ~45 min travel (blended)
+    agg_30 = within_30.groupby("from_id")[["high_wage_jobs", "total_jobs"]].sum().rename(
+        columns={
+            "high_wage_jobs": "high_wage_jobs_accessible_30min",
+            "total_jobs": "total_jobs_accessible_30min",
+        }
+    )
+    agg_45 = within_45.groupby("from_id")[["high_wage_jobs", "total_jobs"]].sum().rename(
+        columns={
+            "high_wage_jobs": "high_wage_jobs_accessible_45min",
+            "total_jobs": "total_jobs_accessible_45min",
+        }
+    )
 
-    # Create coordinate arrays for efficient computation
+    enriched = df.merge(
+        agg_30,
+        left_on="tract_geoid",
+        right_index=True,
+        how="left",
+    ).merge(
+        agg_45,
+        left_on="tract_geoid",
+        right_index=True,
+        how="left",
+    )
+
+    for col in [
+        "high_wage_jobs_accessible_30min",
+        "total_jobs_accessible_30min",
+        "high_wage_jobs_accessible_45min",
+        "total_jobs_accessible_45min",
+    ]:
+        enriched[col] = enriched[col].fillna(0).round().astype(int)
+
+    enriched["accessibility_method"] = "network_od_drive_transit"
+    enriched["accessibility_threshold_30_min"] = int(threshold_30_min)
+    enriched["accessibility_threshold_45_min"] = int(threshold_45_min)
+    enriched["accessibility_proxy_distance_30_km"] = np.nan
+    enriched["accessibility_proxy_distance_45_km"] = np.nan
+    return enriched
+
+
+def _compute_accessibility_proxy(
+    df: pd.DataFrame,
+    distance_30_km: float,
+    distance_45_km: float,
+    threshold_30_min: int,
+    threshold_45_min: int,
+) -> pd.DataFrame:
+    logger.info("Computing Layer 1 accessibility with haversine proxy model...")
+
     n_tracts = len(df)
     lons = df["centroid_lon"].values
     lats = df["centroid_lat"].values
     high_wage = df["high_wage_jobs"].values if "high_wage_jobs" in df else np.zeros(n_tracts)
     total = df["total_jobs"].values if "total_jobs" in df else np.zeros(n_tracts)
 
-    # Results arrays
     high_wage_45 = np.zeros(n_tracts)
     high_wage_30 = np.zeros(n_tracts)
     total_45 = np.zeros(n_tracts)
     total_30 = np.zeros(n_tracts)
 
-    logger.info(f"Computing accessibility for {n_tracts} tracts...")
-
-    # Haversine distance computation (vectorized for speed)
     def haversine_matrix(lon1, lat1, lon2, lat2):
-        """Compute haversine distance in km between two points."""
-        R = 6371  # Earth radius in km
-
+        R = 6371
         lat1_rad = np.radians(lat1)
         lat2_rad = np.radians(lat2)
         dlat = np.radians(lat2 - lat1)
         dlon = np.radians(lon2 - lon1)
-
         a = np.sin(dlat / 2) ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2) ** 2
         c = 2 * np.arcsin(np.sqrt(a))
-
         return R * c
 
-    # Compute pairwise distances and accessibility
-    # Process in batches for memory efficiency
     batch_size = 100
-
+    logger.info(f"Computing proxy accessibility for {n_tracts} tracts...")
     for i in range(0, n_tracts, batch_size):
         batch_end = min(i + batch_size, n_tracts)
-
         for j in range(i, batch_end):
-            # Compute distances from tract j to all other tracts
             distances = haversine_matrix(lons[j], lats[j], lons, lats)
-
-            # Jobs within 30 min threshold
-            mask_30 = distances <= DIST_30MIN
+            mask_30 = distances <= distance_30_km
+            mask_45 = distances <= distance_45_km
             high_wage_30[j] = high_wage[mask_30].sum()
             total_30[j] = total[mask_30].sum()
-
-            # Jobs within 45 min threshold
-            mask_45 = distances <= DIST_45MIN
             high_wage_45[j] = high_wage[mask_45].sum()
             total_45[j] = total[mask_45].sum()
-
         if (batch_end) % 500 == 0:
             logger.info(f"  Processed {batch_end}/{n_tracts} tracts")
 
-    # Add results to DataFrame
-    df["high_wage_jobs_accessible_45min"] = high_wage_45.astype(int)
-    df["high_wage_jobs_accessible_30min"] = high_wage_30.astype(int)
-    df["total_jobs_accessible_45min"] = total_45.astype(int)
-    df["total_jobs_accessible_30min"] = total_30.astype(int)
+    enriched = df.copy()
+    enriched["high_wage_jobs_accessible_45min"] = high_wage_45.astype(int)
+    enriched["high_wage_jobs_accessible_30min"] = high_wage_30.astype(int)
+    enriched["total_jobs_accessible_45min"] = total_45.astype(int)
+    enriched["total_jobs_accessible_30min"] = total_30.astype(int)
+    enriched["accessibility_method"] = "haversine_proxy"
+    enriched["accessibility_threshold_30_min"] = int(threshold_30_min)
+    enriched["accessibility_threshold_45_min"] = int(threshold_45_min)
+    enriched["accessibility_proxy_distance_30_km"] = float(distance_30_km)
+    enriched["accessibility_proxy_distance_45_km"] = float(distance_45_km)
+    return enriched
 
-    # Regional totals for normalization
-    regional_high_wage = high_wage.sum()
-    regional_total = total.sum()
 
-    # Compute normalized scores
+def compute_economic_accessibility(
+    tract_jobs: pd.DataFrame,
+    tract_centroids: pd.DataFrame,
+    mode: Optional[str] = None,
+    threshold_30_min: Optional[int] = None,
+    threshold_45_min: Optional[int] = None,
+    proxy_distance_30_km: Optional[float] = None,
+    proxy_distance_45_km: Optional[float] = None,
+) -> pd.DataFrame:
+    """
+    Compute Layer 1 accessibility metrics using network OD matrices when available,
+    with deterministic proxy fallback.
+    """
+    thresholds = _resolve_accessibility_thresholds(
+        threshold_30_min=threshold_30_min,
+        threshold_45_min=threshold_45_min,
+        proxy_distance_30_km=proxy_distance_30_km,
+        proxy_distance_45_km=proxy_distance_45_km,
+    )
+    requested_mode = (mode or settings.LAYER1_ACCESSIBILITY_MODE or ACCESSIBILITY_MODE_AUTO).lower()
+    if requested_mode not in {
+        ACCESSIBILITY_MODE_AUTO,
+        ACCESSIBILITY_MODE_NETWORK,
+        ACCESSIBILITY_MODE_PROXY,
+    }:
+        raise ValueError(f"Unsupported Layer 1 accessibility mode: {requested_mode}")
+
+    tract_centroids = tract_centroids.copy()
+    tract_jobs = tract_jobs.copy()
+    tract_centroids["tract_geoid"] = tract_centroids["tract_geoid"].astype(str)
+    tract_centroids["fips_code"] = tract_centroids["fips_code"].astype(str)
+    tract_jobs["tract_geoid"] = tract_jobs["tract_geoid"].astype(str)
+    tract_jobs["fips_code"] = tract_jobs["fips_code"].astype(str)
+
+    df = tract_centroids.merge(tract_jobs, on=["tract_geoid", "fips_code"], how="inner").fillna(0)
+    logger.info(f"Merged {len(df)} tracts with job and location data")
+
+    if requested_mode in {ACCESSIBILITY_MODE_AUTO, ACCESSIBILITY_MODE_NETWORK}:
+        if _check_r5py_available():
+            try:
+                df = _compute_accessibility_network(
+                    df,
+                    threshold_30_min=int(thresholds["threshold_30_min"]),
+                    threshold_45_min=int(thresholds["threshold_45_min"]),
+                )
+            except Exception:
+                if requested_mode == ACCESSIBILITY_MODE_NETWORK:
+                    raise
+                logger.warning(
+                    "Layer 1 network OD computation failed; falling back to haversine proxy",
+                    exc_info=True,
+                )
+                df = _compute_accessibility_proxy(
+                    df,
+                    distance_30_km=float(thresholds["proxy_distance_30_km"]),
+                    distance_45_km=float(thresholds["proxy_distance_45_km"]),
+                    threshold_30_min=int(thresholds["threshold_30_min"]),
+                    threshold_45_min=int(thresholds["threshold_45_min"]),
+                )
+        else:
+            if requested_mode == ACCESSIBILITY_MODE_NETWORK:
+                raise RuntimeError("Layer 1 network mode requested but r5py/Java is unavailable")
+            logger.info("Layer 1 network mode unavailable; using haversine proxy")
+            df = _compute_accessibility_proxy(
+                df,
+                distance_30_km=float(thresholds["proxy_distance_30_km"]),
+                distance_45_km=float(thresholds["proxy_distance_45_km"]),
+                threshold_30_min=int(thresholds["threshold_30_min"]),
+                threshold_45_min=int(thresholds["threshold_45_min"]),
+            )
+    else:
+        df = _compute_accessibility_proxy(
+            df,
+            distance_30_km=float(thresholds["proxy_distance_30_km"]),
+            distance_45_km=float(thresholds["proxy_distance_45_km"]),
+            threshold_30_min=int(thresholds["threshold_30_min"]),
+            threshold_45_min=int(thresholds["threshold_45_min"]),
+        )
+
+    regional_high_wage = df["high_wage_jobs"].sum()
+    regional_total = df["total_jobs"].sum()
     df["pct_regional_high_wage_accessible"] = np.where(
         regional_high_wage > 0, df["high_wage_jobs_accessible_45min"] / regional_high_wage, 0
     )
-
     df["pct_regional_jobs_accessible"] = np.where(
         regional_total > 0, df["total_jobs_accessible_45min"] / regional_total, 0
     )
-
-    # Wage quality ratio (high-wage / total accessible)
     df["wage_quality_ratio"] = np.where(
         df["total_jobs_accessible_45min"] > 0,
         df["high_wage_jobs_accessible_45min"] / df["total_jobs_accessible_45min"],
         0,
     )
-
     logger.info("✓ Economic accessibility computed")
     return df
 
@@ -1037,7 +1248,8 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregate tract-level metrics to county level.
 
-    Uses population-weighted averaging for score metrics.
+    Uses population-weighted statistics for primary accessibility metrics.
+    Max-access fields are retained as frontier diagnostics.
 
     Args:
         tract_df: DataFrame with tract-level metrics
@@ -1045,6 +1257,8 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with county-level metrics
     """
+    tract_df = tract_df.copy()
+
     # Prepare population weights
     tract_df["population"] = tract_df["population"].fillna(0)
     tract_df["pop_weight"] = tract_df.groupby("fips_code")["population"].transform(
@@ -1068,6 +1282,18 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
             tract_df[f"{col}_weighted"] = tract_df[col] * tract_df["pop_weight"]
             weighted_cols[f"{col}_weighted"] = (f"{col}_weighted", "sum")
 
+    # Weighted mean accessibility counts used as primary county accessibility anchors
+    accessibility_count_cols = [
+        "high_wage_jobs_accessible_45min",
+        "high_wage_jobs_accessible_30min",
+        "total_jobs_accessible_45min",
+        "total_jobs_accessible_30min",
+    ]
+    for col in accessibility_count_cols:
+        if col in tract_df.columns:
+            tract_df[f"{col}_weighted"] = tract_df[col] * tract_df["pop_weight"]
+            weighted_cols[f"{col}_weighted_mean"] = (f"{col}_weighted", "sum")
+
     # Aggregation spec
     agg_spec = {
         # Sum job counts
@@ -1075,7 +1301,7 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
         "high_wage_jobs": ("high_wage_jobs", "sum"),
         "mid_wage_jobs": ("mid_wage_jobs", "sum"),
         "low_wage_jobs": ("low_wage_jobs", "sum"),
-        # Sum accessible jobs (max of tracts is more meaningful)
+        # Frontier diagnostics (best-tract accessibility in county)
         "high_wage_jobs_accessible_45min": ("high_wage_jobs_accessible_45min", "max"),
         "high_wage_jobs_accessible_30min": ("high_wage_jobs_accessible_30min", "max"),
         "total_jobs_accessible_45min": ("total_jobs_accessible_45min", "max"),
@@ -1103,6 +1329,54 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
             county_agg[col] = county_agg[weighted_name]
             county_agg = county_agg.drop(columns=[weighted_name])
 
+    def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+        mask = np.isfinite(values) & np.isfinite(weights) & (weights >= 0)
+        values = values[mask]
+        weights = weights[mask]
+        if len(values) == 0:
+            return np.nan
+        if np.sum(weights) <= 0:
+            return float(np.nanmedian(values))
+        order = np.argsort(values)
+        values = values[order]
+        weights = weights[order]
+        cdf = np.cumsum(weights) / np.sum(weights)
+        idx = int(np.searchsorted(cdf, 0.5, side="left"))
+        return float(values[min(idx, len(values) - 1)])
+
+    # Add weighted median accessibility counts for county summaries.
+    grouped = tract_df.groupby("fips_code")
+    for col in accessibility_count_cols:
+        if col not in tract_df.columns:
+            continue
+        median_series = grouped.apply(
+            lambda g: _weighted_median(
+                g[col].to_numpy(dtype=float),
+                g["population"].to_numpy(dtype=float),
+            )
+        )
+        county_agg = county_agg.merge(
+            median_series.rename(f"{col}_weighted_median"),
+            on="fips_code",
+            how="left",
+        )
+
+    # Primary county accessibility scores use weighted mean accessibility counts.
+    hw_mean_col = "high_wage_jobs_accessible_45min_weighted_mean"
+    total_mean_col = "total_jobs_accessible_45min_weighted_mean"
+    if hw_mean_col in county_agg.columns and total_mean_col in county_agg.columns:
+        county_agg["economic_accessibility_score"] = county_agg[hw_mean_col].rank(pct=True)
+        county_agg["job_market_reach_score"] = county_agg[total_mean_col].rank(pct=True)
+        county_agg["wage_quality_ratio"] = np.where(
+            county_agg[total_mean_col] > 0,
+            county_agg[hw_mean_col] / county_agg[total_mean_col],
+            0,
+        )
+        county_agg["job_quality_index"] = 0.7 * county_agg["economic_accessibility_score"] + 0.3 * (
+            county_agg["wage_quality_ratio"].rank(pct=True)
+        )
+        county_agg["upward_mobility_score"] = county_agg["economic_accessibility_score"]
+
     # Compute regional percentages
     regional_high_wage = county_agg["high_wage_jobs"].sum()
     regional_total = county_agg["total_jobs"].sum()
@@ -1118,6 +1392,26 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
     # Entrepreneurship density (establishments per 1000 pop)
     # This would need BLS QCEW data - set to None for now
     county_agg["entrepreneurship_density"] = None
+
+    # Accessibility provenance and thresholds.
+    for numeric_col in [
+        "accessibility_threshold_30_min",
+        "accessibility_threshold_45_min",
+        "accessibility_proxy_distance_30_km",
+        "accessibility_proxy_distance_45_km",
+    ]:
+        if numeric_col in tract_df.columns:
+            series = tract_df.groupby("fips_code")[numeric_col].median().rename(numeric_col)
+            county_agg = county_agg.merge(series, on="fips_code", how="left")
+    if "accessibility_method" in tract_df.columns:
+        method_series = tract_df.groupby("fips_code")["accessibility_method"].agg(
+            lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]
+        )
+        county_agg = county_agg.merge(
+            method_series.rename("accessibility_method"),
+            on="fips_code",
+            how="left",
+        )
 
     return county_agg
 
@@ -1361,6 +1655,14 @@ def store_county_economic_opportunity(
                     high_wage_jobs_accessible_30min = :high_wage_30,
                     total_jobs_accessible_45min = :total_45,
                     total_jobs_accessible_30min = :total_30,
+                    high_wage_jobs_accessible_45min_weighted_mean = :high_wage_45_weighted_mean,
+                    high_wage_jobs_accessible_45min_weighted_median = :high_wage_45_weighted_median,
+                    total_jobs_accessible_45min_weighted_mean = :total_45_weighted_mean,
+                    total_jobs_accessible_45min_weighted_median = :total_45_weighted_median,
+                    high_wage_jobs_accessible_30min_weighted_mean = :high_wage_30_weighted_mean,
+                    high_wage_jobs_accessible_30min_weighted_median = :high_wage_30_weighted_median,
+                    total_jobs_accessible_30min_weighted_mean = :total_30_weighted_mean,
+                    total_jobs_accessible_30min_weighted_median = :total_30_weighted_median,
                     economic_accessibility_score = :econ_score,
                     job_market_reach_score = :market_score,
                     wage_quality_ratio = :wage_ratio,
@@ -1381,6 +1683,11 @@ def store_county_economic_opportunity(
                     economic_opportunity_index = :opportunity_index,
                     working_age_pop = :working_age,
                     labor_force_participation = :lfp,
+                    accessibility_method = :accessibility_method,
+                    accessibility_threshold_30_min = :accessibility_threshold_30_min,
+                    accessibility_threshold_45_min = :accessibility_threshold_45_min,
+                    accessibility_proxy_distance_30_km = :accessibility_proxy_distance_30_km,
+                    accessibility_proxy_distance_45_km = :accessibility_proxy_distance_45_km,
                     lodes_year = :lodes_year,
                     acs_year = :acs_year,
                     accessibility_version = 'v2-accessibility',
@@ -1398,6 +1705,46 @@ def store_county_economic_opportunity(
                     "high_wage_30": int(row.get("high_wage_jobs_accessible_30min", 0)),
                     "total_45": int(row.get("total_jobs_accessible_45min", 0)),
                     "total_30": int(row.get("total_jobs_accessible_30min", 0)),
+                    "high_wage_45_weighted_mean": (
+                        float(row.get("high_wage_jobs_accessible_45min_weighted_mean"))
+                        if pd.notna(row.get("high_wage_jobs_accessible_45min_weighted_mean"))
+                        else None
+                    ),
+                    "high_wage_45_weighted_median": (
+                        float(row.get("high_wage_jobs_accessible_45min_weighted_median"))
+                        if pd.notna(row.get("high_wage_jobs_accessible_45min_weighted_median"))
+                        else None
+                    ),
+                    "total_45_weighted_mean": (
+                        float(row.get("total_jobs_accessible_45min_weighted_mean"))
+                        if pd.notna(row.get("total_jobs_accessible_45min_weighted_mean"))
+                        else None
+                    ),
+                    "total_45_weighted_median": (
+                        float(row.get("total_jobs_accessible_45min_weighted_median"))
+                        if pd.notna(row.get("total_jobs_accessible_45min_weighted_median"))
+                        else None
+                    ),
+                    "high_wage_30_weighted_mean": (
+                        float(row.get("high_wage_jobs_accessible_30min_weighted_mean"))
+                        if pd.notna(row.get("high_wage_jobs_accessible_30min_weighted_mean"))
+                        else None
+                    ),
+                    "high_wage_30_weighted_median": (
+                        float(row.get("high_wage_jobs_accessible_30min_weighted_median"))
+                        if pd.notna(row.get("high_wage_jobs_accessible_30min_weighted_median"))
+                        else None
+                    ),
+                    "total_30_weighted_mean": (
+                        float(row.get("total_jobs_accessible_30min_weighted_mean"))
+                        if pd.notna(row.get("total_jobs_accessible_30min_weighted_mean"))
+                        else None
+                    ),
+                    "total_30_weighted_median": (
+                        float(row.get("total_jobs_accessible_30min_weighted_median"))
+                        if pd.notna(row.get("total_jobs_accessible_30min_weighted_median"))
+                        else None
+                    ),
                     "econ_score": float(row.get("economic_accessibility_score", 0)),
                     "market_score": float(row.get("job_market_reach_score", 0)),
                     "wage_ratio": float(row.get("wage_quality_ratio", 0)),
@@ -1444,6 +1791,31 @@ def store_county_economic_opportunity(
                     "qwi_year": int(row.get("qwi_year")) if pd.notna(row.get("qwi_year")) else None,
                     "working_age": int(row.get("working_age_pop", 0)),
                     "lfp": float(row.get("labor_force_participation", 0)),
+                    "accessibility_method": (
+                        str(row.get("accessibility_method"))
+                        if pd.notna(row.get("accessibility_method"))
+                        else None
+                    ),
+                    "accessibility_threshold_30_min": (
+                        int(row.get("accessibility_threshold_30_min"))
+                        if pd.notna(row.get("accessibility_threshold_30_min"))
+                        else None
+                    ),
+                    "accessibility_threshold_45_min": (
+                        int(row.get("accessibility_threshold_45_min"))
+                        if pd.notna(row.get("accessibility_threshold_45_min"))
+                        else None
+                    ),
+                    "accessibility_proxy_distance_30_km": (
+                        float(row.get("accessibility_proxy_distance_30_km"))
+                        if pd.notna(row.get("accessibility_proxy_distance_30_km"))
+                        else None
+                    ),
+                    "accessibility_proxy_distance_45_km": (
+                        float(row.get("accessibility_proxy_distance_45_km"))
+                        if pd.notna(row.get("accessibility_proxy_distance_45_km"))
+                        else None
+                    ),
                     "lodes_year": lodes_year,
                     "acs_year": acs_year,
                 },
@@ -1460,7 +1832,14 @@ def store_county_economic_opportunity(
 
 
 def calculate_economic_opportunity_indicators(
-    data_year: int = None, lodes_year: int = None, acs_year: int = None
+    data_year: int = None,
+    lodes_year: int = None,
+    acs_year: int = None,
+    accessibility_mode: Optional[str] = None,
+    threshold_30_min: Optional[int] = None,
+    threshold_45_min: Optional[int] = None,
+    proxy_distance_30_km: Optional[float] = None,
+    proxy_distance_45_km: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Main function to calculate economic opportunity indicators.
@@ -1502,7 +1881,15 @@ def calculate_economic_opportunity_indicators(
 
     # Step 5: Compute accessibility
     logger.info("\n[5/6] Computing economic accessibility...")
-    tract_df = compute_economic_accessibility(tract_jobs, tract_centroids)
+    tract_df = compute_economic_accessibility(
+        tract_jobs,
+        tract_centroids,
+        mode=accessibility_mode,
+        threshold_30_min=threshold_30_min,
+        threshold_45_min=threshold_45_min,
+        proxy_distance_30_km=proxy_distance_30_km,
+        proxy_distance_45_km=proxy_distance_45_km,
+    )
 
     # Merge with ACS demographics
     logger.info("\n[6/6] Merging ACS demographics...")
@@ -1557,6 +1944,11 @@ def run_layer1_v2_ingestion(
     store_data: bool = True,
     window_years: int = 5,
     predict_to_year: Optional[int] = None,
+    accessibility_mode: Optional[str] = None,
+    threshold_30_min: Optional[int] = None,
+    threshold_45_min: Optional[int] = None,
+    proxy_distance_30_km: Optional[float] = None,
+    proxy_distance_45_km: Optional[float] = None,
 ):
     """
     Run complete Layer 1 v2 ingestion pipeline.
@@ -1603,7 +1995,14 @@ def run_layer1_v2_ingestion(
 
             try:
                 tract_df, county_df = calculate_economic_opportunity_indicators(
-                    data_year=year, lodes_year=lodes_year, acs_year=acs_year
+                    data_year=year,
+                    lodes_year=lodes_year,
+                    acs_year=acs_year,
+                    accessibility_mode=accessibility_mode,
+                    threshold_30_min=threshold_30_min,
+                    threshold_45_min=threshold_45_min,
+                    proxy_distance_30_km=proxy_distance_30_km,
+                    proxy_distance_45_km=proxy_distance_45_km,
                 )
 
                 if store_data and not tract_df.empty:
@@ -1621,6 +2020,18 @@ def run_layer1_v2_ingestion(
                             "lodes_year": lodes_year,
                             "acs_year": acs_year,
                             "version": "v2-accessibility",
+                            "accessibility_mode": accessibility_mode
+                            or settings.LAYER1_ACCESSIBILITY_MODE,
+                            "threshold_30_min": threshold_30_min
+                            or settings.LAYER1_THRESHOLD_30_MINUTES,
+                            "threshold_45_min": threshold_45_min
+                            or settings.LAYER1_THRESHOLD_45_MINUTES,
+                            "proxy_distance_30_km": proxy_distance_30_km
+                            if proxy_distance_30_km is not None
+                            else settings.LAYER1_PROXY_DISTANCE_30_KM,
+                            "proxy_distance_45_km": proxy_distance_45_km
+                            if proxy_distance_45_km is not None
+                            else settings.LAYER1_PROXY_DISTANCE_45_KM,
                             "tracts": len(tract_df),
                             "counties": len(county_df),
                             "total_jobs": int(tract_df["total_jobs"].sum()),
@@ -1704,6 +2115,36 @@ def main():
         default=None,
         help="Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)",
     )
+    parser.add_argument(
+        "--accessibility-mode",
+        choices=[ACCESSIBILITY_MODE_AUTO, ACCESSIBILITY_MODE_NETWORK, ACCESSIBILITY_MODE_PROXY],
+        default=None,
+        help="Accessibility impedance mode (default: settings.LAYER1_ACCESSIBILITY_MODE)",
+    )
+    parser.add_argument(
+        "--threshold-30-min",
+        type=int,
+        default=None,
+        help="Accessibility threshold for 30-minute reachability scenario",
+    )
+    parser.add_argument(
+        "--threshold-45-min",
+        type=int,
+        default=None,
+        help="Accessibility threshold for 45-minute reachability scenario",
+    )
+    parser.add_argument(
+        "--proxy-distance-30-km",
+        type=float,
+        default=None,
+        help="Proxy distance (km) used for 30-minute threshold in haversine mode",
+    )
+    parser.add_argument(
+        "--proxy-distance-45-km",
+        type=float,
+        default=None,
+        help="Proxy distance (km) used for 45-minute threshold in haversine mode",
+    )
 
     args = parser.parse_args()
 
@@ -1712,6 +2153,11 @@ def main():
         multi_year=not args.single_year,
         store_data=not args.dry_run,
         predict_to_year=args.predict_to_year,
+        accessibility_mode=args.accessibility_mode,
+        threshold_30_min=args.threshold_30_min,
+        threshold_45_min=args.threshold_45_min,
+        proxy_distance_30_km=args.proxy_distance_30_km,
+        proxy_distance_45_km=args.proxy_distance_45_km,
     )
 
 

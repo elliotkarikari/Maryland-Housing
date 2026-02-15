@@ -886,9 +886,15 @@ LAYER_CONFIGS: Dict[str, LayerConfig] = {
                 "weight": 0.40,
             },
             {
+                "col": "high_wage_jobs_accessible_45min_weighted_mean",
+                "name": "High-Wage Jobs (45 min, weighted mean)",
+                "desc": "Population-weighted mean high-wage jobs reachable within 45 min",
+                "weight": None,
+            },
+            {
                 "col": "high_wage_jobs_accessible_45min",
-                "name": "High-Wage Jobs (45 min)",
-                "desc": "Jobs earning >$40k accessible",
+                "name": "High-Wage Jobs (45 min, frontier)",
+                "desc": "Best-tract frontier high-wage jobs reachable within county",
                 "weight": None,
             },
             {

@@ -127,6 +127,18 @@ class Settings(BaseSettings):
     PREDICTION_MAX_EXTRAP_YEARS: int = 2
     USE_EFFECTIVE_VALUES: bool = False
 
+    # Layer 1 accessibility configuration
+    # auto: try network OD (r5py), fallback to proxy
+    # network: require network OD
+    # proxy: use haversine proxy
+    LAYER1_ACCESSIBILITY_MODE: str = "auto"
+    LAYER1_THRESHOLD_30_MINUTES: int = 30
+    LAYER1_THRESHOLD_45_MINUTES: int = 45
+    LAYER1_PROXY_DISTANCE_30_KM: float = 20.0
+    LAYER1_PROXY_DISTANCE_45_KM: float = 35.0
+    LAYER1_NETWORK_DEPARTURE_HOUR: int = 8
+    LAYER1_NETWORK_DEPARTURE_MINUTE: int = 0
+
     # File storage
     EXPORT_DIR: str = "exports"
     LOG_DIR: str = "logs"

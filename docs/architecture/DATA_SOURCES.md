@@ -155,6 +155,23 @@ payload = {
 
 ---
 
+### 1.4 Network Travel-Time Impedance (Optional, Layer 1 v2+)
+**Sources:** OpenStreetMap + GTFS feeds (shared with Layer 2 mobility routing)
+**Use in Layer 1:** Optional replacement for straight-line proxy impedance in tract OD accessibility
+**Coverage:** Maryland statewide tract centroids
+**Cadence:** OSM monthly-ish extract refresh; GTFS schedule cadence (typically weekly/monthly)
+**Format:** OSM `.pbf`, GTFS `.zip`
+
+**Current status:**
+- Enabled when routing dependencies are available (`r5py` + Java + cached/downloaded OSM/GTFS inputs).
+- Falls back to haversine proxy when network inputs are unavailable.
+
+**Limitation / calibration note:**
+- No observed statewide tract OD commute-time matrix is currently maintained in ingest,
+  so threshold calibration from observed commute behavior is deferred.
+
+---
+
 ## Layer 2: Mobility Optionality
 
 ### 2.1 OpenStreetMap

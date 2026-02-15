@@ -19,12 +19,34 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Setup Java (for r5py)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           # Ensure quality gates are always available even if requirements drift.
           python -m pip install black isort mypy pytest
+
+      - name: Verify r5py availability
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import os
+          import sys
+
+          if importlib.util.find_spec("r5py") is None:
+              print("::error::Missing r5py module in runner environment")
+              sys.exit(1)
+
+          import r5py
+          print("r5py version:", getattr(r5py, "__version__", "unknown"))
+          print("JAVA_HOME:", os.environ.get("JAVA_HOME", ""))
+          PY
 
       - name: Migration prefix check
         run: ./scripts/check_migration_prefixes.py

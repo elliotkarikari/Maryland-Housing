@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new
+.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -23,6 +23,7 @@ help:
 	@echo "  make ingest-layer4  - Ingest Housing Affordability (v2) data"
 	@echo "  make ingest-layer5  - Ingest Demographic Equity (v2) data"
 	@echo "  make ingest-layer6  - Ingest Risk Vulnerability (v2) data"
+	@echo "  make layer1-sensitivity - Run Layer 1 accessibility threshold sensitivity report"
 	@echo "  make process        - Run multi-year scoring + classification"
 	@echo "  make pipeline       - Run V2 pipeline + GeoJSON export"
 	@echo "  make export         - Generate GeoJSON outputs (V2)"
@@ -82,6 +83,9 @@ ingest-layer5:
 
 ingest-layer6:
 	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer6_risk_vulnerability
+
+layer1-sensitivity:
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) scripts/layer1_accessibility_sensitivity.py
 
 process:
 	@echo "Running multi-year scoring and classification..."

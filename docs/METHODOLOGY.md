@@ -73,13 +73,17 @@ The table mixes observed inputs, derived metrics, and predicted continuity field
 
 | Column | Type | Method (simple) | Formula/logic | Feeds final county index? |
 |--------|------|------------------|---------------|---------------------------|
-| `high_wage_jobs_accessible_45min` | Derived | For each tract, sum high-wage jobs reachable in 45-min threshold; county takes tract max | Haversine thresholded catchment, then county max over tracts | Indirectly (through `economic_accessibility_score`) |
-| `high_wage_jobs_accessible_30min` | Derived | Same as above with tighter threshold | Same method, 30-min proxy distance | No (diagnostic context) |
-| `total_jobs_accessible_45min` | Derived | Sum all reachable jobs within 45-min threshold; county takes tract max | Thresholded catchment, then county max | Indirectly (through `job_market_reach_score`) |
-| `total_jobs_accessible_30min` | Derived | Same as above with tighter threshold | Thresholded catchment, then county max | No (diagnostic context) |
-| `wage_quality_ratio` | Derived | Share of reachable jobs that are high-wage | `high_wage_jobs_accessible_45min / total_jobs_accessible_45min` | Indirectly (through `job_quality_index`) |
-| `economic_accessibility_score` | Derived | Percentile rank (within Maryland) of high-wage reach | `rank_pct(high_wage_jobs_accessible_45min)` | Yes (primary direct term) |
-| `job_market_reach_score` | Derived | Percentile rank (within Maryland) of total job reach | `rank_pct(total_jobs_accessible_45min)` | No (supporting metric) |
+| `high_wage_jobs_accessible_45min` | Derived | For each tract, sum high-wage jobs reachable in the 45-min threshold; county keeps max as frontier | Network OD (drive+transit) when available, otherwise haversine proxy; county max over tracts | Diagnostic only |
+| `high_wage_jobs_accessible_30min` | Derived | Same as above with tighter threshold | Network OD when available, otherwise haversine proxy | Diagnostic only |
+| `total_jobs_accessible_45min` | Derived | Sum all reachable jobs in the 45-min threshold; county keeps max as frontier | Network OD when available, otherwise haversine proxy; county max over tracts | Diagnostic only |
+| `total_jobs_accessible_30min` | Derived | Same as above with tighter threshold | Network OD when available, otherwise haversine proxy | Diagnostic only |
+| `high_wage_jobs_accessible_45min_weighted_mean` | Derived (Primary) | County population-weighted mean tract accessibility (45-min) | `Σ(pop_weight_tract * high_wage_jobs_accessible_45min_tract)` | Yes (primary county accessibility anchor) |
+| `high_wage_jobs_accessible_45min_weighted_median` | Derived (Primary) | County population-weighted median tract accessibility (45-min) | weighted median over tracts using tract population | Supporting robustness metric |
+| `total_jobs_accessible_45min_weighted_mean` | Derived (Primary) | County population-weighted mean total job accessibility (45-min) | `Σ(pop_weight_tract * total_jobs_accessible_45min_tract)` | Yes (job market reach anchor) |
+| `total_jobs_accessible_45min_weighted_median` | Derived (Primary) | County population-weighted median total job accessibility (45-min) | weighted median over tracts using tract population | Supporting robustness metric |
+| `wage_quality_ratio` | Derived | Share of weighted-mean reachable jobs that are high-wage | `high_wage_jobs_accessible_45min_weighted_mean / total_jobs_accessible_45min_weighted_mean` | Indirectly (through `job_quality_index`) |
+| `economic_accessibility_score` | Derived | Percentile rank (within Maryland) of weighted-mean high-wage reach | `rank_pct(high_wage_jobs_accessible_45min_weighted_mean)` | Yes (primary direct term) |
+| `job_market_reach_score` | Derived | Percentile rank (within Maryland) of weighted-mean total reach | `rank_pct(total_jobs_accessible_45min_weighted_mean)` | No (supporting metric) |
 | `job_quality_index` | Derived | Blend access volume and wage mix quality | `0.7 * economic_accessibility_score + 0.3 * rank_pct(wage_quality_ratio)` | No (supporting metric) |
 | `upward_mobility_score` | Derived | Current proxy for mobility | equals `economic_accessibility_score` | No (supporting metric) |
 | `pct_regional_high_wage_accessible` | Derived | County share of Maryland high-wage jobs | `high_wage_jobs / statewide_high_wage_jobs` | No (diagnostic context) |
@@ -99,6 +103,25 @@ The table mixes observed inputs, derived metrics, and predicted continuity field
 - QWI observed counts: `qwi_emp_total`, `qwi_hires`, `qwi_separations`
 - Source-year lineage: `lodes_year`, `acs_year`, `qwi_year`
 - Versioning: `accessibility_version='v2-accessibility'` for observed v2 rows
+- Method/provenance fields: `accessibility_method`, threshold minute fields, and proxy-distance fields
+
+**Accessibility Method Choice (current, and why):**
+
+- Established base framework: cumulative-opportunity accessibility (count opportunities within a threshold).
+  - Operational form in this pipeline: `A_i(T) = Σ_j O_j * I(c_ij <= T)`, where `c_ij` is impedance.
+- Current implementation detail:
+  - Preferred mode is network OD travel-time impedance (drive+transit) via `r5py` when routing inputs are available.
+  - Automatic fallback mode uses centroid-to-centroid Haversine proxy distances for deterministic statewide continuity.
+  - Proxy defaults are `20 km` for ~30 minutes and `35 km` for ~45 minutes.
+- Why this hybrid mode is used:
+  - Preserves realistic travel-time behavior where routing stack is available.
+  - Preserves deterministic full-coverage runs in Databricks when routing inputs are unavailable.
+  - Avoids ingest stoppage during external feed instability.
+- Guardrails in scoring:
+  - Final county accessibility score is based on weighted-mean accessibility counts, not county max frontier counts.
+  - County max-access fields (`*_accessible_45min`, `*_accessible_30min`) are diagnostic only.
+- Commute-data calibration status:
+  - Threshold calibration using observed commute matrices is deferred because no stable statewide tract OD commute dataset is currently integrated into ingest.
 
 **Metrics Calculated:**
 - **Sector Diversity Entropy**: Shannon entropy across 20 NAICS sectors
@@ -369,17 +392,22 @@ Example:
 
 **How robust are classifications to threshold changes?**
 
-Tested scenarios:
-1. Increase THRESHOLD_IMPROVING_HIGH from 0.6 to 0.7
-   - Result: ~30% of "Improving" counties reclassified to "Stable"
+Layer 1 accessibility stability is now evaluated with scenario perturbations and a published audit artifact.
 
-2. Lower THRESHOLD_AT_RISK_LOW from 0.3 to 0.2
-   - Result: ~15% of "At Risk" counties reclassified to "Stable"
+Run:
+```bash
+make layer1-sensitivity
+```
 
-3. Remove risk drag penalty
-   - Result: Coastal counties shift up one category
+Output:
+- `docs/audits/layer1_accessibility_sensitivity_<YYYY-MM-DD>.md`
 
-**Conclusion:** Classifications are sensitive to thresholds, which is **transparent and adjustable**, unlike black-box models.
+Scenario rules:
+1. If network OD mode is active: minute-threshold perturbation (`-10 min`, `+10 min`)
+2. If fallback proxy mode is active: distance-threshold perturbation (`-5 km`, `+5 km`)
+3. Stability metric: share of counties that keep the same accessibility score band (`low/mid/high`)
+
+**Conclusion:** Threshold sensitivity is measured and published as an explicit stability signal, not treated as hidden model variance.
 
 ---
 
@@ -407,7 +435,7 @@ Tested scenarios:
 - Add graduation rates and early childhood access to strengthen School Trajectory.
 - Expand Census QWI longitudinal coverage and QA checks to improve employment timeliness.
 - Publish a weights table auto-generated from the feature registry.
-- Add a threshold sensitivity appendix (±0.05 thresholds, ±20% weights).
+- Expand sensitivity reporting from Layer 1 accessibility perturbations to full six-layer directional class stability.
 - Evaluate a capped risk-drag penalty and report its impact before changing the primary score.
 
 ## Version History
@@ -418,6 +446,9 @@ Tested scenarios:
 - Year selection policy is centralized (`src/utils/year_policy.py`) and exposed through runtime metadata.
 - Confidence behavior remains coverage-aware, with policy-persistence overlays where available.
 - AI extraction remains partial-coverage and capability-gated at runtime.
+- Layer 1 accessibility now supports network OD impedance (drive+transit) with deterministic proxy fallback.
+- Layer 1 county accessibility primary fields use weighted mean/median accessibility counts; county max fields remain diagnostic.
+- Layer 1 sensitivity reporting is operational via `make layer1-sensitivity`.
 
 ### Planned Next
 - Expand AI CIP extraction to additional counties with verification workflow.

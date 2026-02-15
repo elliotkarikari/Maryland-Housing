@@ -224,6 +224,28 @@ Some counties have systematically missing data:
 - Users can adjust in `config/settings.py` and re-run
 - Future: Probabilistic classifications with uncertainty bands
 
+### 4.5 Layer 1 Travel-Time Proxy (No OD Commute Matrix in Ingest)
+
+**Current choice:**
+- Layer 1 economic accessibility uses cumulative-opportunity accessibility with **network OD travel times (drive+transit) when available**.
+- If network routing inputs are unavailable, ingestion falls back to centroid-to-centroid Haversine thresholds (`20 km` ~30 min, `35 km` ~45 min).
+- County `*_accessible_30min/45min` max values are retained as frontier diagnostics.
+
+**Why this remains in place:**
+- No stable statewide observed tract OD commute-time matrix is currently integrated for threshold calibration.
+- Hybrid routing + fallback provides deterministic, full-coverage, reproducible statewide runs in Databricks.
+
+**Impact:**
+- Fallback proxy runs can over- or under-estimate accessibility where network shape, congestion, water crossings, or transit service differ from straight-line assumptions.
+- County max-access fields should be interpreted as "best tract frontier", not county-representative averages.
+
+**Mitigation:**
+- Primary Layer 1 scoring is driven by population-weighted mean accessibility counts rather than county max-access fields.
+- Method choice is explicitly documented in `docs/METHODOLOGY.md`.
+
+**Upgrade path:**
+- Add observed-commute calibration workflow once a maintainable statewide OD commute dataset is integrated.
+
 ---
 
 ## 5. AI Extraction Limitations
