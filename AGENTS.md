@@ -16,7 +16,8 @@ Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that inge
 - Run full ingest: `make ingest-all`
 - Run a single layer: `make ingest-layer1` ... `make ingest-layer6`
 - Run pipeline + export: `make pipeline`
-- Run pipeline for a year: `python src/run_pipeline.py --year 2024`
+- Run pipeline for current policy year: `python src/run_pipeline.py`
+- Run pipeline for a pinned as-of year: `python src/run_pipeline.py --year 2025`
 - Export GeoJSON only: `make export`
 - Run API: `make serve`
 - Tests: `make test`
@@ -33,6 +34,8 @@ When the ingest schema changes:
 - Add a migration in `migrations/` to align table columns/precision with the new dataframe.
 - Apply the migration before re-running `make ingest-all`.
 - Do not rely on ad-hoc schema scripts to alter existing tables.
+- Migration numbering rule: use a unique 3-digit numeric prefix greater than the current max (for example `022_new_change.sql`).
+- Validate numbering before commit: `./scripts/check_migration_prefixes.py`.
 
 Optional source toggles (keep deterministic defaults):
 - USPS vacancy: require a direct CSV/zip URL or a local file path in `.env`.
@@ -42,7 +45,9 @@ Optional source toggles (keep deterministic defaults):
 ## Preflight checks (recurring failure points)
 - Confirm `.env` has required keys for the run: `DATABASE_URL`, `CENSUS_API_KEY`, `MAPBOX_ACCESS_TOKEN`.
 - Confirm PostGIS extensions are enabled (`postgis`, `postgis_topology`) before ingest.
-- Ensure `LODES_LATEST_YEAR`, `ACS_LATEST_YEAR`, and `PREDICT_TO_YEAR` in `config/settings.py` match available data.
+- Ensure `LODES_LATEST_YEAR`, `LODES_LAG_YEARS`, `ACS_LATEST_YEAR`, `ACS_GEOGRAPHY_MAX_YEAR`, `NCES_OBSERVED_MAX_YEAR`, and `PREDICT_TO_YEAR` match available data.
+- Confirm `CORS_ALLOW_ORIGINS` includes expected frontend origins.
+- Validate runtime flags with `GET /api/v1/metadata/capabilities` before frontend verification.
 
 ## Layer2-5 v2 ingestion defaults (recurring)
 - Layer2-5 v2 CLIs default to multi-year/full history; use `--single-year` for a single year.
@@ -85,6 +90,20 @@ Optional source toggles (keep deterministic defaults):
 - Undefined column errors indicate a missing migration; add it in `migrations/` and run `make db-migrate`.
 - If a layer fails, run its module directly (e.g. `python -m src.ingest.layer2_accessibility`).
 - Avoid re-running the same failing step until the root cause is addressed; capture the stack trace + layer name first.
+
+## Monthly audit + docs maintenance workflow (required)
+- Generate static evidence report: `./scripts/monthly_static_audit.sh`.
+- Enforce migration prefix uniqueness: `./scripts/check_migration_prefixes.py`.
+- Detect hardcoded year drift: `./scripts/check_year_literals.py`.
+- Validate doc consistency: `./scripts/check_docs_consistency.sh`.
+- Reconcile updates across required docs every run:
+  - `docs/ARCHITECTURE.md`
+  - `docs/METHODOLOGY.md`
+  - `docs/architecture/DATA_SOURCES.md`
+  - `docs/LIMITATIONS.md`
+  - `QUICKSTART.md`
+  - `AGENTS.md`
+  - `.env.example`
 
 ## Skills
 - maryland-housing-ingest: Use for ingest runs, schema drift fixes, and source toggles. (file: `skills/maryland-housing-ingest/SKILL.md`)

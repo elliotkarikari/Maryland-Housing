@@ -3,7 +3,7 @@
 **Maryland Growth & Family Viability Atlas**
 
 **Version:** 2.0
-**Last Updated:** 2026-01-30
+**Last Updated:** 2026-02-15
 
 ---
 
@@ -158,7 +158,7 @@ Each analytical layer has a dedicated ingestion module:
 | Module | Purpose |
 |--------|---------|
 | `main.py` | FastAPI application initialization |
-| `routes.py` | Endpoint definitions and handlers |
+| `routes.py` | Endpoint definitions, metadata registry loading, and capabilities endpoint |
 
 ### 5. Configuration Layer
 
@@ -166,7 +166,7 @@ Each analytical layer has a dedicated ingestion module:
 
 | Module | Purpose |
 |--------|---------|
-| `settings.py` | Pydantic-based configuration management |
+| `settings.py` | Pydantic-based configuration management (CORS + year/runtime policy) |
 | `database.py` | SQLAlchemy + PostGIS connection management |
 
 ### 6. Frontend Layer
@@ -176,7 +176,8 @@ Each analytical layer has a dedicated ingestion module:
 | File | Purpose |
 |------|---------|
 | `index.html` | Main UI structure |
-| `map.js` | Mapbox GL JS logic |
+| `map.js` | Mapbox GL JS orchestration and UI event wiring |
+| `modules/capabilities.js` | Runtime capability loader for feature gating |
 | `serve.py` | Development server with CORS |
 
 ---
@@ -262,6 +263,13 @@ Each analytical layer has a dedicated ingestion module:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Canonical V2 Runtime Flow
+
+1. `make db-migrate` (executes all numbered SQL migrations with `scripts/run_sql_migrations.py`)
+2. `make ingest-all` (layers 1-6 + policy persistence ingestion)
+3. `make pipeline` (multi-year features, scoring, classification, export)
+4. `make serve` + `make frontend` (API + UI runtime)
+
 ---
 
 ## Directory Structure
@@ -273,7 +281,7 @@ maryland-housing/
 │   ├── api/                          # FastAPI application
 │   │   ├── __init__.py
 │   │   ├── main.py                   # App initialization, middleware
-│   │   └── routes.py                 # Endpoint definitions (~670 LOC)
+│   │   └── routes.py                 # Endpoint definitions + metadata APIs
 │   │
 │   ├── ingest/                       # Data ingestion pipelines
 │   │   ├── __init__.py
@@ -302,7 +310,9 @@ maryland-housing/
 │   ├── utils/                        # Shared utilities
 │   │   ├── __init__.py
 │   │   ├── logging.py                # Logging configuration
-│   │   └── data_sources.py           # Data source metadata
+│   │   ├── data_sources.py           # Data source metadata helpers
+│   │   ├── db_bulk.py                # Shared batched DB writes
+│   │   └── year_policy.py            # Central year selection rules
 │   │
 │   ├── ai/                           # Optional AI subsystem
 │   │   ├── pipeline/                 # AI extraction pipeline
@@ -318,18 +328,29 @@ maryland-housing/
 │
 ├── frontend/                         # Web UI
 │   ├── index.html                    # Main HTML
-│   ├── map.js                        # Mapbox GL JS logic (~450 LOC)
+│   ├── map.js                        # Mapbox GL JS app orchestration
+│   ├── modules/
+│   │   └── capabilities.js           # Runtime feature capability loader
 │   ├── serve.py                      # Development server
 │   └── README.md                     # Frontend documentation
 │
-├── migrations/                       # Database schema evolution
+├── migrations/                       # Database schema evolution (numeric, append-only)
 │   ├── 006_layer2_accessibility_overhaul.sql
 │   ├── 007_layer1_economic_accessibility_overhaul.sql
 │   ├── 008_layer1_economic_opportunity_index.sql
 │   ├── 009_layer4_housing_affordability_overhaul.sql
 │   ├── 010_layer3_education_accessibility_overhaul.sql
 │   ├── 011_layer5_demographic_equity_overhaul.sql
-│   └── 012_layer6_risk_vulnerability_overhaul.sql
+│   ├── 012_layer6_risk_vulnerability_overhaul.sql
+│   ├── 013_layer1_qwi_layer4_hud_additions.sql
+│   ├── 014_layer5_low_vacancy_prediction.sql
+│   ├── 015_layer1_prediction.sql
+│   ├── 016_layer2_prediction.sql
+│   ├── 017_layer3_prediction.sql
+│   ├── 018_layer4_prediction.sql
+│   ├── 019_layer6_prediction.sql
+│   ├── 020_layer5_prediction.sql
+│   └── 021_layer3_school_directory_id_length.sql
 │
 ├── data/                             # Data storage
 │   ├── cache/                        # Downloaded data cache (gitignored)
@@ -646,8 +667,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_origins=_parse_cors_allow_origins(settings.CORS_ALLOW_ORIGINS),
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 ```
@@ -664,7 +685,9 @@ app.add_middleware(
 | `GET /areas/{fips}/layers/{layer}` | LayerDetail | Layer breakdown |
 | `GET /metadata/refresh` | RefreshStatus | Data refresh audit |
 | `GET /metadata/sources` | DataSource[] | Source documentation |
+| `GET /metadata/capabilities` | CapabilitiesResponse | Runtime feature and year policy flags |
 | `GET /metadata/classifications` | dict | Threshold definitions |
+| `POST /chat` | ChatResponse | Ask Atlas AI response (gated by runtime capability) |
 | `GET /counties` | County[] | County list |
 | `GET /health` | HealthStatus | Health check |
 
@@ -725,6 +748,11 @@ frontend/
     ├── addLayers()     # Map layer configuration
     ├── setupHandlers() # Click/hover events
     └── showDetail()    # Panel population
+└── modules/
+    └── capabilities.js
+        ├── loadCapabilities()   # Fetches /api/v1/metadata/capabilities
+        ├── isChatEnabled()      # Determines Ask Atlas visibility
+        └── getYearPolicy()      # Exposes runtime year policy for diagnostics
 ```
 
 ### Data Flow
@@ -771,6 +799,14 @@ MAPBOX_ACCESS_TOKEN=pk.your_token
 BLS_API_KEY=your_bls_key
 OPENAI_API_KEY=sk-your_key
 AI_ENABLED=false
+CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+ATLAS_API_BASE_URL=
+LODES_LATEST_YEAR=2022
+LODES_LAG_YEARS=2
+ACS_LATEST_YEAR=2024
+ACS_GEOGRAPHY_MAX_YEAR=2022
+NCES_OBSERVED_MAX_YEAR=2024
+PREDICT_TO_YEAR=2025
 SENTRY_DSN=https://...
 ENVIRONMENT=development|production
 LOG_LEVEL=DEBUG|INFO|WARNING|ERROR
@@ -785,29 +821,29 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
-    database_url: str
+    DATABASE_URL: str
 
     # API Keys
-    census_api_key: str
-    mapbox_access_token: str
-    bls_api_key: str = ""
+    CENSUS_API_KEY: str
+    MAPBOX_ACCESS_TOKEN: str
+    BLS_API_KEY: str | None = None
 
     # Classification Thresholds
-    threshold_improving_high: float = 0.6
-    threshold_improving_low: float = 0.3
-    threshold_at_risk_low: float = 0.3
-    threshold_at_risk_count: int = 2
+    THRESHOLD_IMPROVING_HIGH: float = 0.6
+    THRESHOLD_IMPROVING_LOW: float = 0.3
+    THRESHOLD_AT_RISK_LOW: float = 0.3
+    THRESHOLD_AT_RISK_COUNT: int = 2
 
-    # Coverage Requirements
-    coverage_strong: int = 5
-    coverage_conditional: int = 3
+    # Runtime policy
+    CORS_ALLOW_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+    LODES_LATEST_YEAR: int = 2022
+    LODES_LAG_YEARS: int = 2
+    ACS_LATEST_YEAR: int = 2024
+    ACS_GEOGRAPHY_MAX_YEAR: int = 2022
+    NCES_OBSERVED_MAX_YEAR: int = 2024
+    PREDICT_TO_YEAR: int = 2025
 
-    # Reference Years
-    lehd_latest_year: int = 2022
-    acs_latest_year: int = 2023
-
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 ```
 
 ---
@@ -892,5 +928,5 @@ class Settings(BaseSettings):
 
 ---
 
-**Last updated:** 2026-01-30
+**Last updated:** 2026-02-15
 **Maintainer:** Maryland Viability Atlas Team

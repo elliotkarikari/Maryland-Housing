@@ -89,6 +89,16 @@ AI_ENABLED=false
 # Environment settings
 ENVIRONMENT=development
 LOG_LEVEL=INFO
+CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+ATLAS_API_BASE_URL=
+
+# Year/runtime policy (keep aligned with available source vintages)
+LODES_LATEST_YEAR=2022
+LODES_LAG_YEARS=2
+ACS_LATEST_YEAR=2024
+ACS_GEOGRAPHY_MAX_YEAR=2022
+NCES_OBSERVED_MAX_YEAR=2024
+PREDICT_TO_YEAR=2025
 ```
 
 ### Step 4: Initialize Database
@@ -178,6 +188,7 @@ make serve
 - API Base: http://localhost:8000
 - Interactive Docs: http://localhost:8000/docs
 - Health Check: http://localhost:8000/health
+- Runtime Capabilities: http://localhost:8000/api/v1/metadata/capabilities
 
 #### Frontend Server (separate terminal)
 
@@ -317,6 +328,10 @@ curl http://localhost:8000/api/v1/areas/24031 | jq
 # Get latest GeoJSON
 curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | length'
 # Expected: 24
+
+# Check runtime capabilities and year policy
+curl http://localhost:8000/api/v1/metadata/capabilities | jq
+# Use chat_enabled/ai_enabled to verify Ask Atlas UI should be visible
 ```
 
 ### Success Checklist
@@ -423,9 +438,11 @@ curl -I https://api.bls.gov/
 psql $DATABASE_URL -c "SELECT DISTINCT data_year FROM layer1_employment_gravity ORDER BY data_year;"
 ```
 
-**Fix:** Run ingestion for multiple years or use `--year` flag:
+**Fix:** Run ingestion for multiple years, then run pipeline with policy defaults:
 ```bash
-python src/run_pipeline.py --year 2024
+python src/run_pipeline.py
+# or explicitly pin as-of year:
+python src/run_pipeline.py --year 2025
 ```
 
 #### "Export failed - GeoJSON empty"
@@ -470,6 +487,15 @@ Run more layer ingestions to improve coverage.
 1. Check API is accessible
 2. Look for CORS errors in browser console
 3. Verify county FIPS exists in database
+
+#### "Ask Atlas chat is hidden or disabled"
+
+1. Check capabilities endpoint:
+   ```bash
+   curl http://localhost:8000/api/v1/metadata/capabilities | jq
+   ```
+2. Confirm `AI_ENABLED=true` and `OPENAI_API_KEY` are set if chat should be enabled.
+3. If capabilities report `chat_enabled=false`, frontend hiding is expected behavior.
 
 ### Logs
 
@@ -555,4 +581,4 @@ python src/run_pipeline.py
 
 ---
 
-**Last updated:** 2026-01-30
+**Last updated:** 2026-02-15

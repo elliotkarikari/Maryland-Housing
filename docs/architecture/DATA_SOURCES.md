@@ -1,8 +1,8 @@
 # Data Sources Documentation
 
-**Last Updated:** 2026-01-31
+**Last Updated:** 2026-02-15
 
-This document catalogs all data sources used in the Maryland Growth & Family Viability Atlas. Every source listed is **programmatically accessible** and **verifiable**.
+This document catalogs all data sources used in the Maryland Growth & Family Viability Atlas. Sources have mixed operational states (`available`, `intermittent`, `blocked`, `synthetic fallback`) and are verified during monthly audit runs.
 
 ---
 
@@ -303,12 +303,12 @@ url = "https://nces.ed.gov/ccd/data/txt/psu221alay.txt"  # Example for 2022-23
 - Status (planned/approved/funded/under construction)
 
 **Limitations:**
-- ⚠️ **V1 EXCLUSION:** No standardized API
+- No standardized API across counties
 - Requires manual PDF scraping per county
 - Inconsistent categorization across counties
 - Historical data retention varies
 
-**V1 Workaround:** Use MSDE enrollment trends only; exclude capital investment
+**Current handling:** Use direct county pulls where available (plus AI extraction when enabled); fall back to enrollment-only signals when capital documents are unavailable.
 
 ---
 
@@ -361,12 +361,12 @@ c.acs5.state_county(
 - **Baltimore County:** https://www.baltimorecountymd.gov/departments/planning/gis
 
 **Limitations:**
-- ⚠️ **V1 PARTIAL:** Only ~8 of 24 counties have open GIS
+- Coverage remains partial (only a subset of counties publish usable open zoning layers)
 - Zoning codes not standardized
 - Density calculations require parcel geometry + allowed FAR
 - Overlay zones complicate capacity modeling
 
-**V1 Workaround:** Binary indicator (has open zoning GIS = 1, else 0)
+**Current handling:** Layer 4 scores continue using permit and affordability signals when zoning capacity data is unavailable.
 
 ---
 
@@ -461,7 +461,7 @@ url = "https://www.irs.gov/pub/irs-soi/countymigration2122.csv"
 **Access Status:** ⚠️ **Conditional**
 HUD USPS data requires registration; unclear if API access available.
 
-**V1 Decision:** Include if programmatically accessible via HUD API; otherwise exclude.
+**Current handling:** Optional ingest via configured URL/path; when unavailable, low-vacancy FY and ACS-derived signals remain primary.
 
 ---
 
@@ -559,7 +559,7 @@ url = "https://gaftp.epa.gov/EJSCREEN/2023/EJSCREEN_2023_StatePct_with_AS_CNMI_G
 **Frequency:** Annual
 **Format:** PDF (requires OCR/scraping)
 
-**V1 Status:** ⚠️ **EXCLUDED** - No programmatic access
+**Current status:** ⚠️ **Intermittent / partial**
 Requires manual scraping of 24 county websites across 5+ years to establish follow-through rate.
 
 ---
@@ -570,7 +570,7 @@ Requires manual scraping of 24 county websites across 5+ years to establish foll
 **Access:** Web portal, limited CSV export
 **Frequency:** Annual (fiscal year)
 
-**V1 Status:** ⚠️ **PARTIAL** - State-level only
+**Current status:** ⚠️ **Partial** - State-level is accessible; county-level remains fragmented
 County budgets not centralized; would require individual county scraping.
 
 ---
@@ -579,7 +579,7 @@ County budgets not centralized; would require individual county scraping.
 **Source:** USASpending.gov (see 1.3)
 **Usage:** Track multi-year federal awards to identify persistent funding
 
-**V1 Status:** ✅ **INCLUDED** - Programmatically accessible
+**Current status:** ✅ **Available** - Programmatically accessible
 
 ---
 
@@ -590,51 +590,39 @@ County budgets not centralized; would require individual county scraping.
 - County government websites
 - News archives
 
-**V1 Status:** ⚠️ **EXCLUDED** - No single authoritative API
+**Current status:** ❌ **Blocked** - No single authoritative API
 
 ---
 
-## V1 Final Data Inventory
+## Current Operational Status Matrix (Verified 2026-02-15)
 
-### ✅ Fully Programmatically Accessible
-1. Census LEHD/LODES
-2. BLS QCEW
-3. USASpending.gov
-4. OpenStreetMap
-5. GTFS feeds
-6. Maryland MSDE enrollment
-7. NCES
-8. HUD Building Permits
-9. ACS (all tables)
-10. IRS migration
-11. FEMA NFHL
-12. EPA EJScreen
+| Source / Layer Input | Status | Verification Date | Notes |
+|----------------------|--------|-------------------|-------|
+| Census LEHD/LODES (Layer 1) | available | 2026-02-15 | Lagged annual source; governed by year policy caps |
+| BLS QCEW (Layer 1) | available | 2026-02-15 | API stable with keyless fallback |
+| USASpending (Layer 1, Policy) | available | 2026-02-15 | Used for awards volatility and persistence signals |
+| OSM + GTFS (Layer 2) | available | 2026-02-15 | Real-time-ish network/stop coverage varies by county |
+| NCES + MSDE (Layer 3) | available | 2026-02-15 | Observed-year capped via `NCES_OBSERVED_MAX_YEAR` |
+| County CIP documents (Layer 3, Policy) | intermittent | 2026-02-15 | County publication formats vary; extraction is source-dependent |
+| HUD permits + ACS housing (Layer 4) | available | 2026-02-15 | Core Layer 4 path is automated |
+| County zoning GIS (Layer 4) | intermittent | 2026-02-15 | Coverage still partial; not universal statewide |
+| ACS + IRS migration (Layer 5) | available | 2026-02-15 | ACS geography/year capped via policy |
+| HUD/USPS vacancy (Layer 5) | blocked | 2026-02-15 | Registration/access constraints remain |
+| FEMA NFHL / SFHA (Layer 6) | intermittent | 2026-02-15 | Endpoint reliability is variable by run |
+| EPA EJScreen / CDC SVI (Layer 6) | intermittent | 2026-02-15 | Source failures can trigger fallback behavior |
+| Synthetic fallback metrics (Layer 6 continuity path) | synthetic fallback | 2026-02-15 | Used only when upstream sources fail to preserve pipeline continuity |
 
-### ⚠️ Partially Accessible / Manual Required
-13. County zoning GIS (8 of 24 counties)
-14. Maryland DOT data (direct download only)
-15. NOAA climate (some API, some manual)
-16. County CIP plans (manual scraping)
-17. USPS vacancy (requires HUD registration check)
+## Layer Access Summary
 
-### ❌ Excluded from V1
-18. County budgets (not centralized)
-19. Planning commission approvals (no standard format)
-20. Leadership tenure (no authoritative source)
-
----
-
-## Data Access Summary
-
-| Layer | Fully Automated | Requires Manual Steps | V1 Completeness |
-|-------|----------------|----------------------|----------------|
-| Employment Gravity | Yes | No | 100% |
-| Mobility Optionality | Yes | No | 100% |
-| School Trajectory | Yes | CIP data excluded | 75% |
-| Housing Elasticity | Partial | Zoning excluded | 80% |
-| Demographic Momentum | Yes | USPS TBD | 90% |
-| Risk Drag | Yes | No | 100% |
-| Policy Persistence | Partial | Most excluded | 30% |
+| Layer | Primary Access State | Residual Gap |
+|-------|----------------------|--------------|
+| Employment Gravity | available | LODES release lag |
+| Mobility Optionality | available | Rural transit sparsity |
+| School Trajectory | available + intermittent CIP | County CIP format variance |
+| Housing Elasticity | available + intermittent zoning | Non-standard zoning schemas |
+| Demographic Momentum | available + blocked USPS | USPS access restrictions |
+| Risk Drag | intermittent with fallback | External source reliability |
+| Policy Persistence | partial | County-level historical budget standardization |
 
 ---
 

@@ -1,8 +1,8 @@
 # Limitations & Known Constraints
 
-**Maryland Growth & Family Viability Atlas - V1.0**
+**Maryland Growth & Family Viability Atlas - V1.1**
 
-**Last Updated:** 2026-01-28
+**Last Updated:** 2026-02-15
 
 ---
 
@@ -386,20 +386,22 @@ Some counties have systematically missing data:
 
 ---
 
-## 9. Known Bugs & Technical Debt (V1)
+## 9. Known Bugs & Technical Debt (Current)
 
-### 9.1 Layers 2-6 Not Fully Implemented
+### 9.1 External Source Instability and Fallback Dependence
 
 **Status:**
-- Layer 1 (Employment): ✅ Fully functional
-- Layers 2-6: ⚠️ Scaffolded but not ingesting data
+- Layers 1-6 are implemented and operational.
+- Several upstream feeds (especially selected Layer 5/6 sources) are intermittent or blocked in some runs.
+- Ingest paths may rely on fallback/synthetic continuity behavior when upstream fetches fail.
 
 **Impact:**
-- V1 scores based primarily on Employment Gravity
-- Classifications may be premature until all layers operational
+- Cross-run comparability can drift when source availability changes.
+- Risk and demographic sub-signals may have lower reliability than their table presence suggests.
 
-**Timeline:**
-- V1.1 (target Q2 2026): Complete Layers 2-6
+**Current mitigation:**
+- Operational source-state matrix is maintained in `docs/architecture/DATA_SOURCES.md`.
+- Refresh logs and ingest warnings capture fallback use.
 
 ### 9.2 Tract-Level Not Yet Supported
 
@@ -420,6 +422,34 @@ Some counties have systematically missing data:
 **Impact:**
 - Cannot answer "Is Montgomery improving faster than Howard?"
 - Only current snapshot available via API
+
+### 9.4 Year Drift and Observed-vs-Modeled Boundaries
+
+**Status:**
+- Source releases do not align to one calendar year (LODES, ACS, NCES, IRS each lag differently).
+- The pipeline `--year` is an as-of synthesis year, not a uniform observed year across all sources.
+
+**Impact:**
+- Users can misread a single year label as fully observed, when some components are lagged or capped.
+- Comparisons across layers may mix vintages.
+
+**Current mitigation:**
+- Year bounds are centralized in `src/utils/year_policy.py`.
+- Runtime metadata exposes policy caps through `/api/v1/metadata/capabilities`.
+
+### 9.5 CI/Observability Coverage Gaps
+
+**Status:**
+- Baseline CI checks now exist (lint/tests/migration-prefix/year-literal/docs-consistency).
+- Parity/regression checks for ingest accuracy and algorithmic drift are still partial.
+
+**Impact:**
+- Structural regressions in ingest outputs can pass syntax/lint gates.
+- Performance regressions may go unnoticed until runtime symptoms appear.
+
+**Current mitigation:**
+- Monthly static audit script (`scripts/monthly_static_audit.sh`) produces recurring evidence artifacts.
+- Additional parity/performance checks remain roadmap items.
 
 ---
 
@@ -469,17 +499,17 @@ Some counties have systematically missing data:
 
 ## 11. Future Enhancements (Roadmap)
 
-### V1.1 (Q2 2026)
-- [ ] Complete Layers 2-6 data ingestion
-- [ ] Expand AI CIP extraction to 5+ counties
-- [ ] Add historical time series API
+### 30 Days
+- [ ] Add regression tests for observed-vs-modeled year boundaries.
+- [ ] Add ETL parity checks for bulk-write paths (counts, uniqueness, null handling).
+- [ ] Add API contract snapshots for metadata endpoints.
 
-### V1.2 (Q3 2026)
-- [ ] Tract-level geography option
-- [ ] Interactive frontend (Mapbox GL JS)
-- [ ] Uncertainty bands on classifications
+### 60 Days
+- [ ] Expand source-specific health checks for intermittent feeds (FEMA/EJ/USPS).
+- [ ] Add historical trend endpoints for county-level comparisons.
+- [ ] Add CI performance budget checks on known hotspots.
 
-### V2.0 (2027+)
+### 90 Days
 - [ ] Regional expansion (DMV metro area)
 - [ ] Scenario analysis ("What if zoning reform?")
 - [ ] Feedback loop modeling (system dynamics)
@@ -526,5 +556,5 @@ Use accordingly.
 ---
 
 **Maintained by:** Maryland Viability Atlas Team
-**Last Reviewed:** 2026-01-28
-**Next Review:** 2026-04-30
+**Last Reviewed:** 2026-02-15
+**Next Review:** 2026-03-15
