@@ -54,6 +54,7 @@ from config.database import get_db, log_refresh
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
+from src.utils.year_policy import current_year, lodes_year_for_data_year
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -307,7 +308,7 @@ def _extract_gtfs_date(gtfs_path: Path) -> date:
     return date.today()
 
 
-def download_lodes_wac(year: int = 2021) -> pd.DataFrame:
+def download_lodes_wac(year: int = settings.LODES_LATEST_YEAR) -> pd.DataFrame:
     """
     Download LODES Workplace Area Characteristics (WAC) for Maryland.
 
@@ -1243,8 +1244,8 @@ def calculate_accessibility_indicators(
     Returns:
         Tuple of (tract_df, county_df) with accessibility metrics
     """
-    data_year = data_year or datetime.now().year
-    lodes_year = lodes_year or min(data_year - 2, 2021)  # LODES typically 2 years behind
+    data_year = data_year or current_year()
+    lodes_year = lodes_year or lodes_year_for_data_year(data_year)
 
     logger.info("=" * 60)
     logger.info("LAYER 2 v2: ACCESSIBILITY-BASED MOBILITY ANALYSIS")
@@ -1334,8 +1335,8 @@ def run_layer2_v2_ingestion(
         use_r5: Whether to use r5py routing
         store_data: Whether to store results in database
     """
-    data_year = data_year or datetime.now().year
-    lodes_year = min(data_year - 2, 2021)
+    data_year = data_year or current_year()
+    lodes_year = lodes_year_for_data_year(data_year)
 
     try:
         # Calculate accessibility
@@ -1413,8 +1414,8 @@ def main():
         description='Layer 2 v2: Accessibility-based Mobility Analysis'
     )
     parser.add_argument(
-        '--year', type=int, default=datetime.now().year,
-        help='Data year (default: current year)'
+        '--year', type=int, default=current_year(),
+        help='Data year (default: current year/policy cap)'
     )
     parser.add_argument(
         '--no-r5', action='store_true',

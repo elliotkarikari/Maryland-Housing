@@ -28,12 +28,14 @@ from src.processing.timeseries_features import compute_all_timeseries_features
 from src.processing.multiyear_scoring import compute_all_layer_scores
 from src.processing.multiyear_classification import classify_all_counties, store_final_synthesis
 from src.utils.logging import get_logger
+from src.utils.year_policy import pipeline_default_year
 
 logger = get_logger(__name__)
+DEFAULT_YEAR = pipeline_default_year()
 
 
 def run_pipeline(
-    as_of_year: int = 2025,
+    as_of_year: int = DEFAULT_YEAR,
     skip_timeseries: bool = False,
     skip_scoring: bool = False
 ):
@@ -135,8 +137,8 @@ def main():
     parser.add_argument(
         '--year',
         type=int,
-        default=2025,
-        help='Reference year for analysis (default: 2025)'
+        default=DEFAULT_YEAR,
+        help=f'Reference year for analysis (default: {DEFAULT_YEAR})'
     )
     parser.add_argument(
         '--skip-timeseries',

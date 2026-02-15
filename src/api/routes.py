@@ -618,7 +618,10 @@ async def get_capabilities() -> CapabilitiesResponse:
         api_version=settings.API_VERSION,
         year_policy={
             "lodes_latest_year": settings.LODES_LATEST_YEAR,
+            "lodes_lag_years": settings.LODES_LAG_YEARS,
             "acs_latest_year": settings.ACS_LATEST_YEAR,
+            "acs_geography_max_year": settings.ACS_GEOGRAPHY_MAX_YEAR,
+            "nces_observed_max_year": settings.NCES_OBSERVED_MAX_YEAR,
             "predict_to_year": settings.PREDICT_TO_YEAR,
         },
     )

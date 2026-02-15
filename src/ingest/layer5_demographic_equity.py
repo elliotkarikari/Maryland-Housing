@@ -46,6 +46,7 @@ from config.database import get_db, log_refresh
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
+from src.utils.year_policy import acs_geography_year, layer5_default_data_year
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -78,7 +79,7 @@ POPULATION_GROWTH_WEIGHT = 0.30
 STABILITY_WEIGHT = 0.20     # 1 - outflow_rate
 
 DEFAULT_WINDOW_YEARS = 5
-ACS_GEOGRAPHY_MAX_YEAR = 2022
+ACS_GEOGRAPHY_MAX_YEAR = settings.ACS_GEOGRAPHY_MAX_YEAR
 
 # IRS year ranges available
 IRS_YEAR_RANGES = ["1718", "1819", "1920", "2021", "2122"]
@@ -100,7 +101,7 @@ def download_acs_demographic_data(year: int) -> pd.DataFrame:
     Returns:
         DataFrame with demographic metrics by tract
     """
-    geo_year = min(year, ACS_GEOGRAPHY_MAX_YEAR)
+    geo_year = acs_geography_year(year)
     cache_path = ACS_CACHE_DIR / f"md_demographics_{geo_year}.csv"
 
     if cache_path.exists():
@@ -1134,8 +1135,8 @@ def calculate_demographic_equity_indicators(
     Returns:
         Tuple of (tract_df, county_df)
     """
-    data_year = data_year or datetime.now().year
-    acs_year = acs_year or min(data_year - 1, ACS_GEOGRAPHY_MAX_YEAR)
+    data_year = data_year or layer5_default_data_year()
+    acs_year = acs_year or acs_geography_year(data_year - 1)
 
     logger.info("=" * 60)
     logger.info("LAYER 5 v2: DEMOGRAPHIC EQUITY ANALYSIS")
@@ -1201,10 +1202,8 @@ def run_layer5_v2_ingestion(
         store_data: Whether to store results in database
         window_years: Window size for multi-year ingestion
     """
-    current_year = datetime.now().year
-
     if data_year is None:
-        data_year = min(ACS_GEOGRAPHY_MAX_YEAR + 1, current_year)
+        data_year = layer5_default_data_year()
 
     try:
         if multi_year:
@@ -1219,7 +1218,7 @@ def run_layer5_v2_ingestion(
         failed_years = []
 
         for year in years_to_fetch:
-            acs_year = min(year - 1, ACS_GEOGRAPHY_MAX_YEAR)
+            acs_year = acs_geography_year(year - 1)
 
             logger.info("=" * 70)
             logger.info(f"Processing year {year}")

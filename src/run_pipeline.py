@@ -10,7 +10,7 @@ Pipeline stages (V2):
 4. GeoJSON export
 
 Usage:
-    python src/run_pipeline.py --year 2025
+    python src/run_pipeline.py --year 2026
     python src/run_pipeline.py --export-only
 """
 
@@ -25,10 +25,12 @@ if PROJECT_ROOT not in sys.path:
 
 from config.database import test_connection
 from src.utils.logging import setup_logging
+from src.utils.year_policy import pipeline_default_year
 from src.run_multiyear_pipeline import run_pipeline as run_multiyear_pipeline
 from src.export.geojson_export import run_geojson_export
 
 logger = setup_logging("pipeline")
+DEFAULT_YEAR = pipeline_default_year()
 
 
 def check_prerequisites() -> bool:
@@ -58,8 +60,8 @@ def main():
     parser.add_argument(
         "--year",
         type=int,
-        default=2025,
-        help="As-of year for multi-year synthesis (default: 2025)"
+        default=DEFAULT_YEAR,
+        help=f"As-of year for multi-year synthesis (default: {DEFAULT_YEAR})"
     )
 
     parser.add_argument(

@@ -48,6 +48,12 @@ from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
+from src.utils.year_policy import (
+    acs_geography_year,
+    acs_year_for_data_year,
+    layer3_default_data_year,
+    nces_observed_year,
+)
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -85,7 +91,7 @@ PROFICIENCY_MEDIAN = 50.0   # Will be computed from data
 TOP_QUARTILE_THRESHOLD = 75.0  # Percentile threshold
 
 DEFAULT_WINDOW_YEARS = 5
-ACS_GEOGRAPHY_MAX_YEAR = 2022
+ACS_GEOGRAPHY_MAX_YEAR = settings.ACS_GEOGRAPHY_MAX_YEAR
 
 # NCES CCD URLs
 NCES_SCHOOL_DIR_URL = "https://nces.ed.gov/ccd/files.asp"
@@ -345,7 +351,7 @@ def download_acs_school_age_population(year: int) -> pd.DataFrame:
     Returns:
         DataFrame with school-age population by tract
     """
-    geo_year = min(year, ACS_GEOGRAPHY_MAX_YEAR)
+    geo_year = acs_geography_year(year)
     if geo_year != year:
         logger.warning(f"ACS geography not available for {year}; using {geo_year} instead.")
 
@@ -453,7 +459,7 @@ def _fetch_tract_centroids(year: int) -> pd.DataFrame:
     Returns:
         DataFrame with tract_geoid, fips_code, latitude, longitude, population
     """
-    geo_year = min(year, ACS_GEOGRAPHY_MAX_YEAR)
+    geo_year = acs_geography_year(year)
     if geo_year != year:
         logger.warning(f"ACS geography not available for {year}; using {geo_year} instead.")
 
@@ -1244,9 +1250,9 @@ def calculate_education_accessibility_indicators(
     Returns:
         Tuple of (tract_df, county_df)
     """
-    data_year = data_year or datetime.now().year
-    nces_year = nces_year or min(data_year, 2024)  # NCES typically lags 1-2 years
-    acs_year = acs_year or min(data_year - 1, settings.ACS_LATEST_YEAR)
+    data_year = data_year or layer3_default_data_year()
+    nces_year = nces_year or nces_observed_year(data_year)
+    acs_year = acs_year or acs_year_for_data_year(data_year)
 
     logger.info("=" * 60)
     logger.info("LAYER 3 v2: EDUCATION ACCESSIBILITY ANALYSIS")
@@ -1309,10 +1315,8 @@ def run_layer3_v2_ingestion(
         store_data: Whether to store results in database
         window_years: Window size for multi-year ingestion
     """
-    current_year = datetime.now().year
-
     if data_year is None:
-        data_year = min(2025, current_year)  # Cap at 2025 for school data
+        data_year = layer3_default_data_year()
 
     try:
         if multi_year:
@@ -1327,8 +1331,8 @@ def run_layer3_v2_ingestion(
         failed_years = []
 
         for year in years_to_fetch:
-            nces_year = min(year, 2024)  # NCES lags
-            acs_year = min(year - 1, settings.ACS_LATEST_YEAR)
+            nces_year = nces_observed_year(year)
+            acs_year = acs_year_for_data_year(year)
 
             logger.info("=" * 70)
             logger.info(f"Processing year {year}")
@@ -1414,7 +1418,7 @@ def main():
     )
     parser.add_argument(
         '--year', type=int, default=None,
-        help='End year for window (default: 2025)'
+        help='End year for window (default: policy-driven current as-of year)'
     )
     parser.add_argument(
         '--single-year', action='store_true',

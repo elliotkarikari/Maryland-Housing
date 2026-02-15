@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     # Data years (current defaults - will be dynamic in production)
     LODES_LATEST_YEAR: int = 2022
     ACS_LATEST_YEAR: int = 2024
+    ACS_GEOGRAPHY_MAX_YEAR: int = 2022
+    NCES_OBSERVED_MAX_YEAR: int = 2024
+    LODES_LAG_YEARS: int = 2
 
     # Prediction alignment settings
     PREDICT_TO_YEAR: int = 2025
