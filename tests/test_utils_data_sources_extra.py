@@ -9,12 +9,22 @@ import src.utils.data_sources as ds
 
 
 class DummyResponse:
-    def __init__(self, *, status_code=200, text="", content=b"", json_data=None, ok=True):
+    def __init__(
+        self,
+        *,
+        status_code=200,
+        text="",
+        content=b"",
+        json_data=None,
+        ok=True,
+        url="https://example.com",
+    ):
         self.status_code = status_code
         self.text = text
         self.content = content
         self._json_data = json_data
         self.ok = ok
+        self.url = url
         self.headers = {"content-length": str(len(content))}
 
     def raise_for_status(self):
@@ -146,7 +156,9 @@ def test_fetch_lodes_wac_success(monkeypatch):
     monkeypatch.setattr(pd, "read_csv", fake_read_csv)
 
     df = ds.fetch_lodes_wac(state="md", year=2021, job_type="JT00")
-    assert df.equals(expected)
+    assert df[["w_geocode", "C000"]].equals(expected)
+    assert df["is_real"].all()
+    assert "source_url" in df.columns
 
 
 def test_download_file_success(monkeypatch, tmp_path):

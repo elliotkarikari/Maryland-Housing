@@ -18,10 +18,11 @@ class TestDynamicYearCalculation:
     """Test that hardcoded years have been replaced with dynamic calculations."""
 
     def test_acs_geography_max_year_is_dynamic(self):
-        """ACS_GEOGRAPHY_MAX_YEAR should be current year - 2."""
+        """ACS_GEOGRAPHY_MAX_YEAR should honor configured policy cap."""
         from src.ingest.layer6_risk_vulnerability import ACS_GEOGRAPHY_MAX_YEAR
+        from config.settings import get_settings
 
-        expected_year = datetime.now().year - 2
+        expected_year = get_settings().ACS_GEOGRAPHY_MAX_YEAR
         assert ACS_GEOGRAPHY_MAX_YEAR == expected_year, (
             f"ACS_GEOGRAPHY_MAX_YEAR should be {expected_year}, got {ACS_GEOGRAPHY_MAX_YEAR}"
         )

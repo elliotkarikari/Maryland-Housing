@@ -50,6 +50,7 @@ def test_layer1_pipeline(monkeypatch):
     monkeypatch.setattr(layer1, "store_tract_economic_opportunity", lambda *args, **kwargs: calls.__setitem__("store", calls["store"] + 1))
     monkeypatch.setattr(layer1, "store_county_economic_opportunity", lambda *args, **kwargs: None)
     monkeypatch.setattr(layer1, "log_refresh", lambda *args, **kwargs: calls.__setitem__("refresh", calls["refresh"] + 1))
+    monkeypatch.setattr(layer1, "apply_predictions_to_table", lambda *args, **kwargs: None)
 
     layer1.run_layer1_v2_ingestion(data_year=2025, multi_year=False, store_data=True)
     assert calls["store"] == 1
@@ -67,6 +68,7 @@ def test_layer2_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(layer2, "store_county_accessibility", lambda *args, **kwargs: None)
     monkeypatch.setattr(layer2, "log_refresh", lambda *args, **kwargs: calls.__setitem__("refresh", calls["refresh"] + 1))
     monkeypatch.setattr(layer2, "check_r5py_available", lambda: False)
+    monkeypatch.setattr(layer2, "apply_predictions_to_table", lambda *args, **kwargs: None)
 
     feed = layer2.GTFSFeedInfo(
         name="test",
@@ -74,6 +76,8 @@ def test_layer2_pipeline(monkeypatch, tmp_path):
         agency="test",
         feed_date=date(2024, 1, 1),
         file_hash="abc",
+        source_url="https://example.com/feed.zip",
+        fetch_date="2026-02-15",
     )
     monkeypatch.setattr(layer2, "download_gtfs_feeds", lambda *args, **kwargs: [feed])
 
@@ -96,6 +100,7 @@ def test_layer3_education_pipeline(monkeypatch):
     monkeypatch.setattr(layer3edu, "store_tract_education_accessibility", lambda *args, **kwargs: None)
     monkeypatch.setattr(layer3edu, "store_county_education_accessibility", lambda *args, **kwargs: None)
     monkeypatch.setattr(layer3edu, "log_refresh", lambda *args, **kwargs: calls.__setitem__("refresh", calls["refresh"] + 1))
+    monkeypatch.setattr(layer3edu, "apply_predictions_to_table", lambda *args, **kwargs: None)
 
     layer3edu.run_layer3_v2_ingestion(data_year=2025, multi_year=False, store_data=True)
     assert calls["store"] == 1
@@ -165,6 +170,7 @@ def test_layer4_affordability_pipeline(monkeypatch):
     monkeypatch.setattr(layer4aff, "store_tract_housing_affordability", lambda *args, **kwargs: calls.__setitem__("store", calls["store"] + 1))
     monkeypatch.setattr(layer4aff, "store_county_housing_affordability", lambda *args, **kwargs: None)
     monkeypatch.setattr(layer4aff, "log_refresh", lambda *args, **kwargs: calls.__setitem__("refresh", calls["refresh"] + 1))
+    monkeypatch.setattr(layer4aff, "apply_predictions_to_table", lambda *args, **kwargs: None)
 
     layer4aff.run_layer4_v2_ingestion(data_year=2025, multi_year=False, store_data=True)
     assert calls["store"] == 1
@@ -213,6 +219,7 @@ def test_layer5_equity_pipeline(monkeypatch):
     monkeypatch.setattr(layer5eq, "store_tract_demographic_equity", lambda *args, **kwargs: calls.__setitem__("store", calls["store"] + 1))
     monkeypatch.setattr(layer5eq, "store_county_demographic_equity", lambda *args, **kwargs: None)
     monkeypatch.setattr(layer5eq, "log_refresh", lambda *args, **kwargs: calls.__setitem__("refresh", calls["refresh"] + 1))
+    monkeypatch.setattr(layer5eq, "apply_predictions_to_table", lambda *args, **kwargs: None)
 
     layer5eq.run_layer5_v2_ingestion(data_year=2024, multi_year=False, store_data=True)
     assert calls["store"] == 1
@@ -248,6 +255,8 @@ def test_layer6_vulnerability_pipeline(monkeypatch):
     monkeypatch.setattr(layer6v, "compute_risk_vulnerability", lambda *args, **kwargs: df)
     monkeypatch.setattr(layer6v, "store_risk_vulnerability_data", lambda *args, **kwargs: calls.__setitem__("store", calls["store"] + 1))
     monkeypatch.setattr(layer6v, "log_refresh", lambda *args, **kwargs: calls.__setitem__("refresh", calls["refresh"] + 1))
+    monkeypatch.setattr(layer6v, "apply_predictions_to_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["prog", "--year", "2025"])
 
     layer6v.main()
     assert calls["store"] == 1
