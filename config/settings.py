@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     API_TITLE: str = "Maryland Growth & Family Viability Atlas API"
     API_VERSION: str = "1.0.0"
     API_DESCRIPTION: str = "Spatial analytics API for Maryland directional growth signals"
+    CORS_ALLOW_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     # Rate limiting (requests per minute)
     CENSUS_API_RATE_LIMIT: int = 8  # Conservative: 500/day = ~8/min

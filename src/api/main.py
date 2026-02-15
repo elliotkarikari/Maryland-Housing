@@ -19,6 +19,11 @@ from src.utils.logging import setup_logging
 settings = get_settings()
 logger = setup_logging("api")
 
+
+def _parse_cors_allow_origins(raw: str) -> list[str]:
+    origins = [origin.strip() for origin in (raw or "").split(",") if origin.strip()]
+    return origins or ["http://localhost:3000", "http://127.0.0.1:3000"]
+
 # Initialize FastAPI app
 app = FastAPI(
     title=settings.API_TITLE,
@@ -31,7 +36,7 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure properly in production
+    allow_origins=_parse_cors_allow_origins(settings.CORS_ALLOW_ORIGINS),
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
@@ -76,6 +81,7 @@ async def root():
             "area_detail": "/api/v1/areas/{geoid}",
             "chat": "/api/v1/chat",
             "data_sources": "/api/v1/metadata/sources",
+            "capabilities": "/api/v1/metadata/capabilities",
             "latest_refresh": "/api/v1/metadata/refresh"
         }
     }

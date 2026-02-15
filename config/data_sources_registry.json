@@ -1,0 +1,51 @@
+[
+  {
+    "name": "US Census LEHD/LODES",
+    "agency": "US Census Bureau",
+    "url": "https://lehd.ces.census.gov/data/",
+    "update_frequency": "Annual",
+    "latest_available": "2021"
+  },
+  {
+    "name": "BLS QCEW",
+    "agency": "Bureau of Labor Statistics",
+    "url": "https://www.bls.gov/cew/",
+    "update_frequency": "Quarterly",
+    "latest_available": "2025 Q3"
+  },
+  {
+    "name": "USASpending.gov",
+    "agency": "US Treasury",
+    "url": "https://www.usaspending.gov/",
+    "update_frequency": "Daily",
+    "latest_available": "Current"
+  },
+  {
+    "name": "Census ACS 5-Year",
+    "agency": "US Census Bureau",
+    "url": "https://www.census.gov/programs-surveys/acs",
+    "update_frequency": "Annual",
+    "latest_available": "2019-2023"
+  },
+  {
+    "name": "IRS County Migration",
+    "agency": "IRS Statistics of Income",
+    "url": "https://www.irs.gov/statistics/soi-tax-stats-migration-data",
+    "update_frequency": "Annual",
+    "latest_available": "2021-2022"
+  },
+  {
+    "name": "FEMA National Flood Hazard Layer",
+    "agency": "FEMA",
+    "url": "https://msc.fema.gov/",
+    "update_frequency": "Rolling updates",
+    "latest_available": "Current"
+  },
+  {
+    "name": "EPA EJScreen",
+    "agency": "EPA",
+    "url": "https://www.epa.gov/ejscreen",
+    "update_frequency": "Annual",
+    "latest_available": "2023"
+  }
+]

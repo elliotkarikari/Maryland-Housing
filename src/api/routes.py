@@ -10,6 +10,7 @@ from sqlalchemy import text
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 import os
+import json
 
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db_session
@@ -79,6 +80,40 @@ class DataSource(BaseModel):
     url: str
     update_frequency: str
     latest_available: str
+
+
+class CapabilitiesResponse(BaseModel):
+    """Runtime capabilities available to clients."""
+    chat_enabled: bool
+    ai_enabled: bool
+    api_version: str
+    year_policy: Dict[str, Any]
+
+
+def _load_data_sources_registry() -> List[DataSource]:
+    """Load data source metadata from config registry."""
+    registry_path = os.path.join("config", "data_sources_registry.json")
+
+    if not os.path.exists(registry_path):
+        logger.warning(f"Data source registry not found at {registry_path}")
+        return []
+
+    with open(registry_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    sources: List[DataSource] = []
+    for entry in payload:
+        sources.append(
+            DataSource(
+                name=entry["name"],
+                agency=entry["agency"],
+                url=entry["url"],
+                update_frequency=entry["update_frequency"],
+                latest_available=entry["latest_available"],
+            )
+        )
+
+    return sources
 
 
 def _identify_top_strengths(layer_scores: dict, top_n: int = 2) -> List[str]:
@@ -563,59 +598,30 @@ async def get_data_sources():
     Returns:
         List of data source metadata
     """
-    # This could be loaded from docs/DATA_SOURCES.md or a database table
-    # For now, return key sources
-    return [
-        DataSource(
-            name="US Census LEHD/LODES",
-            agency="US Census Bureau",
-            url="https://lehd.ces.census.gov/data/",
-            update_frequency="Annual",
-            latest_available="2021"
-        ),
-        DataSource(
-            name="BLS QCEW",
-            agency="Bureau of Labor Statistics",
-            url="https://www.bls.gov/cew/",
-            update_frequency="Quarterly",
-            latest_available="2025 Q3"
-        ),
-        DataSource(
-            name="USASpending.gov",
-            agency="US Treasury",
-            url="https://www.usaspending.gov/",
-            update_frequency="Daily",
-            latest_available="Current"
-        ),
-        DataSource(
-            name="Census ACS 5-Year",
-            agency="US Census Bureau",
-            url="https://www.census.gov/programs-surveys/acs",
-            update_frequency="Annual",
-            latest_available="2019-2023"
-        ),
-        DataSource(
-            name="IRS County Migration",
-            agency="IRS Statistics of Income",
-            url="https://www.irs.gov/statistics/soi-tax-stats-migration-data",
-            update_frequency="Annual",
-            latest_available="2021-2022"
-        ),
-        DataSource(
-            name="FEMA National Flood Hazard Layer",
-            agency="FEMA",
-            url="https://msc.fema.gov/",
-            update_frequency="Rolling updates",
-            latest_available="Current"
-        ),
-        DataSource(
-            name="EPA EJScreen",
-            agency="EPA",
-            url="https://www.epa.gov/ejscreen",
-            update_frequency="Annual",
-            latest_available="2023"
+    sources = _load_data_sources_registry()
+    if not sources:
+        raise HTTPException(
+            status_code=500,
+            detail="Data source registry is unavailable"
         )
-    ]
+    return sources
+
+
+@router.get("/metadata/capabilities", response_model=CapabilitiesResponse)
+async def get_capabilities() -> CapabilitiesResponse:
+    """
+    Expose runtime feature capabilities for frontend gating and diagnostics.
+    """
+    return CapabilitiesResponse(
+        chat_enabled=bool(settings.AI_ENABLED and settings.OPENAI_API_KEY),
+        ai_enabled=bool(settings.AI_ENABLED),
+        api_version=settings.API_VERSION,
+        year_policy={
+            "lodes_latest_year": settings.LODES_LATEST_YEAR,
+            "acs_latest_year": settings.ACS_LATEST_YEAR,
+            "predict_to_year": settings.PREDICT_TO_YEAR,
+        },
+    )
 
 
 @router.get("/metadata/classifications")
