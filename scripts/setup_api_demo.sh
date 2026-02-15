@@ -34,7 +34,7 @@ fi
 echo ""
 echo "Step 2: Exporting GeoJSON..."
 echo "----------------------------------------"
-python src/export/geojson.py
+python -m src.export.geojson_export
 
 if [ $? -ne 0 ]; then
     echo "ERROR: GeoJSON export failed"
@@ -47,10 +47,10 @@ echo "Setup complete!"
 echo "=========================================="
 echo ""
 echo "To start the API:"
-echo "  ./api/start.sh"
+echo "  make serve"
 echo ""
 echo "Or manually:"
-echo "  python -m uvicorn api.main:app --reload"
+echo "  python -m uvicorn src.api.main:app --reload"
 echo ""
 echo "API will be available at:"
 echo "  http://localhost:8000"

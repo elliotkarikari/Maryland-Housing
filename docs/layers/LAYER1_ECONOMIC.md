@@ -212,7 +212,7 @@ Based on 2021 analysis (LODES 2019 data):
 
 ## Questions?
 
-See `docs/ANALYSIS_METHODS.md` Section 9 (Layer 1) for detailed methodology.
+See `docs/architecture/ANALYSIS_METHODS.md` Section 9 (Layer 1) for detailed methodology.
 
 For issues or questions:
 - Check cache directory: `data/cache/economic_v2/`
