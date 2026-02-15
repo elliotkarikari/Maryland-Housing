@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     API_DESCRIPTION: str = "Spatial analytics API for Maryland directional growth signals"
     CORS_ALLOW_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
+    # Data backend routing
+    # databricks = primary ingestion backend
+    # postgres = local/legacy fallback
+    DATA_BACKEND: str = "databricks"
+    DATABRICKS_SQLALCHEMY_URL: Optional[str] = None
+    DATABRICKS_SERVER_HOSTNAME: Optional[str] = None
+    DATABRICKS_HTTP_PATH: Optional[str] = None
+    DATABRICKS_ACCESS_TOKEN: Optional[str] = None
+    DATABRICKS_CATALOG: str = "hive_metastore"
+    DATABRICKS_SCHEMA: str = "default"
+
     # Rate limiting (requests per minute)
     CENSUS_API_RATE_LIMIT: int = 8  # Conservative: 500/day = ~8/min
     BLS_API_RATE_LIMIT: int = 8

@@ -89,7 +89,7 @@ This system uses **verifiable open data where available**, with explicit fallbac
 | Component | Technology |
 |-----------|------------|
 | API Framework | FastAPI 0.109+ |
-| Database | PostgreSQL 15+ with PostGIS 3.3+ |
+| Database | Databricks SQL Warehouse (primary ingest) + PostgreSQL/PostGIS fallback |
 | ORM | SQLAlchemy 2.0 + GeoAlchemy2 |
 | Python | 3.12+ |
 
@@ -123,7 +123,7 @@ This system uses **verifiable open data where available**, with explicit fallbac
 ### Prerequisites
 
 - Python 3.12+
-- PostgreSQL 15+ with PostGIS 3.3+
+- Databricks SQL Warehouse credentials (`DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN`)
 - Census API key (free): [api.census.gov](https://api.census.gov/data/key_signup.html)
 - Mapbox token: [mapbox.com](https://www.mapbox.com/)
 
@@ -444,6 +444,6 @@ MIT License - See [LICENSE](LICENSE) file.
 
 ---
 
-**Built with:** Python, PostgreSQL/PostGIS, FastAPI, Mapbox GL JS
+**Built with:** Python, Databricks SQL + PostgreSQL/PostGIS fallback, FastAPI, Mapbox GL JS
 **Deployed on:** Railway
 **Last updated:** 2026-02-15

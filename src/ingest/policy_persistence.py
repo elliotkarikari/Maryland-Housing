@@ -293,36 +293,62 @@ def merge_and_store_policy_persistence(
     results_df = pd.DataFrame(confidence_results)
 
     # Store in database
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
     with get_db() as db:
-        for _, row in results_df.iterrows():
-            sql = text("""
-                INSERT INTO policy_persistence (
-                    fips_code, data_year,
-                    federal_awards_yoy_consistency,
-                    cip_follow_through_rate,
-                    confidence_score,
-                    confidence_class
-                ) VALUES (
-                    :fips_code, :data_year,
-                    :federal_awards_yoy_consistency,
-                    :cip_follow_through_rate,
-                    :confidence_score,
-                    :confidence_class
-                )
-                ON CONFLICT (fips_code, data_year)
-                DO UPDATE SET
-                    federal_awards_yoy_consistency = EXCLUDED.federal_awards_yoy_consistency,
-                    cip_follow_through_rate = EXCLUDED.cip_follow_through_rate,
-                    confidence_score = EXCLUDED.confidence_score,
-                    confidence_class = EXCLUDED.confidence_class,
-                    updated_at = CURRENT_TIMESTAMP
-            """)
+        insert_sql = text("""
+            INSERT INTO policy_persistence (
+                fips_code, data_year,
+                federal_awards_yoy_consistency,
+                cip_follow_through_rate,
+                confidence_score,
+                confidence_class
+            ) VALUES (
+                :fips_code, :data_year,
+                :federal_awards_yoy_consistency,
+                :cip_follow_through_rate,
+                :confidence_score,
+                :confidence_class
+            )
+        """)
+        upsert_sql = text("""
+            INSERT INTO policy_persistence (
+                fips_code, data_year,
+                federal_awards_yoy_consistency,
+                cip_follow_through_rate,
+                confidence_score,
+                confidence_class
+            ) VALUES (
+                :fips_code, :data_year,
+                :federal_awards_yoy_consistency,
+                :cip_follow_through_rate,
+                :confidence_score,
+                :confidence_class
+            )
+            ON CONFLICT (fips_code, data_year)
+            DO UPDATE SET
+                federal_awards_yoy_consistency = EXCLUDED.federal_awards_yoy_consistency,
+                cip_follow_through_rate = EXCLUDED.cip_follow_through_rate,
+                confidence_score = EXCLUDED.confidence_score,
+                confidence_class = EXCLUDED.confidence_class,
+                updated_at = CURRENT_TIMESTAMP
+        """)
 
+        if use_databricks_backend:
+            db.execute(
+                text(
+                    """
+                    DELETE FROM policy_persistence
+                    WHERE data_year = :data_year
+                    """
+                ),
+                {"data_year": data_year},
+            )
+
+        for _, row in results_df.iterrows():
             params = row.to_dict()
             # Convert NaN to None for SQL
             params = {k: (None if pd.isna(v) else v) for k, v in params.items()}
-
-            db.execute(sql, params)
+            db.execute(insert_sql if use_databricks_backend else upsert_sql, params)
 
         db.commit()
 

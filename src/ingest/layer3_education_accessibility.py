@@ -1108,8 +1108,37 @@ def store_tract_education_accessibility(df: pd.DataFrame, data_year: int, nces_y
 def store_county_education_accessibility(df: pd.DataFrame, data_year: int, nces_year: int, acs_year: int):
     """Update county-level education accessibility data."""
     logger.info(f"Updating {len(df)} county education accessibility records...")
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
+        insert_sql = text("""
+            INSERT INTO layer3_school_trajectory (
+                fips_code, data_year,
+                total_schools, schools_with_prek,
+                high_quality_schools_count, top_quartile_schools_count,
+                avg_schools_accessible_15min, avg_schools_accessible_30min,
+                avg_high_quality_accessible_30min, pct_pop_near_high_quality,
+                avg_ela_proficiency, avg_math_proficiency, avg_proficiency,
+                avg_graduation_rate, frl_proficiency_gap,
+                school_supply_score, education_accessibility_score,
+                school_quality_score, prek_accessibility_score, equity_score,
+                education_opportunity_index,
+                nces_year, acs_year, education_version
+            ) VALUES (
+                :fips, :data_year,
+                :total_schools, :schools_with_prek,
+                :hq_count, :tq_count,
+                :avg_15, :avg_30,
+                :avg_hq_30, :pct_near_hq,
+                :ela_prof, :math_prof, :avg_prof,
+                :grad_rate, :frl_gap,
+                :supply_score, :access_score,
+                :quality_score, :prek_score, :equity_score,
+                :opportunity_index,
+                :nces_year, :acs_year, 'v2-accessibility'
+            )
+        """)
+
         upsert_sql = text("""
             INSERT INTO layer3_school_trajectory (
                 fips_code, data_year,
@@ -1193,7 +1222,19 @@ def store_county_education_accessibility(df: pd.DataFrame, data_year: int, nces_
                 }
             )
 
-        execute_batch(db, upsert_sql, rows, chunk_size=1000)
+        if use_databricks_backend:
+            db.execute(
+                text(
+                    """
+                    DELETE FROM layer3_school_trajectory
+                    WHERE data_year = :data_year
+                    """
+                ),
+                {"data_year": data_year},
+            )
+            execute_batch(db, insert_sql, rows, chunk_size=1000)
+        else:
+            execute_batch(db, upsert_sql, rows, chunk_size=1000)
 
         db.commit()
 

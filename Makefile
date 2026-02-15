@@ -7,6 +7,7 @@ else
 PYTHON := .venv/bin/python
 endif
 PIP := $(PYTHON) -m pip
+DATA_BACKEND ?= databricks
 
 help:
 	@echo "Maryland Viability Atlas - Available Commands"
@@ -56,43 +57,43 @@ db-migrate:
 
 ingest-all:
 	@echo "Running all data ingestion pipelines..."
-	$(PYTHON) -m src.ingest.layer1_economic_accessibility
-	$(PYTHON) -m src.ingest.layer2_accessibility
-	$(PYTHON) -m src.ingest.layer3_education_accessibility
-	$(PYTHON) -m src.ingest.layer4_housing_affordability
-	$(PYTHON) -m src.ingest.layer5_demographic_equity
-	$(PYTHON) -m src.ingest.layer6_risk_vulnerability
-	$(PYTHON) -m src.ingest.policy_persistence
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer1_economic_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer2_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer3_education_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer4_housing_affordability
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer5_demographic_equity
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer6_risk_vulnerability
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.policy_persistence
 
 ingest-layer1:
-	$(PYTHON) -m src.ingest.layer1_economic_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer1_economic_accessibility
 
 ingest-layer2:
-	$(PYTHON) -m src.ingest.layer2_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer2_accessibility
 
 ingest-layer3:
-	$(PYTHON) -m src.ingest.layer3_education_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer3_education_accessibility
 
 ingest-layer4:
-	$(PYTHON) -m src.ingest.layer4_housing_affordability
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer4_housing_affordability
 
 ingest-layer5:
-	$(PYTHON) -m src.ingest.layer5_demographic_equity
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer5_demographic_equity
 
 ingest-layer6:
-	$(PYTHON) -m src.ingest.layer6_risk_vulnerability
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer6_risk_vulnerability
 
 process:
 	@echo "Running multi-year scoring and classification..."
-	$(PYTHON) -m src.run_multiyear_pipeline
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.run_multiyear_pipeline
 
 pipeline:
 	@echo "Running multi-year pipeline and export..."
-	$(PYTHON) src/run_pipeline.py
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) src/run_pipeline.py
 
 export:
 	@echo "Generating GeoJSON outputs..."
-	$(PYTHON) -m src.export.geojson_export
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.export.geojson_export
 
 serve:
 	$(PYTHON) -m uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000

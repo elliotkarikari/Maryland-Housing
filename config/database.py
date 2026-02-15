@@ -4,12 +4,14 @@ SQLAlchemy + PostGIS configuration
 """
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import NoSuchModuleError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import NullPool
 from geoalchemy2 import Geometry
 from contextlib import contextmanager
 from typing import Generator
+from urllib.parse import quote_plus
 import logging
 
 from config.settings import get_settings
@@ -18,21 +20,86 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+def _normalized_backend() -> str:
+    return (settings.DATA_BACKEND or "databricks").strip().lower()
+
+
+def _build_databricks_url() -> str:
+    """
+    Build a SQLAlchemy URL for Databricks SQL Warehouse.
+
+    Priority:
+    1) DATABRICKS_SQLALCHEMY_URL if explicitly provided
+    2) Construct URL from hostname/http_path/token/catalog/schema
+    """
+    if settings.DATABRICKS_SQLALCHEMY_URL:
+        return settings.DATABRICKS_SQLALCHEMY_URL
+
+    required = {
+        "DATABRICKS_SERVER_HOSTNAME": settings.DATABRICKS_SERVER_HOSTNAME,
+        "DATABRICKS_HTTP_PATH": settings.DATABRICKS_HTTP_PATH,
+        "DATABRICKS_ACCESS_TOKEN": settings.DATABRICKS_ACCESS_TOKEN,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "DATA_BACKEND=databricks but required settings are missing: "
+            + ", ".join(missing)
+        )
+
+    token = quote_plus(settings.DATABRICKS_ACCESS_TOKEN or "")
+    http_path = quote_plus(settings.DATABRICKS_HTTP_PATH or "", safe="/")
+    catalog = quote_plus(settings.DATABRICKS_CATALOG or "hive_metastore")
+    schema = quote_plus(settings.DATABRICKS_SCHEMA or "default")
+    hostname = settings.DATABRICKS_SERVER_HOSTNAME or ""
+
+    return (
+        f"databricks://token:{token}@{hostname}"
+        f"?http_path={http_path}&catalog={catalog}&schema={schema}"
+    )
+
+
+def _resolve_database_url() -> str:
+    backend = _normalized_backend()
+    if backend == "databricks":
+        return _build_databricks_url()
+    return settings.DATABASE_URL
+
+
+def _engine_connect_args(database_url: str) -> dict:
+    # Postgres-specific connection option (timezone)
+    if database_url.startswith("postgresql"):
+        return {"options": "-c timezone=utc"}
+    return {}
+
+
+DATABASE_BACKEND = _normalized_backend()
+RESOLVED_DATABASE_URL = _resolve_database_url()
+
 # SQLAlchemy engine
 # For production on Railway, use NullPool to avoid connection exhaustion
-engine = create_engine(
-    settings.DATABASE_URL,
-    poolclass=NullPool if settings.ENVIRONMENT == "production" else None,
-    echo=settings.DEBUG,
-    connect_args={
-        "options": "-c timezone=utc"
-    }
-)
+try:
+    engine = create_engine(
+        RESOLVED_DATABASE_URL,
+        poolclass=NullPool if settings.ENVIRONMENT == "production" else None,
+        echo=settings.DEBUG,
+        connect_args=_engine_connect_args(RESOLVED_DATABASE_URL),
+    )
+except NoSuchModuleError as exc:
+    if DATABASE_BACKEND == "databricks":
+        raise RuntimeError(
+            "Databricks SQLAlchemy dialect is not installed. "
+            "Install `databricks-sql-connector[sqlalchemy]` (or `databricks-sqlalchemy`) "
+            "to use DATA_BACKEND=databricks."
+        ) from exc
+    raise
 
 # Enable PostGIS on connection
 @event.listens_for(engine, "connect")
 def receive_connect(dbapi_conn, connection_record):
     """Ensure PostGIS is available on connection"""
+    if DATABASE_BACKEND != "postgres":
+        return
     with dbapi_conn.cursor() as cursor:
         cursor.execute("SELECT PostGIS_version();")
         version = cursor.fetchone()
@@ -101,20 +168,23 @@ def test_connection() -> bool:
             result = db.execute(text("SELECT 1"))
             assert result.scalar() == 1
 
-            # Test PostGIS
-            result = db.execute(text("SELECT PostGIS_version()"))
-            version = result.scalar()
-            logger.info(f"Database connection successful. PostGIS version: {version}")
+            if DATABASE_BACKEND == "postgres":
+                # Test PostGIS
+                result = db.execute(text("SELECT PostGIS_version()"))
+                version = result.scalar()
+                logger.info(f"Database connection successful. PostGIS version: {version}")
 
-            # Test Maryland counties table exists
-            result = db.execute(text(
-                "SELECT COUNT(*) FROM information_schema.tables "
-                "WHERE table_name = 'md_counties'"
-            ))
-            if result.scalar() == 1:
-                result = db.execute(text("SELECT COUNT(*) FROM md_counties"))
-                count = result.scalar()
-                logger.info(f"Found {count} Maryland counties in database")
+                # Test Maryland counties table exists
+                result = db.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_name = 'md_counties'"
+                ))
+                if result.scalar() == 1:
+                    result = db.execute(text("SELECT COUNT(*) FROM md_counties"))
+                    count = result.scalar()
+                    logger.info(f"Found {count} Maryland counties in database")
+            else:
+                logger.info("Databricks connectivity check passed")
 
             return True
 
@@ -129,6 +199,10 @@ def init_db():
     Should be run once during deployment.
     """
     logger.info("Initializing database schema...")
+
+    if DATABASE_BACKEND == "databricks":
+        logger.info("Skipping local PostGIS schema init (DATA_BACKEND=databricks)")
+        return
 
     try:
         # Use psql command directly to avoid SQL parsing issues
@@ -313,20 +387,21 @@ def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] =
 
     with get_db() as db:
         from sqlalchemy import table, column, insert
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         # Dynamically create table object
         cols = [column(k) for k in records[0].keys()]
         tbl = table(table_name, *cols)
 
         if conflict_cols:
-            # Upsert
+            if DATABASE_BACKEND != "postgres":
+                raise NotImplementedError(
+                    "bulk_insert with conflict_cols is Postgres-only. "
+                    "Use explicit delete+insert for Databricks compatibility."
+                )
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
             stmt = pg_insert(tbl).values(records)
             update_dict = {c.name: c for c in stmt.excluded if c.name not in conflict_cols}
-            stmt = stmt.on_conflict_do_update(
-                index_elements=conflict_cols,
-                set_=update_dict
-            )
+            stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_dict)
         else:
             # Simple insert
             stmt = insert(tbl).values(records)

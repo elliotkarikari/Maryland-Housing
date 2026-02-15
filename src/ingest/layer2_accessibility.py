@@ -1128,8 +1128,34 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
         lodes_year: Year of LODES data used
     """
     logger.info(f"Updating {len(df)} county accessibility records")
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
+        insert_sql = text("""
+                INSERT INTO layer2_mobility_optionality (
+                    fips_code, data_year,
+                    jobs_accessible_transit_45min, jobs_accessible_transit_30min,
+                    jobs_accessible_walk_30min, jobs_accessible_bike_30min,
+                    jobs_accessible_car_30min,
+                    transit_accessibility_score, walk_accessibility_score,
+                    bike_accessibility_score, multimodal_accessibility_score,
+                    pct_regional_jobs_by_transit, transit_car_accessibility_ratio,
+                    transit_stop_density, frequent_transit_area_pct,
+                    average_headway_minutes,
+                    gtfs_feed_date, osm_extract_date, lodes_year,
+                    accessibility_version, mobility_optionality_index
+                ) VALUES (
+                    :fips_code, :data_year,
+                    :jobs_transit_45, :jobs_transit_30,
+                    :jobs_walk_30, :jobs_bike_30, :jobs_car_30,
+                    :transit_score, :walk_score, :bike_score, :multimodal_score,
+                    :pct_regional, :transit_car_ratio,
+                    :stop_density, :frequent_pct, :avg_headway,
+                    :gtfs_date, :osm_date, :lodes_year,
+                    'v2-accessibility', :multimodal_score
+                )
+            """)
+
         upsert_sql = text("""
                 INSERT INTO layer2_mobility_optionality (
                     fips_code, data_year,
@@ -1201,7 +1227,19 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
                 'lodes_year': lodes_year
             })
 
-        execute_batch(db, upsert_sql, rows, chunk_size=1000)
+        if use_databricks_backend:
+            db.execute(
+                text(
+                    """
+                    DELETE FROM layer2_mobility_optionality
+                    WHERE data_year = :data_year
+                    """
+                ),
+                {"data_year": data_year},
+            )
+            execute_batch(db, insert_sql, rows, chunk_size=1000)
+        else:
+            execute_batch(db, upsert_sql, rows, chunk_size=1000)
 
         db.commit()
 

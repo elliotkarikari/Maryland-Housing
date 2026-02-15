@@ -1,7 +1,7 @@
 # AGENTS
 
 ## Project summary
-Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that ingests open government data across 6 layers, writes to PostGIS, and exports GeoJSON + API outputs for county-level growth signals.
+Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that ingests open government data across 6 layers, writes to Databricks tables (primary backend), and exports GeoJSON + API outputs for county-level growth signals.
 
 ## Source of truth docs
 - Architecture: `docs/ARCHITECTURE.md`
@@ -12,7 +12,7 @@ Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that inge
 
 ## Common workflows
 - Install deps: `make install`
-- Initialize DB: `make init-db` (or `make db-setup` then `make db-migrate`)
+- Initialize local Postgres fallback DB: `make init-db` (or `make db-setup` then `make db-migrate`)
 - Run full ingest: `make ingest-all`
 - Run a single layer: `make ingest-layer1` ... `make ingest-layer6`
 - Run pipeline + export: `make pipeline`
@@ -43,8 +43,8 @@ Optional source toggles (keep deterministic defaults):
 - CIP AI: set `AI_ENABLED=true`, provide `OPENAI_API_KEY`, and ensure the expected input files are present.
 
 ## Preflight checks (recurring failure points)
-- Confirm `.env` has required keys for the run: `DATABASE_URL`, `CENSUS_API_KEY`, `MAPBOX_ACCESS_TOKEN`.
-- Confirm PostGIS extensions are enabled (`postgis`, `postgis_topology`) before ingest.
+- Confirm `.env` has required keys for Databricks ingest: `DATA_BACKEND=databricks`, `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN`, `CENSUS_API_KEY`, `MAPBOX_ACCESS_TOKEN`.
+- Postgres/PostGIS checks only apply when using fallback mode (`DATA_BACKEND=postgres`).
 - Ensure `LODES_LATEST_YEAR`, `LODES_LAG_YEARS`, `ACS_LATEST_YEAR`, `ACS_GEOGRAPHY_MAX_YEAR`, `NCES_OBSERVED_MAX_YEAR`, and `PREDICT_TO_YEAR` match available data.
 - Confirm `CORS_ALLOW_ORIGINS` includes expected frontend origins.
 - Validate runtime flags with `GET /api/v1/metadata/capabilities` before frontend verification.

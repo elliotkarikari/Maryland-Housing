@@ -1139,6 +1139,7 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
         acs_year: Year of ACS data
     """
     logger.info(f"Updating {len(df)} county economic opportunity records")
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
         local_strength_scores = {}
@@ -1173,14 +1174,38 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
             local_strength_scores[fips_code] = local_strength
 
         for _, row in df.iterrows():
-            db.execute(text("""
-                INSERT INTO layer1_employment_gravity (fips_code, data_year)
-                VALUES (:fips_code, :data_year)
-                ON CONFLICT (fips_code, data_year) DO NOTHING
-            """), {
-                'fips_code': row['fips_code'],
-                'data_year': data_year
-            })
+            if use_databricks_backend:
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO layer1_employment_gravity (fips_code, data_year)
+                        SELECT :fips_code, :data_year
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM layer1_employment_gravity
+                            WHERE fips_code = :fips_code AND data_year = :data_year
+                        )
+                        """
+                    ),
+                    {
+                        "fips_code": row["fips_code"],
+                        "data_year": data_year,
+                    },
+                )
+            else:
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO layer1_employment_gravity (fips_code, data_year)
+                        VALUES (:fips_code, :data_year)
+                        ON CONFLICT (fips_code, data_year) DO NOTHING
+                        """
+                    ),
+                    {
+                        "fips_code": row["fips_code"],
+                        "data_year": data_year,
+                    },
+                )
 
             local_strength = local_strength_scores.get(row['fips_code'])
             if local_strength is not None and pd.isna(local_strength):

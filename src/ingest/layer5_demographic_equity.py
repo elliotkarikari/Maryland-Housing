@@ -973,8 +973,39 @@ def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: i
 def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: int):
     """Update county-level demographic equity data."""
     logger.info(f"Updating {len(df)} county demographic equity records...")
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
+        insert_sql = text("""
+            INSERT INTO layer5_demographic_momentum (
+                fips_code, data_year,
+                pop_total, pop_age_25_44, pop_age_25_44_pct,
+                households_total, households_family, households_family_with_children,
+                inflow_households, outflow_households, net_migration_households,
+                pop_white_alone, pop_black_alone, pop_asian_alone, pop_hispanic, pop_other_race,
+                racial_diversity_index, age_dependency_ratio, family_household_pct,
+                static_demographic_score, dissimilarity_index, exposure_index, isolation_index,
+                single_parent_pct, poverty_rate, child_poverty_rate, family_viability_score,
+                equity_score, net_migration_rate, inflow_rate, outflow_rate,
+                migration_dynamics_score, demographic_opportunity_index,
+                demographic_momentum_score,
+                acs_year, demographic_version
+            ) VALUES (
+                :fips, :data_year,
+                :pop_total, :pop_25_44, :pop_25_44_pct,
+                :hh_total, :hh_family, :hh_children,
+                :inflow_hh, :outflow_hh, :net_hh,
+                :white, :black, :asian, :hispanic, :other,
+                :diversity, :dependency, :family_pct,
+                :static_score, :dissimilarity, :exposure, :isolation,
+                :single_parent, :poverty, :child_poverty, :viability,
+                :equity_score, :net_rate, :inflow_rate, :outflow_rate,
+                :migration_score, :opportunity_index,
+                :momentum_score,
+                :acs_year, 'v2-equity'
+            )
+        """)
+
         upsert_sql = text("""
             INSERT INTO layer5_demographic_momentum (
                 fips_code, data_year,
@@ -1077,7 +1108,19 @@ def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: 
                 }
             )
 
-        execute_batch(db, upsert_sql, rows, chunk_size=1000)
+        if use_databricks_backend:
+            db.execute(
+                text(
+                    """
+                    DELETE FROM layer5_demographic_momentum
+                    WHERE data_year = :data_year
+                    """
+                ),
+                {"data_year": data_year},
+            )
+            execute_batch(db, insert_sql, rows, chunk_size=1000)
+        else:
+            execute_batch(db, upsert_sql, rows, chunk_size=1000)
 
         db.commit()
 

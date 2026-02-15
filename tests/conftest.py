@@ -2,9 +2,13 @@
 Pytest configuration and shared fixtures for Maryland Housing Atlas tests.
 """
 
+import os
 import pytest
 import pandas as pd
 from typing import Dict, Any
+
+# Keep tests backend-stable regardless of developer .env runtime backend.
+os.environ.setdefault("DATA_BACKEND", "postgres")
 
 
 # Sample Maryland county FIPS codes for testing

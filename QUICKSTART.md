@@ -22,8 +22,7 @@ Get the Maryland Viability Atlas running locally in under 15 minutes.
 | Requirement | Version | Get It |
 |-------------|---------|--------|
 | Python | 3.12+ | [python.org](https://www.python.org/downloads/) |
-| PostgreSQL | 15+ | [postgresql.org](https://www.postgresql.org/download/) |
-| PostGIS | 3.3+ | [postgis.net](https://postgis.net/install/) |
+| Databricks SQL Warehouse | - | [databricks.com](https://www.databricks.com/) |
 | Census API Key | - | [api.census.gov](https://api.census.gov/data/key_signup.html) (free) |
 | Mapbox Token | - | [mapbox.com](https://account.mapbox.com/auth/signup/) (free tier) |
 
@@ -31,6 +30,7 @@ Get the Maryland Viability Atlas running locally in under 15 minutes.
 
 | Requirement | Purpose |
 |-------------|---------|
+| PostgreSQL + PostGIS | Local fallback backend (`DATA_BACKEND=postgres`) |
 | BLS API Key | Higher rate limits for employment data |
 | OpenAI API Key | AI-powered CIP document extraction |
 | Docker | Container-based development |
@@ -74,9 +74,15 @@ Edit `.env` with your credentials:
 
 ```bash
 # Required
+DATA_BACKEND=databricks
+DATABRICKS_SERVER_HOSTNAME=adb-xxxx.azuredatabricks.net
+DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/xxxx
+DATABRICKS_ACCESS_TOKEN=dapi_xxxx
+DATABRICKS_CATALOG=maryland_atlas
+DATABRICKS_SCHEMA=default
+
+# Optional postgres fallback (used only when DATA_BACKEND=postgres)
 DATABASE_URL=postgresql://localhost/maryland_atlas
-# Or with credentials:
-# DATABASE_URL=postgresql://user:password@localhost:5432/maryland_atlas
 
 CENSUS_API_KEY=your_census_key_here
 MAPBOX_ACCESS_TOKEN=pk.your_mapbox_token_here
@@ -101,7 +107,9 @@ NCES_OBSERVED_MAX_YEAR=2024
 PREDICT_TO_YEAR=2025
 ```
 
-### Step 4: Initialize Database
+### Step 4: Initialize Database (Postgres Fallback Only)
+
+Skip this step for Databricks-backed ingest (`DATA_BACKEND=databricks`).
 
 ```bash
 # Create database
@@ -132,7 +140,7 @@ Verification complete
 make ingest-all
 ```
 
-This runs all 6 layer ingestion pipelines sequentially. Each layer fetches real data from government APIs.
+This runs all 6 layer ingestion pipelines sequentially. By default, writes go to Databricks (`DATA_BACKEND=databricks`).
 
 | Layer | Data Source | Expected Time |
 |-------|-------------|---------------|
