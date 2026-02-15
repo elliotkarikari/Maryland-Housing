@@ -1,4 +1,7 @@
-Maryland Growth & Family Viability Atlas - Analysis Methods
+# Analysis Methods (High-Level Notes)
+
+This file contains condensed implementation notes.
+For canonical layer methodology and formulas, use `docs/architecture/ANALYSIS_METHODS.md`.
 
 Prediction Alignment (2025)
 - Goal: Align layer outputs to a "current" year (2025) without copy-forward.
