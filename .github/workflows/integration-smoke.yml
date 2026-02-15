@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 20
     env:
       # Required by current Settings model, but unused in databricks backend mode.
-      DATABASE_URL: sqlite+pysqlite:///:memory:
+      DATABASE_URL: "sqlite+pysqlite:///:memory:"
       DATA_BACKEND: databricks
       MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
       CENSUS_API_KEY: ${{ secrets.CENSUS_API_KEY }}
