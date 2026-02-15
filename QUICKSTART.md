@@ -498,7 +498,9 @@ tail -f /var/log/postgresql/postgresql-15-main.log
    ```bash
    make ingest-layer2
    make ingest-layer3
-   # ... etc
+   make ingest-layer4
+   make ingest-layer5
+   make ingest-layer6
    make pipeline
    ```
 

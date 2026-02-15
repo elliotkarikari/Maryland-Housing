@@ -18,10 +18,10 @@ help:
 	@echo "  make ingest-all     - Run all data ingestion pipelines"
 	@echo "  make ingest-layer1  - Ingest Economic Opportunity (v2) data"
 	@echo "  make ingest-layer2  - Ingest Mobility Accessibility (v2) data"
-	@echo "  make ingest-layer3  - Ingest School System data"
-	@echo "  make ingest-layer4  - Ingest Housing Elasticity data"
-	@echo "  make ingest-layer5  - Ingest Demographic Momentum data"
-	@echo "  make ingest-layer6  - Ingest Risk Drag data"
+	@echo "  make ingest-layer3  - Ingest Education Accessibility (v2) data"
+	@echo "  make ingest-layer4  - Ingest Housing Affordability (v2) data"
+	@echo "  make ingest-layer5  - Ingest Demographic Equity (v2) data"
+	@echo "  make ingest-layer6  - Ingest Risk Vulnerability (v2) data"
 	@echo "  make process        - Run multi-year scoring + classification"
 	@echo "  make pipeline       - Run V2 pipeline + GeoJSON export"
 	@echo "  make export         - Generate GeoJSON outputs (V2)"
@@ -58,10 +58,10 @@ ingest-all:
 	@echo "Running all data ingestion pipelines..."
 	$(PYTHON) -m src.ingest.layer1_economic_accessibility
 	$(PYTHON) -m src.ingest.layer2_accessibility
-	$(PYTHON) -m src.ingest.layer3_schools
-	$(PYTHON) -m src.ingest.layer4_housing
-	$(PYTHON) -m src.ingest.layer5_demographics
-	$(PYTHON) -m src.ingest.layer6_risk
+	$(PYTHON) -m src.ingest.layer3_education_accessibility
+	$(PYTHON) -m src.ingest.layer4_housing_affordability
+	$(PYTHON) -m src.ingest.layer5_demographic_equity
+	$(PYTHON) -m src.ingest.layer6_risk_vulnerability
 	$(PYTHON) -m src.ingest.policy_persistence
 
 ingest-layer1:
@@ -71,16 +71,16 @@ ingest-layer2:
 	$(PYTHON) -m src.ingest.layer2_accessibility
 
 ingest-layer3:
-	$(PYTHON) -m src.ingest.layer3_schools
+	$(PYTHON) -m src.ingest.layer3_education_accessibility
 
 ingest-layer4:
-	$(PYTHON) -m src.ingest.layer4_housing
+	$(PYTHON) -m src.ingest.layer4_housing_affordability
 
 ingest-layer5:
-	$(PYTHON) -m src.ingest.layer5_demographics
+	$(PYTHON) -m src.ingest.layer5_demographic_equity
 
 ingest-layer6:
-	$(PYTHON) -m src.ingest.layer6_risk
+	$(PYTHON) -m src.ingest.layer6_risk_vulnerability
 
 process:
 	@echo "Running multi-year scoring and classification..."
