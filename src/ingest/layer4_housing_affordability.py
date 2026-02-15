@@ -1446,8 +1446,8 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
             {"data_year": data_year},
         )
 
-        for row in result.fetchall():
-            fips_code, v1_score = row
+        for db_row in result.fetchall():
+            fips_code, v1_score = db_row
             if v1_score is not None:
                 elasticity_scores[fips_code] = float(v1_score)
 
@@ -1653,24 +1653,29 @@ def run_layer4_v2_ingestion(
         window_years: Window size for multi-year ingestion (default: 5)
     """
     current_year = datetime.now().year
-    latest_county_year = None
+    latest_county_year: Optional[int] = None
     try:
         with get_db() as db:
-            latest_county_year = db.execute(
+            max_year = db.execute(
                 text("SELECT MAX(data_year) FROM layer4_housing_elasticity")
             ).scalar()
+            if max_year is not None:
+                latest_county_year = int(max_year)
     except Exception as e:
         logger.warning(f"Failed to determine latest county year: {e}")
 
     if data_year is None:
         data_year = latest_county_year or min(settings.ACS_LATEST_YEAR, current_year)
 
-    if latest_county_year and data_year > latest_county_year:
+    if latest_county_year is not None and data_year > latest_county_year:
         logger.warning(
             f"Requested year {data_year} exceeds latest county year "
             f"{latest_county_year}. Using {latest_county_year}."
         )
         data_year = latest_county_year
+
+    if data_year is None:
+        raise ValueError("Unable to resolve data year for layer4 ingestion")
 
     try:
         if multi_year:

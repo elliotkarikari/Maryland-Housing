@@ -9,7 +9,7 @@ Implements:
 """
 
 import json
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -69,8 +69,8 @@ def load_layer_summary_scores(as_of_year: int = 2025) -> pd.DataFrame:
         """
         )
 
-        result = db.execute(query, {"as_of_year": as_of_year})
-        rows = result.fetchall()
+        query_result = db.execute(query, {"as_of_year": as_of_year})
+        rows = query_result.fetchall()
 
     if not rows:
         logger.warning(f"No layer summary scores found for {as_of_year}")
@@ -168,8 +168,11 @@ def classify_directional_status(row: pd.Series) -> str:
             return "improving"
 
     # AT RISK: Multiple weak signals OR severe risk drag
-    risk_score = layer_scores.get("risk")
-    severe_risk = pd.notna(risk_score) and risk_score >= THRESHOLD_RISK_DRAG_SEVERE
+    risk_raw = layer_scores.get("risk")
+    risk_score: Optional[float] = None
+    if risk_raw is not None and pd.notna(risk_raw):
+        risk_score = float(risk_raw)
+    severe_risk = risk_score is not None and risk_score >= THRESHOLD_RISK_DRAG_SEVERE
 
     # Check for negative momentum
     negative_momentum = [

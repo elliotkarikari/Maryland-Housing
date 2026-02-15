@@ -1254,8 +1254,8 @@ def store_county_economic_opportunity(
             ),
             {"data_year": data_year},
         )
-        for row in local_result.fetchall():
-            fips_code, v1_score, entropy, stable_share = row
+        for db_row in local_result.fetchall():
+            fips_code, v1_score, entropy, stable_share = db_row
             local_strength = None
 
             if entropy is not None and stable_share is not None:

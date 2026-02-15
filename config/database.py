@@ -5,7 +5,7 @@ SQLAlchemy + PostGIS configuration
 
 import logging
 from contextlib import contextmanager
-from typing import Generator
+from typing import Any, Generator, Optional
 from urllib.parse import quote_plus
 
 from geoalchemy2 import Geometry
@@ -366,10 +366,14 @@ def get_latest_data_year(layer_table: str) -> int:
     with get_db() as db:
         result = db.execute(text(f"SELECT MAX(data_year) FROM {layer_table}"))
         year = result.scalar()
-        return year if year else 0
+        return int(year) if year is not None else 0
 
 
-def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] = None):
+def bulk_insert(
+    table_name: str,
+    records: list[dict],
+    conflict_cols: Optional[list[str]] = None,
+):
     """
     Bulk insert with optional conflict resolution.
 
@@ -386,8 +390,9 @@ def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] =
         from sqlalchemy import column, insert, table
 
         # Dynamically create table object
-        cols = [column(k) for k in records[0].keys()]
+        cols: list[Any] = [column(k) for k in records[0].keys()]
         tbl = table(table_name, *cols)
+        stmt: Any
 
         if conflict_cols:
             if DATABASE_BACKEND != "postgres":

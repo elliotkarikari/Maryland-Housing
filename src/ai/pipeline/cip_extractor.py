@@ -20,7 +20,7 @@ import hashlib
 import io
 import os
 from datetime import date, datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TypedDict
 
 import requests
 from sqlalchemy import text
@@ -37,7 +37,14 @@ settings = get_settings()
 
 
 # Real Maryland County CIP Sources (verified public URLs)
-CIP_SOURCES = {
+class CIPSource(TypedDict):
+    name: str
+    url: str
+    title: str
+    published_date: Optional[date]
+
+
+CIP_SOURCES: Dict[str, CIPSource] = {
     "24031": {  # Montgomery County
         "name": "Montgomery County",
         "url": "https://www.montgomerycountymd.gov/OMB/Resources/Files/omb/pdfs/FY25-30/pdffiles/CIP_FY25-30_FINAL_WEB.pdf",
@@ -208,7 +215,10 @@ def store_document_metadata(
             },
         )
 
-        doc_id = result.fetchone()[0]
+        inserted = result.fetchone()
+        if inserted is None:
+            raise RuntimeError("Failed to insert ai_document row")
+        doc_id = int(inserted[0])
         db.commit()
 
         logger.info(f"Stored document with ID {doc_id}")
@@ -293,7 +303,10 @@ def store_extraction_result(
             },
         )
 
-        extraction_id = result.fetchone()[0]
+        inserted = result.fetchone()
+        if inserted is None:
+            raise RuntimeError("Failed to insert ai_extraction row")
+        extraction_id = int(inserted[0])
         db.commit()
 
         logger.info(f"Stored extraction with ID {extraction_id}")
@@ -425,7 +438,7 @@ def extract_cip_for_county(fips_code: str, force_refresh: bool = False) -> Optio
         )
 
         # Extract text
-        text = extract_text_from_pdf(pdf_content)
+        document_text = extract_text_from_pdf(pdf_content)
 
         # Get AI provider
         provider = get_openai_provider()
@@ -434,7 +447,7 @@ def extract_cip_for_county(fips_code: str, force_refresh: bool = False) -> Optio
         prompt_version = "cip_v1.0"
 
         extraction_response = provider.extract_structured(
-            document_text=text,
+            document_text=document_text,
             task_name="cip_capital_commitment",
             schema=CIPExtraction,
             prompt_version=prompt_version,

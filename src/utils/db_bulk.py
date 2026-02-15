@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from itertools import islice
-from typing import Any, Dict, Iterable, Iterator, List, Mapping
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 
-def _chunks(items: List[Mapping[str, Any]], chunk_size: int) -> Iterator[List[Mapping[str, Any]]]:
+def _chunks(
+    items: Sequence[Mapping[str, Any]], chunk_size: int
+) -> Iterator[List[Mapping[str, Any]]]:
     it = iter(items)
     while True:
         chunk = list(islice(it, chunk_size))

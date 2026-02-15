@@ -174,18 +174,22 @@ def calculate_confidence_score(
         Dict with confidence_score and component weights
     """
     # Weight federal consistency higher if no CIP data
-    if has_cip_data and pd.notna(cip_follow_through):
+    if has_cip_data and cip_follow_through is not None and pd.notna(cip_follow_through):
         # Both sources available
         weights = {"federal": 0.4, "cip": 0.6}  # CIP is more direct evidence
 
-        federal_score = federal_consistency if pd.notna(federal_consistency) else 0.5
-        cip_score = cip_follow_through
+        federal_score = (
+            float(federal_consistency)
+            if federal_consistency is not None and pd.notna(federal_consistency)
+            else 0.5
+        )
+        cip_score = float(cip_follow_through)
 
         confidence = weights["federal"] * federal_score + weights["cip"] * cip_score
 
-    elif pd.notna(federal_consistency):
+    elif federal_consistency is not None and pd.notna(federal_consistency):
         # Only federal data available
-        confidence = federal_consistency * 0.8  # Cap at 0.8 when missing CIP
+        confidence = float(federal_consistency) * 0.8  # Cap at 0.8 when missing CIP
 
     else:
         # No data available

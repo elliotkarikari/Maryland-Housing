@@ -76,7 +76,7 @@ def compute_stability_metrics(values: np.ndarray) -> Dict[str, float]:
         Dict with volatility, cv, consistency, persistence metrics
     """
     if len(values) < 2:
-        return {"volatility": np.nan, "cv": np.nan, "consistency": np.nan, "persistence": 0}
+        return {"volatility": np.nan, "cv": np.nan, "consistency": np.nan, "persistence": 0.0}
 
     # Volatility: Interquartile range (robust to outliers)
     q75, q25 = np.percentile(values, [75, 25])
@@ -89,26 +89,23 @@ def compute_stability_metrics(values: np.ndarray) -> Dict[str, float]:
     cv = (std_val / mean_val) if mean_val != 0 else np.nan
 
     # Consistency: fraction of year-over-year changes that are positive
+    consistency: float = float("nan")
     if len(values) >= 2:
         diffs = np.diff(values)
         positive_changes = np.sum(diffs > 0)
-        consistency = positive_changes / len(diffs) if len(diffs) > 0 else np.nan
-    else:
-        consistency = np.nan
+        consistency = float(positive_changes / len(diffs)) if len(diffs) > 0 else float("nan")
 
     # Persistence: count of consecutive positive changes
+    persistence: float = 0.0
     if len(values) >= 2:
         diffs = np.diff(values)
-        persistence = 0
         current_streak = 0
         for d in diffs:
             if d > 0:
                 current_streak += 1
-                persistence = max(persistence, current_streak)
+                persistence = max(persistence, float(current_streak))
             else:
                 current_streak = 0
-    else:
-        persistence = 0
 
     return {
         "volatility": volatility,

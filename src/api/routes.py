@@ -5,7 +5,7 @@ Endpoints for map data and metadata
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NotRequired, Optional, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -95,6 +95,23 @@ class CapabilitiesResponse(BaseModel):
     ai_enabled: bool
     api_version: str
     year_policy: Dict[str, Any]
+
+
+class LayerFactorConfig(TypedDict):
+    col: str
+    name: str
+    desc: str
+    weight: Optional[float]
+    invert: NotRequired[bool]
+
+
+class LayerConfig(TypedDict):
+    table: str
+    display_name: str
+    description: str
+    version: str
+    formula: str
+    factors: List[LayerFactorConfig]
 
 
 def _load_data_sources_registry() -> List[DataSource]:
@@ -306,7 +323,7 @@ async def get_area_detail(geoid: str, db: Session = Depends(get_db_session)):
 
 
 # Layer configuration for factor breakdown
-LAYER_CONFIGS = {
+LAYER_CONFIGS: Dict[str, LayerConfig] = {
     "employment_gravity": {
         "table": "layer1_employment_gravity",
         "display_name": "Economic Opportunity",

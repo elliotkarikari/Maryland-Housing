@@ -33,7 +33,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import geopandas as gpd
 import numpy as np
@@ -220,7 +220,7 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
         List of GTFSFeedInfo objects
     """
     feeds_to_download = feed_names or [
-        name for name, info in GTFS_FEEDS.items() if info.get("priority", 99) <= 2
+        name for name, info in GTFS_FEEDS.items() if int(cast(Any, info.get("priority", 99))) <= 2
     ]
 
     downloaded = []
@@ -231,6 +231,8 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
             continue
 
         feed_info = GTFS_FEEDS[feed_name]
+        feed_url = str(feed_info["url"])
+        agency = str(feed_info["agency"])
         feed_path = GTFS_CACHE_DIR / f"{feed_name}.zip"
 
         # Check if recent (< 7 days old)
@@ -243,7 +245,7 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
         if needs_download:
             logger.info(f"Downloading GTFS feed: {feed_name}")
             try:
-                response = requests.get(feed_info["url"], timeout=120)
+                response = requests.get(feed_url, timeout=120)
                 response.raise_for_status()
 
                 with open(feed_path, "wb") as f:
@@ -265,10 +267,10 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
             GTFSFeedInfo(
                 name=feed_name,
                 path=feed_path,
-                agency=feed_info["agency"],
+                agency=agency,
                 feed_date=feed_date,
                 file_hash=file_hash,
-                source_url=feed_info["url"],
+                source_url=feed_url,
                 fetch_date=datetime.utcnow().date().isoformat(),
                 is_real=True,
             )

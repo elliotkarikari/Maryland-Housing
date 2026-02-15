@@ -12,7 +12,7 @@ This registry defines:
 NO feature should be scored without being registered here.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Literal
 
@@ -513,7 +513,7 @@ class LayerDefinition:
     display_name: str
     description: str
     is_penalty: bool = False  # True for risk_drag (subtractive)
-    features: List[FeatureDefinition] = None
+    features: List[FeatureDefinition] = field(default_factory=list)
 
 
 LAYER_DEFINITIONS = [

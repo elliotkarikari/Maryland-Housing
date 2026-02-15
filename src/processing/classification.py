@@ -510,5 +510,9 @@ if __name__ == "__main__":
                 year = layer_df["data_year"].iloc[0]
                 break
 
-    layer_scores = run_scoring(normalized, year)
-    run_classification(layer_scores, year)
+    if year is None:
+        raise ValueError("Unable to determine data year from normalized layer outputs")
+
+    resolved_year = int(year)
+    layer_scores = run_scoring(normalized, resolved_year)
+    run_classification(layer_scores, resolved_year)

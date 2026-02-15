@@ -293,7 +293,7 @@ def fetch_fema_nfhl(
     session = requests.Session()
     base_url = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
 
-    base_params = {
+    base_params: Dict[str, Any] = {
         "outFields": "OBJECTID,SFHA_TF,FLD_ZONE,ZONE_SUBTY",
         "returnGeometry": "true",
         "outSR": 4326,
@@ -355,6 +355,7 @@ def fetch_fema_nfhl(
 
         all_features: List[Dict[str, Any]] = []
         offset = 0
+        record_count = int(base_params["resultRecordCount"])
         while True:
             params["resultOffset"] = offset
             data = _request_with_retries(params)
@@ -363,9 +364,9 @@ def fetch_fema_nfhl(
                 break
             all_features.extend(features)
             local_logger.info(f"Fetched {len(features)} features (offset {offset})")
-            if len(features) < base_params["resultRecordCount"]:
+            if len(features) < record_count:
                 break
-            offset += base_params["resultRecordCount"]
+            offset += record_count
         return all_features
 
     def _split_bbox(

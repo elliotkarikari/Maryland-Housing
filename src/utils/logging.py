@@ -33,6 +33,7 @@ def setup_logging(name: str = "maryland_atlas") -> logging.Logger:
 
     # Console handler with JSON formatting
     handler = logging.StreamHandler(sys.stdout)
+    formatter: logging.Formatter
 
     if settings.ENVIRONMENT == "production":
         # JSON formatter for production (better for log aggregation)
@@ -63,8 +64,8 @@ def setup_logging(name: str = "maryland_atlas") -> logging.Logger:
     root_logger = logging.getLogger()
     root_logger.setLevel(logger.level)
     root_logger.handlers = []
-    for handler in logger.handlers:
-        root_logger.addHandler(handler)
+    for root_handler in logger.handlers:
+        root_logger.addHandler(root_handler)
 
     return logger
 

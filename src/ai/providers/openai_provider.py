@@ -150,9 +150,10 @@ class OpenAIProvider(AIProvider):
                 raise AIProviderError(f"OpenAI API call failed: {error_str}")
 
         # Extract response
-        raw_output = response.choices[0].message.content
-        tokens_output = response.usage.completion_tokens
-        tokens_input_actual = response.usage.prompt_tokens
+        raw_output = response.choices[0].message.content or "{}"
+        usage = response.usage
+        tokens_output = usage.completion_tokens if usage else 0
+        tokens_input_actual = usage.prompt_tokens if usage else 0
 
         logger.debug(
             f"Response received: input_tokens={tokens_input_actual}, "

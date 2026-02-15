@@ -1419,7 +1419,7 @@ def store_county_education_accessibility(
 
 def calculate_education_accessibility_indicators(
     data_year: int = None, nces_year: int = None, acs_year: int = None
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Calculate education accessibility indicators for all Maryland tracts.
 
@@ -1429,7 +1429,7 @@ def calculate_education_accessibility_indicators(
         acs_year: ACS data year
 
     Returns:
-        Tuple of (tract_df, county_df)
+        Tuple of (tract_df, county_df, schools_df)
     """
     data_year = data_year or layer3_default_data_year()
     nces_year = nces_year or nces_observed_year(data_year)
