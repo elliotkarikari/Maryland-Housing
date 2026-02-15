@@ -718,83 +718,57 @@ def compute_accessibility_fallback(
     tract_centroids = tracts_proj.copy()
     tract_centroids['geometry'] = tract_centroids.geometry.centroid
 
-    # Jobs lookup
+    # Jobs vector aligned to tract order
     jobs_lookup = jobs.set_index('tract_geoid')['total_jobs'].to_dict()
-    total_regional_jobs = sum(jobs_lookup.values())
+    tract_ids = tract_centroids['tract_geoid'].astype(str).tolist()
+    destination_jobs = np.array([int(jobs_lookup.get(tract_id, 0)) for tract_id in tract_ids], dtype=np.int64)
 
-    results = []
+    # Compute nearby transit stop counts per tract using spatial index.
+    if stops_gdf.empty:
+        stop_counts = np.zeros(len(tract_centroids), dtype=np.int64)
+    else:
+        stop_index = stops_gdf.sindex
+        stop_counts_list: List[int] = []
+        for centroid in tract_centroids.geometry:
+            nearby_ids = stop_index.query(centroid.buffer(800), predicate='intersects')
+            stop_counts_list.append(len(nearby_ids))
+        stop_counts = np.array(stop_counts_list, dtype=np.int64)
+    has_transit = stop_counts > 0
 
-    for idx, row in tract_centroids.iterrows():
-        tract_id = row['tract_geoid']
-        centroid = row['geometry']
+    # Vectorized tract-to-tract distances (meters -> km)
+    coords = np.column_stack((tract_centroids.geometry.x.values, tract_centroids.geometry.y.values))
+    delta_x = coords[:, 0][:, np.newaxis] - coords[:, 0][np.newaxis, :]
+    delta_y = coords[:, 1][:, np.newaxis] - coords[:, 1][np.newaxis, :]
+    dist_km = np.hypot(delta_x, delta_y) / 1000.0
 
-        # Count nearby transit stops (within 800m ~ 0.5 mi)
-        if not stops_gdf.empty:
-            nearby_stops = stops_gdf[stops_gdf.distance(centroid) <= 800]
-            stop_count = len(nearby_stops)
-            has_transit = stop_count > 0
-        else:
-            stop_count = 0
-            has_transit = False
+    # Approximate travel-time thresholds.
+    walk_mask = dist_km <= 2.5
+    bike_mask = dist_km <= 7.5
+    transit_30_mask = dist_km <= 10.0
+    transit_45_mask = dist_km <= 15.0
+    car_mask = dist_km <= 20.0
 
-        # Compute distance-decayed accessibility
-        # Using simplified gravity model: jobs / distance^2
-        jobs_transit_45 = 0
-        jobs_transit_30 = 0
-        jobs_walk_30 = 0
-        jobs_bike_30 = 0
-        jobs_car_30 = 0
+    jobs_walk_30 = walk_mask @ destination_jobs
+    jobs_bike_30 = bike_mask @ destination_jobs
+    jobs_car_30 = car_mask @ destination_jobs
 
-        for other_idx, other_row in tract_centroids.iterrows():
-            other_id = other_row['tract_geoid']
-            other_centroid = other_row['geometry']
+    # Preserve existing semantics: transit jobs count only when tract has nearby stops.
+    jobs_transit_30 = (transit_30_mask @ destination_jobs) * has_transit.astype(np.int64)
+    jobs_transit_45 = (transit_45_mask @ destination_jobs) * has_transit.astype(np.int64)
 
-            jobs_at_dest = jobs_lookup.get(other_id, 0)
-            if jobs_at_dest == 0:
-                continue
+    results = pd.DataFrame({
+        'tract_geoid': tract_ids,
+        'fips_code': tract_centroids['fips_code'].astype(str).values,
+        'jobs_transit_45': jobs_transit_45.astype(np.int64),
+        'jobs_transit_30': jobs_transit_30.astype(np.int64),
+        'jobs_walk_30': jobs_walk_30.astype(np.int64),
+        'jobs_bike_30': jobs_bike_30.astype(np.int64),
+        'jobs_car_30': jobs_car_30.astype(np.int64),
+        'tract_population': tract_centroids.get('population', pd.Series([0] * len(tract_centroids))).fillna(0).astype(int).values,
+        'transit_stops_nearby': stop_counts.astype(np.int64),
+    })
 
-            dist_m = centroid.distance(other_centroid)
-            dist_km = dist_m / 1000
-
-            # Approximate travel times based on mode speeds
-            # Walking: 5 km/h → 30 min = 2.5 km
-            # Biking: 15 km/h → 30 min = 7.5 km
-            # Transit: ~20 km/h avg → 45 min = 15 km, 30 min = 10 km
-            # Car: ~40 km/h avg → 30 min = 20 km
-
-            if dist_km <= 2.5:
-                jobs_walk_30 += jobs_at_dest
-
-            if dist_km <= 7.5:
-                jobs_bike_30 += jobs_at_dest
-
-            if has_transit and dist_km <= 15:
-                jobs_transit_45 += jobs_at_dest
-
-            if has_transit and dist_km <= 10:
-                jobs_transit_30 += jobs_at_dest
-
-            if dist_km <= 20:
-                jobs_car_30 += jobs_at_dest
-
-        # Apply transit penalty if no stops nearby
-        if not has_transit:
-            jobs_transit_45 = int(jobs_transit_45 * 0.1)  # 90% reduction
-            jobs_transit_30 = int(jobs_transit_30 * 0.1)
-
-        results.append({
-            'tract_geoid': tract_id,
-            'fips_code': row['fips_code'],
-            'jobs_transit_45': int(jobs_transit_45),
-            'jobs_transit_30': int(jobs_transit_30),
-            'jobs_walk_30': int(jobs_walk_30),
-            'jobs_bike_30': int(jobs_bike_30),
-            'jobs_car_30': int(jobs_car_30),
-            'tract_population': row.get('population', 0),
-            'transit_stops_nearby': stop_count
-        })
-
-    return pd.DataFrame(results)
+    return results
 
 
 # =============================================================================
