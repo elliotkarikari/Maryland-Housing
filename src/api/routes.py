@@ -6,7 +6,7 @@ Endpoints for map data and metadata
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, NotRequired, Optional, TypedDict
+from typing import Any, Dict, List, NotRequired, Optional, Sequence, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
@@ -486,7 +486,7 @@ def _counties_geojson_query() -> str:
     """
 
 
-def _build_live_counties_geojson(rows: List[Any]) -> Dict[str, Any]:
+def _build_live_counties_geojson(rows: Sequence[Any]) -> Dict[str, Any]:
     features: List[Dict[str, Any]] = []
     scored_count = 0
 
@@ -585,8 +585,8 @@ def _build_live_counties_geojson(rows: List[Any]) -> Dict[str, Any]:
             _safe_int(getattr(row, "l5_data_year", None)),
             _safe_int(getattr(row, "l6_data_year", None)),
         ]
-        year_candidates = [year for year in year_candidates if year is not None]
-        data_year_int = max(year_candidates) if year_candidates else None
+        non_null_year_candidates: List[int] = [year for year in year_candidates if year is not None]
+        data_year_int = max(non_null_year_candidates) if non_null_year_candidates else None
 
         last_updated = getattr(row, "synthesis_updated_at", None) or getattr(
             row, "county_updated_at", None
