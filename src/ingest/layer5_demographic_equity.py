@@ -45,6 +45,7 @@ from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
+from src.utils.db_bulk import execute_batch
 from src.utils.prediction_utils import apply_predictions_to_table
 from src.utils.year_policy import acs_geography_year, layer5_default_data_year
 
@@ -883,9 +884,7 @@ def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: i
             WHERE data_year = :data_year
         """), {"data_year": data_year})
 
-        for _, row in df.iterrows():
-            db.execute(
-                text("""
+        insert_sql = text("""
                     INSERT INTO layer5_demographic_equity_tract (
                         tract_geoid, fips_code, data_year,
                         total_population, pop_under_18, pop_18_24, pop_25_44, pop_45_64, pop_65_plus,
@@ -917,8 +916,11 @@ def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: i
                         :composite,
                         :acs_year
                     )
-                """),
-                {
+                """)
+
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
                     'tract': row['tract_geoid'],
                     'fips': row['fips_code'],
                     'data_year': data_year,
@@ -959,8 +961,9 @@ def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: i
                     'migration_score': float(row.get('migration_dynamics_score', 0)),
                     'composite': float(row.get('demographic_opportunity_score', 0)),
                     'acs_year': acs_year
-                }
-            )
+                })
+
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
@@ -972,145 +975,109 @@ def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: 
     logger.info(f"Updating {len(df)} county demographic equity records...")
 
     with get_db() as db:
-        for _, row in df.iterrows():
-            # Check if record exists
-            existing = db.execute(
-                text("SELECT id FROM layer5_demographic_momentum WHERE fips_code = :fips AND data_year = :year"),
-                {"fips": row['fips_code'], "year": data_year}
-            ).fetchone()
+        upsert_sql = text("""
+            INSERT INTO layer5_demographic_momentum (
+                fips_code, data_year,
+                pop_total, pop_age_25_44, pop_age_25_44_pct,
+                households_total, households_family, households_family_with_children,
+                inflow_households, outflow_households, net_migration_households,
+                pop_white_alone, pop_black_alone, pop_asian_alone, pop_hispanic, pop_other_race,
+                racial_diversity_index, age_dependency_ratio, family_household_pct,
+                static_demographic_score, dissimilarity_index, exposure_index, isolation_index,
+                single_parent_pct, poverty_rate, child_poverty_rate, family_viability_score,
+                equity_score, net_migration_rate, inflow_rate, outflow_rate,
+                migration_dynamics_score, demographic_opportunity_index,
+                demographic_momentum_score,
+                acs_year, demographic_version
+            ) VALUES (
+                :fips, :data_year,
+                :pop_total, :pop_25_44, :pop_25_44_pct,
+                :hh_total, :hh_family, :hh_children,
+                :inflow_hh, :outflow_hh, :net_hh,
+                :white, :black, :asian, :hispanic, :other,
+                :diversity, :dependency, :family_pct,
+                :static_score, :dissimilarity, :exposure, :isolation,
+                :single_parent, :poverty, :child_poverty, :viability,
+                :equity_score, :net_rate, :inflow_rate, :outflow_rate,
+                :migration_score, :opportunity_index,
+                :momentum_score,
+                :acs_year, 'v2-equity'
+            )
+            ON CONFLICT (fips_code, data_year)
+            DO UPDATE SET
+                pop_white_alone = EXCLUDED.pop_white_alone,
+                pop_black_alone = EXCLUDED.pop_black_alone,
+                pop_asian_alone = EXCLUDED.pop_asian_alone,
+                pop_hispanic = EXCLUDED.pop_hispanic,
+                pop_other_race = EXCLUDED.pop_other_race,
+                racial_diversity_index = EXCLUDED.racial_diversity_index,
+                age_dependency_ratio = EXCLUDED.age_dependency_ratio,
+                family_household_pct = EXCLUDED.family_household_pct,
+                static_demographic_score = EXCLUDED.static_demographic_score,
+                dissimilarity_index = EXCLUDED.dissimilarity_index,
+                exposure_index = EXCLUDED.exposure_index,
+                isolation_index = EXCLUDED.isolation_index,
+                single_parent_pct = EXCLUDED.single_parent_pct,
+                poverty_rate = EXCLUDED.poverty_rate,
+                child_poverty_rate = EXCLUDED.child_poverty_rate,
+                family_viability_score = EXCLUDED.family_viability_score,
+                equity_score = EXCLUDED.equity_score,
+                net_migration_rate = EXCLUDED.net_migration_rate,
+                inflow_rate = EXCLUDED.inflow_rate,
+                outflow_rate = EXCLUDED.outflow_rate,
+                migration_dynamics_score = EXCLUDED.migration_dynamics_score,
+                demographic_opportunity_index = EXCLUDED.demographic_opportunity_index,
+                demographic_momentum_score = COALESCE(layer5_demographic_momentum.demographic_momentum_score, EXCLUDED.demographic_momentum_score),
+                acs_year = EXCLUDED.acs_year,
+                demographic_version = 'v2-equity',
+                updated_at = CURRENT_TIMESTAMP
+        """)
 
-            if existing:
-                # Update existing
-                db.execute(
-                    text("""
-                        UPDATE layer5_demographic_momentum SET
-                            pop_white_alone = :white,
-                            pop_black_alone = :black,
-                            pop_asian_alone = :asian,
-                            pop_hispanic = :hispanic,
-                            pop_other_race = :other,
-                            racial_diversity_index = :diversity,
-                            age_dependency_ratio = :dependency,
-                            family_household_pct = :family_pct,
-                            static_demographic_score = :static_score,
-                            dissimilarity_index = :dissimilarity,
-                            exposure_index = :exposure,
-                            isolation_index = :isolation,
-                            single_parent_pct = :single_parent,
-                            poverty_rate = :poverty,
-                            child_poverty_rate = :child_poverty,
-                            family_viability_score = :viability,
-                            equity_score = :equity_score,
-                            net_migration_rate = :net_rate,
-                            inflow_rate = :inflow_rate,
-                            outflow_rate = :outflow_rate,
-                            migration_dynamics_score = :migration_score,
-                            demographic_opportunity_index = :opportunity_index,
-                            demographic_momentum_score = COALESCE(demographic_momentum_score, :static_score),
-                            acs_year = :acs_year,
-                            demographic_version = 'v2-equity',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE fips_code = :fips AND data_year = :data_year
-                    """),
-                    {
-                        'fips': row['fips_code'],
-                        'data_year': data_year,
-                        'white': int(row.get('pop_white_alone', 0)),
-                        'black': int(row.get('pop_black_alone', 0)),
-                        'asian': int(row.get('pop_asian_alone', 0)),
-                        'hispanic': int(row.get('pop_hispanic', 0)),
-                        'other': int(row.get('pop_other_race', 0)),
-                        'diversity': float(row.get('racial_diversity_index', 0)),
-                        'dependency': float(row.get('age_dependency_ratio', 0)),
-                        'family_pct': float(row.get('family_household_pct', 0)),
-                        'static_score': float(row.get('static_demographic_score', 0)),
-                        'dissimilarity': float(row.get('dissimilarity_index', 0)),
-                        'exposure': float(row.get('exposure_index', 0)),
-                        'isolation': float(row.get('isolation_index', 0)),
-                        'single_parent': float(row.get('single_parent_pct', 0)),
-                        'poverty': float(row.get('poverty_rate', 0)),
-                        'child_poverty': float(row.get('child_poverty_rate', 0)),
-                        'viability': float(row.get('family_viability_score', 0)),
-                        'equity_score': float(row.get('equity_score', 0)),
-                        'net_rate': float(row['net_migration_rate']) if pd.notna(row.get('net_migration_rate')) else None,
-                        'inflow_rate': float(row['inflow_rate']) if pd.notna(row.get('inflow_rate')) else None,
-                        'outflow_rate': float(row['outflow_rate']) if pd.notna(row.get('outflow_rate')) else None,
-                        'migration_score': float(row.get('migration_dynamics_score', 0)),
-                        'opportunity_index': float(row.get('demographic_opportunity_index', 0)),
-                        'static_score': float(row.get('static_demographic_score', 0)),
-                        'acs_year': acs_year
-                    }
-                )
-            else:
-                # Insert new
-                db.execute(
-                    text("""
-                        INSERT INTO layer5_demographic_momentum (
-                            fips_code, data_year,
-                            pop_total, pop_age_25_44, pop_age_25_44_pct,
-                            households_total, households_family, households_family_with_children,
-                            inflow_households, outflow_households, net_migration_households,
-                            pop_white_alone, pop_black_alone, pop_asian_alone, pop_hispanic, pop_other_race,
-                            racial_diversity_index, age_dependency_ratio, family_household_pct,
-                            static_demographic_score, dissimilarity_index, exposure_index, isolation_index,
-                            single_parent_pct, poverty_rate, child_poverty_rate, family_viability_score,
-                            equity_score, net_migration_rate, inflow_rate, outflow_rate,
-                            migration_dynamics_score, demographic_opportunity_index,
-                            demographic_momentum_score,
-                            acs_year, demographic_version
-                        ) VALUES (
-                            :fips, :data_year,
-                            :pop_total, :pop_25_44, :pop_25_44_pct,
-                            :hh_total, :hh_family, :hh_children,
-                            :inflow_hh, :outflow_hh, :net_hh,
-                            :white, :black, :asian, :hispanic, :other,
-                            :diversity, :dependency, :family_pct,
-                            :static_score, :dissimilarity, :exposure, :isolation,
-                            :single_parent, :poverty, :child_poverty, :viability,
-                            :equity_score, :net_rate, :inflow_rate, :outflow_rate,
-                            :migration_score, :opportunity_index,
-                            :momentum_score,
-                            :acs_year, 'v2-equity'
-                        )
-                    """),
-                    {
-                        'fips': row['fips_code'],
-                        'data_year': data_year,
-                        'pop_total': int(row.get('pop_total', 0)),
-                        'pop_25_44': int(row.get('pop_age_25_44', 0)),
-                        'pop_25_44_pct': float(row.get('pop_age_25_44', 0) / row.get('pop_total', 1)) if row.get('pop_total', 0) > 0 else 0,
-                        'hh_total': int(row.get('households_total', 0)),
-                        'hh_family': int(row.get('households_family', 0)),
-                        'hh_children': int(row.get('households_family_with_children', 0)),
-                        'inflow_hh': row.get('inflow_households'),
-                        'outflow_hh': row.get('outflow_households'),
-                        'net_hh': row.get('net_migration_households'),
-                        'white': int(row.get('pop_white_alone', 0)),
-                        'black': int(row.get('pop_black_alone', 0)),
-                        'asian': int(row.get('pop_asian_alone', 0)),
-                        'hispanic': int(row.get('pop_hispanic', 0)),
-                        'other': int(row.get('pop_other_race', 0)),
-                        'diversity': float(row.get('racial_diversity_index', 0)),
-                        'dependency': float(row.get('age_dependency_ratio', 0)),
-                        'family_pct': float(row.get('family_household_pct', 0)),
-                        'static_score': float(row.get('static_demographic_score', 0)),
-                        'dissimilarity': float(row.get('dissimilarity_index', 0)),
-                        'exposure': float(row.get('exposure_index', 0)),
-                        'isolation': float(row.get('isolation_index', 0)),
-                        'single_parent': float(row.get('single_parent_pct', 0)),
-                        'poverty': float(row.get('poverty_rate', 0)),
-                        'child_poverty': float(row.get('child_poverty_rate', 0)),
-                        'viability': float(row.get('family_viability_score', 0)),
-                        'equity_score': float(row.get('equity_score', 0)),
-                        'net_rate': float(row['net_migration_rate']) if pd.notna(row.get('net_migration_rate')) else None,
-                        'inflow_rate': float(row['inflow_rate']) if pd.notna(row.get('inflow_rate')) else None,
-                        'outflow_rate': float(row['outflow_rate']) if pd.notna(row.get('outflow_rate')) else None,
-                        'migration_score': float(row.get('migration_dynamics_score', 0)),
-                        'opportunity_index': float(row.get('demographic_opportunity_index', 0)),
-                        'momentum_score': float(row.get('static_demographic_score', 0)),
-                        'acs_year': acs_year
-                    }
-                )
+        rows = []
+        for _, row in df.iterrows():
+            pop_total = int(row.get('pop_total', 0))
+            pop_25_44 = int(row.get('pop_age_25_44', 0))
+            rows.append(
+                {
+                    'fips': row['fips_code'],
+                    'data_year': data_year,
+                    'pop_total': pop_total,
+                    'pop_25_44': pop_25_44,
+                    'pop_25_44_pct': float(pop_25_44 / pop_total) if pop_total > 0 else 0,
+                    'hh_total': int(row.get('households_total', 0)),
+                    'hh_family': int(row.get('households_family', 0)),
+                    'hh_children': int(row.get('households_family_with_children', 0)),
+                    'inflow_hh': row.get('inflow_households'),
+                    'outflow_hh': row.get('outflow_households'),
+                    'net_hh': row.get('net_migration_households'),
+                    'white': int(row.get('pop_white_alone', 0)),
+                    'black': int(row.get('pop_black_alone', 0)),
+                    'asian': int(row.get('pop_asian_alone', 0)),
+                    'hispanic': int(row.get('pop_hispanic', 0)),
+                    'other': int(row.get('pop_other_race', 0)),
+                    'diversity': float(row.get('racial_diversity_index', 0)),
+                    'dependency': float(row.get('age_dependency_ratio', 0)),
+                    'family_pct': float(row.get('family_household_pct', 0)),
+                    'static_score': float(row.get('static_demographic_score', 0)),
+                    'dissimilarity': float(row.get('dissimilarity_index', 0)),
+                    'exposure': float(row.get('exposure_index', 0)),
+                    'isolation': float(row.get('isolation_index', 0)),
+                    'single_parent': float(row.get('single_parent_pct', 0)),
+                    'poverty': float(row.get('poverty_rate', 0)),
+                    'child_poverty': float(row.get('child_poverty_rate', 0)),
+                    'viability': float(row.get('family_viability_score', 0)),
+                    'equity_score': float(row.get('equity_score', 0)),
+                    'net_rate': float(row['net_migration_rate']) if pd.notna(row.get('net_migration_rate')) else None,
+                    'inflow_rate': float(row['inflow_rate']) if pd.notna(row.get('inflow_rate')) else None,
+                    'outflow_rate': float(row['outflow_rate']) if pd.notna(row.get('outflow_rate')) else None,
+                    'migration_score': float(row.get('migration_dynamics_score', 0)),
+                    'opportunity_index': float(row.get('demographic_opportunity_index', 0)),
+                    'momentum_score': float(row.get('static_demographic_score', 0)),
+                    'acs_year': acs_year,
+                }
+            )
+
+        execute_batch(db, upsert_sql, rows, chunk_size=1000)
 
         db.commit()
 

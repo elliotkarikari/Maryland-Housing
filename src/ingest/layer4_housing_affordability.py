@@ -36,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.db_bulk import execute_batch
 from src.utils.prediction_utils import apply_predictions_to_table
 from src.utils.data_sources import download_file
 
@@ -1254,8 +1255,7 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
         """), {"data_year": data_year})
 
         # Insert new records
-        for _, row in df.iterrows():
-            db.execute(text("""
+        insert_sql = text("""
                 INSERT INTO layer4_housing_affordability_tract (
                     tract_geoid, fips_code, data_year,
                     total_housing_units, occupied_units, owner_occupied_units, renter_occupied_units,
@@ -1289,7 +1289,11 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
                     :area, :density, :population,
                     :acs_year
                 )
-            """), {
+            """)
+
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
                 'tract_geoid': row['tract_geoid'],
                 'fips_code': row['fips_code'],
                 'data_year': data_year,
@@ -1328,6 +1332,8 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
                 'population': int(row.get('population', 0)),
                 'acs_year': acs_year
             })
+
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
@@ -1372,26 +1378,7 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
             if v1_score is not None:
                 elasticity_scores[fips_code] = float(v1_score)
 
-        # Update each county
-        for _, row in df.iterrows():
-            fips_code = row['fips_code']
-            elasticity = elasticity_scores.get(fips_code)
-            affordability = row.get('housing_affordability_score')
-
-            # Compute composite index
-            if elasticity is None and affordability is None:
-                opportunity_index = None
-            elif elasticity is None:
-                opportunity_index = affordability
-            elif affordability is None:
-                opportunity_index = elasticity
-            else:
-                opportunity_index = (
-                    ELASTICITY_WEIGHT * elasticity +
-                    AFFORDABILITY_WEIGHT * affordability
-                )
-
-            db.execute(text("""
+        update_sql = text("""
                 UPDATE layer4_housing_elasticity
                 SET
                     total_households = :households,
@@ -1422,7 +1409,29 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
                     affordability_version = :affordability_version,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE fips_code = :fips_code AND data_year = :data_year
-            """), {
+            """)
+
+        rows = []
+        # Update each county
+        for _, row in df.iterrows():
+            fips_code = row['fips_code']
+            elasticity = elasticity_scores.get(fips_code)
+            affordability = row.get('housing_affordability_score')
+
+            # Compute composite index
+            if elasticity is None and affordability is None:
+                opportunity_index = None
+            elif elasticity is None:
+                opportunity_index = affordability
+            elif affordability is None:
+                opportunity_index = elasticity
+            else:
+                opportunity_index = (
+                    ELASTICITY_WEIGHT * elasticity +
+                    AFFORDABILITY_WEIGHT * affordability
+                )
+
+            rows.append({
                 'fips_code': fips_code,
                 'data_year': data_year,
                 'households': int(row.get('total_households', 0)),
@@ -1452,6 +1461,8 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
                 'acs_year': acs_year,
                 'affordability_version': row.get('affordability_version', 'v2-affordability')
             })
+
+        execute_batch(db, update_sql, rows, chunk_size=1000)
 
         db.commit()
 

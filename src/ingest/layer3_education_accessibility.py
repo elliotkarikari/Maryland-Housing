@@ -47,6 +47,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.db_bulk import execute_batch
 from src.utils.prediction_utils import apply_predictions_to_table
 from src.utils.year_policy import (
     acs_geography_year,
@@ -976,9 +977,7 @@ def store_school_directory(schools_df: pd.DataFrame, data_year: int):
             WHERE data_year = :data_year
         """), {"data_year": data_year})
 
-        for _, row in schools_df.iterrows():
-            db.execute(
-                text("""
+        insert_sql = text("""
                     INSERT INTO education_school_directory (
                         nces_school_id, school_name, school_type, grade_low, grade_high,
                         fips_code, tract_geoid, latitude, longitude,
@@ -994,8 +993,11 @@ def store_school_directory(schools_df: pd.DataFrame, data_year: int):
                         :grad_rate, :frl_gap,
                         :quality_tier, :quality_score, :data_year
                     )
-                """),
-                {
+                """)
+
+        rows = []
+        for _, row in schools_df.iterrows():
+            rows.append({
                     'nces_id': str(row.get('nces_school_id', '')),
                     'name': row.get('school_name', 'Unknown'),
                     'type': row.get('school_type'),
@@ -1016,8 +1018,9 @@ def store_school_directory(schools_df: pd.DataFrame, data_year: int):
                     'quality_tier': row.get('quality_tier'),
                     'quality_score': float(row['quality_score']) if pd.notna(row.get('quality_score')) else None,
                     'data_year': data_year
-                }
-            )
+                })
+
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
@@ -1035,9 +1038,7 @@ def store_tract_education_accessibility(df: pd.DataFrame, data_year: int, nces_y
             WHERE data_year = :data_year
         """), {"data_year": data_year})
 
-        for _, row in df.iterrows():
-            db.execute(
-                text("""
+        insert_sql = text("""
                     INSERT INTO layer3_education_accessibility_tract (
                         tract_geoid, fips_code, data_year,
                         school_age_pop_5_17, school_age_pop_under_5, tract_population,
@@ -1065,8 +1066,11 @@ def store_tract_education_accessibility(df: pd.DataFrame, data_year: int, nces_y
                         :equity_score, :opportunity_score,
                         :nces_year, :acs_year
                     )
-                """),
-                {
+                """)
+
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
                     'tract': row['tract_geoid'],
                     'fips': row['fips_code'],
                     'data_year': data_year,
@@ -1092,8 +1096,9 @@ def store_tract_education_accessibility(df: pd.DataFrame, data_year: int, nces_y
                     'opportunity_score': float(row.get('education_opportunity_score', 0)),
                     'nces_year': nces_year,
                     'acs_year': acs_year
-                }
-            )
+                })
+
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
@@ -1105,125 +1110,90 @@ def store_county_education_accessibility(df: pd.DataFrame, data_year: int, nces_
     logger.info(f"Updating {len(df)} county education accessibility records...")
 
     with get_db() as db:
-        for _, row in df.iterrows():
-            # Check if record exists
-            existing = db.execute(
-                text("SELECT id FROM layer3_school_trajectory WHERE fips_code = :fips AND data_year = :year"),
-                {"fips": row['fips_code'], "year": data_year}
-            ).fetchone()
+        upsert_sql = text("""
+            INSERT INTO layer3_school_trajectory (
+                fips_code, data_year,
+                total_schools, schools_with_prek,
+                high_quality_schools_count, top_quartile_schools_count,
+                avg_schools_accessible_15min, avg_schools_accessible_30min,
+                avg_high_quality_accessible_30min, pct_pop_near_high_quality,
+                avg_ela_proficiency, avg_math_proficiency, avg_proficiency,
+                avg_graduation_rate, frl_proficiency_gap,
+                school_supply_score, education_accessibility_score,
+                school_quality_score, prek_accessibility_score, equity_score,
+                education_opportunity_index,
+                nces_year, acs_year, education_version
+            ) VALUES (
+                :fips, :data_year,
+                :total_schools, :schools_with_prek,
+                :hq_count, :tq_count,
+                :avg_15, :avg_30,
+                :avg_hq_30, :pct_near_hq,
+                :ela_prof, :math_prof, :avg_prof,
+                :grad_rate, :frl_gap,
+                :supply_score, :access_score,
+                :quality_score, :prek_score, :equity_score,
+                :opportunity_index,
+                :nces_year, :acs_year, 'v2-accessibility'
+            )
+            ON CONFLICT (fips_code, data_year)
+            DO UPDATE SET
+                total_schools = EXCLUDED.total_schools,
+                schools_with_prek = EXCLUDED.schools_with_prek,
+                high_quality_schools_count = EXCLUDED.high_quality_schools_count,
+                top_quartile_schools_count = EXCLUDED.top_quartile_schools_count,
+                avg_schools_accessible_15min = EXCLUDED.avg_schools_accessible_15min,
+                avg_schools_accessible_30min = EXCLUDED.avg_schools_accessible_30min,
+                avg_high_quality_accessible_30min = EXCLUDED.avg_high_quality_accessible_30min,
+                pct_pop_near_high_quality = EXCLUDED.pct_pop_near_high_quality,
+                avg_ela_proficiency = EXCLUDED.avg_ela_proficiency,
+                avg_math_proficiency = EXCLUDED.avg_math_proficiency,
+                avg_proficiency = EXCLUDED.avg_proficiency,
+                avg_graduation_rate = EXCLUDED.avg_graduation_rate,
+                frl_proficiency_gap = EXCLUDED.frl_proficiency_gap,
+                school_supply_score = EXCLUDED.school_supply_score,
+                education_accessibility_score = EXCLUDED.education_accessibility_score,
+                school_quality_score = EXCLUDED.school_quality_score,
+                prek_accessibility_score = EXCLUDED.prek_accessibility_score,
+                equity_score = EXCLUDED.equity_score,
+                education_opportunity_index = EXCLUDED.education_opportunity_index,
+                nces_year = EXCLUDED.nces_year,
+                acs_year = EXCLUDED.acs_year,
+                education_version = 'v2-accessibility',
+                updated_at = CURRENT_TIMESTAMP
+        """)
 
-            if existing:
-                # Update existing record with v2 metrics
-                db.execute(
-                    text("""
-                        UPDATE layer3_school_trajectory SET
-                            total_schools = :total_schools,
-                            schools_with_prek = :schools_with_prek,
-                            high_quality_schools_count = :hq_count,
-                            top_quartile_schools_count = :tq_count,
-                            avg_schools_accessible_15min = :avg_15,
-                            avg_schools_accessible_30min = :avg_30,
-                            avg_high_quality_accessible_30min = :avg_hq_30,
-                            pct_pop_near_high_quality = :pct_near_hq,
-                            avg_ela_proficiency = :ela_prof,
-                            avg_math_proficiency = :math_prof,
-                            avg_proficiency = :avg_prof,
-                            avg_graduation_rate = :grad_rate,
-                            frl_proficiency_gap = :frl_gap,
-                            school_supply_score = :supply_score,
-                            education_accessibility_score = :access_score,
-                            school_quality_score = :quality_score,
-                            prek_accessibility_score = :prek_score,
-                            equity_score = :equity_score,
-                            education_opportunity_index = :opportunity_index,
-                            nces_year = :nces_year,
-                            acs_year = :acs_year,
-                            education_version = 'v2-accessibility',
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE fips_code = :fips AND data_year = :data_year
-                    """),
-                    {
-                        'fips': row['fips_code'],
-                        'data_year': data_year,
-                        'total_schools': int(row.get('total_schools', 0)),
-                        'schools_with_prek': int(row.get('schools_with_prek', 0)),
-                        'hq_count': int(row.get('high_quality_schools_count', 0)),
-                        'tq_count': int(row.get('top_quartile_schools_count', 0)),
-                        'avg_15': float(row.get('avg_schools_accessible_15min', 0)),
-                        'avg_30': float(row.get('avg_schools_accessible_30min', 0)),
-                        'avg_hq_30': float(row.get('avg_high_quality_accessible_30min', 0)),
-                        'pct_near_hq': float(row.get('pct_pop_near_high_quality', 0)),
-                        'ela_prof': float(row['avg_ela_proficiency']) if pd.notna(row.get('avg_ela_proficiency')) else None,
-                        'math_prof': float(row['avg_math_proficiency']) if pd.notna(row.get('avg_math_proficiency')) else None,
-                        'avg_prof': float(row['avg_proficiency']) if pd.notna(row.get('avg_proficiency')) else None,
-                        'grad_rate': float(row['avg_graduation_rate']) if pd.notna(row.get('avg_graduation_rate')) else None,
-                        'frl_gap': float(row['frl_proficiency_gap']) if pd.notna(row.get('frl_proficiency_gap')) else None,
-                        'supply_score': float(row.get('school_supply_score', 0)),
-                        'access_score': float(row.get('education_accessibility_score', 0)),
-                        'quality_score': float(row.get('school_quality_score', 0)),
-                        'prek_score': float(row.get('prek_accessibility_score', 0)),
-                        'equity_score': float(row.get('equity_score', 0)),
-                        'opportunity_index': float(row.get('education_opportunity_index', 0)),
-                        'nces_year': nces_year,
-                        'acs_year': acs_year
-                    }
-                )
-            else:
-                # Insert new record
-                db.execute(
-                    text("""
-                        INSERT INTO layer3_school_trajectory (
-                            fips_code, data_year,
-                            total_schools, schools_with_prek,
-                            high_quality_schools_count, top_quartile_schools_count,
-                            avg_schools_accessible_15min, avg_schools_accessible_30min,
-                            avg_high_quality_accessible_30min, pct_pop_near_high_quality,
-                            avg_ela_proficiency, avg_math_proficiency, avg_proficiency,
-                            avg_graduation_rate, frl_proficiency_gap,
-                            school_supply_score, education_accessibility_score,
-                            school_quality_score, prek_accessibility_score, equity_score,
-                            education_opportunity_index,
-                            nces_year, acs_year, education_version
-                        ) VALUES (
-                            :fips, :data_year,
-                            :total_schools, :schools_with_prek,
-                            :hq_count, :tq_count,
-                            :avg_15, :avg_30,
-                            :avg_hq_30, :pct_near_hq,
-                            :ela_prof, :math_prof, :avg_prof,
-                            :grad_rate, :frl_gap,
-                            :supply_score, :access_score,
-                            :quality_score, :prek_score, :equity_score,
-                            :opportunity_index,
-                            :nces_year, :acs_year, 'v2-accessibility'
-                        )
-                    """),
-                    {
-                        'fips': row['fips_code'],
-                        'data_year': data_year,
-                        'total_schools': int(row.get('total_schools', 0)),
-                        'schools_with_prek': int(row.get('schools_with_prek', 0)),
-                        'hq_count': int(row.get('high_quality_schools_count', 0)),
-                        'tq_count': int(row.get('top_quartile_schools_count', 0)),
-                        'avg_15': float(row.get('avg_schools_accessible_15min', 0)),
-                        'avg_30': float(row.get('avg_schools_accessible_30min', 0)),
-                        'avg_hq_30': float(row.get('avg_high_quality_accessible_30min', 0)),
-                        'pct_near_hq': float(row.get('pct_pop_near_high_quality', 0)),
-                        'ela_prof': float(row['avg_ela_proficiency']) if pd.notna(row.get('avg_ela_proficiency')) else None,
-                        'math_prof': float(row['avg_math_proficiency']) if pd.notna(row.get('avg_math_proficiency')) else None,
-                        'avg_prof': float(row['avg_proficiency']) if pd.notna(row.get('avg_proficiency')) else None,
-                        'grad_rate': float(row['avg_graduation_rate']) if pd.notna(row.get('avg_graduation_rate')) else None,
-                        'frl_gap': float(row['frl_proficiency_gap']) if pd.notna(row.get('frl_proficiency_gap')) else None,
-                        'supply_score': float(row.get('school_supply_score', 0)),
-                        'access_score': float(row.get('education_accessibility_score', 0)),
-                        'quality_score': float(row.get('school_quality_score', 0)),
-                        'prek_score': float(row.get('prek_accessibility_score', 0)),
-                        'equity_score': float(row.get('equity_score', 0)),
-                        'opportunity_index': float(row.get('education_opportunity_index', 0)),
-                        'nces_year': nces_year,
-                        'acs_year': acs_year
-                    }
-                )
+        rows = []
+        for _, row in df.iterrows():
+            rows.append(
+                {
+                    'fips': row['fips_code'],
+                    'data_year': data_year,
+                    'total_schools': int(row.get('total_schools', 0)),
+                    'schools_with_prek': int(row.get('schools_with_prek', 0)),
+                    'hq_count': int(row.get('high_quality_schools_count', 0)),
+                    'tq_count': int(row.get('top_quartile_schools_count', 0)),
+                    'avg_15': float(row.get('avg_schools_accessible_15min', 0)),
+                    'avg_30': float(row.get('avg_schools_accessible_30min', 0)),
+                    'avg_hq_30': float(row.get('avg_high_quality_accessible_30min', 0)),
+                    'pct_near_hq': float(row.get('pct_pop_near_high_quality', 0)),
+                    'ela_prof': float(row['avg_ela_proficiency']) if pd.notna(row.get('avg_ela_proficiency')) else None,
+                    'math_prof': float(row['avg_math_proficiency']) if pd.notna(row.get('avg_math_proficiency')) else None,
+                    'avg_prof': float(row['avg_proficiency']) if pd.notna(row.get('avg_proficiency')) else None,
+                    'grad_rate': float(row['avg_graduation_rate']) if pd.notna(row.get('avg_graduation_rate')) else None,
+                    'frl_gap': float(row['frl_proficiency_gap']) if pd.notna(row.get('frl_proficiency_gap')) else None,
+                    'supply_score': float(row.get('school_supply_score', 0)),
+                    'access_score': float(row.get('education_accessibility_score', 0)),
+                    'quality_score': float(row.get('school_quality_score', 0)),
+                    'prek_score': float(row.get('prek_accessibility_score', 0)),
+                    'equity_score': float(row.get('equity_score', 0)),
+                    'opportunity_index': float(row.get('education_opportunity_index', 0)),
+                    'nces_year': nces_year,
+                    'acs_year': acs_year,
+                }
+            )
+
+        execute_batch(db, upsert_sql, rows, chunk_size=1000)
 
         db.commit()
 

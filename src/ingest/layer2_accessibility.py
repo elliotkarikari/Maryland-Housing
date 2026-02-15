@@ -54,6 +54,7 @@ from config.database import get_db, log_refresh
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
+from src.utils.db_bulk import execute_batch
 from src.utils.year_policy import current_year, lodes_year_for_data_year
 
 logger = get_logger(__name__)
@@ -1079,8 +1080,7 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
         """), {"data_year": data_year})
 
         # Insert new records
-        for _, row in df.iterrows():
-            db.execute(text("""
+        insert_sql = text("""
                 INSERT INTO layer2_mobility_accessibility_tract (
                     tract_geoid, fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
@@ -1103,7 +1103,11 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
                     :average_headway_minutes, :tract_population,
                     :gtfs_date, :osm_date, :lodes_year
                 )
-            """), {
+            """)
+
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
                 'tract_geoid': row['tract_geoid'],
                 'fips_code': row['fips_code'],
                 'data_year': data_year,
@@ -1126,6 +1130,8 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
                 'osm_date': osm_date,
                 'lodes_year': lodes_year
             })
+
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
@@ -1150,9 +1156,7 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
     logger.info(f"Updating {len(df)} county accessibility records")
 
     with get_db() as db:
-        for _, row in df.iterrows():
-            # Update existing records or insert new
-            db.execute(text("""
+        upsert_sql = text("""
                 INSERT INTO layer2_mobility_optionality (
                     fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
@@ -1197,7 +1201,11 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
                     accessibility_version = 'v2-accessibility',
                     mobility_optionality_index = EXCLUDED.mobility_optionality_index,
                     updated_at = CURRENT_TIMESTAMP
-            """), {
+            """)
+
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
                 'fips_code': row['fips_code'],
                 'data_year': data_year,
                 'jobs_transit_45': int(row.get('jobs_accessible_transit_45min', 0)),
@@ -1218,6 +1226,8 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
                 'osm_date': osm_date,
                 'lodes_year': lodes_year
             })
+
+        execute_batch(db, upsert_sql, rows, chunk_size=1000)
 
         db.commit()
 
