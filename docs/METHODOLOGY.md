@@ -51,6 +51,55 @@ Each layer measures a distinct dimension of structural advantage or constraint:
 - BLS QCEW (wages, establishments, quarterly)
 - USASpending.gov (federal awards, 5-year window)
 
+##### Layer 1 County Table (Databricks): `layer1_employment_gravity`
+
+This is the county-level Layer 1 table used by the API fallback and multi-year scoring pipeline.
+The table mixes observed inputs, derived metrics, and predicted continuity fields.
+
+**Observed vs Predicted Coverage (Databricks snapshot as of 2026-02-15):**
+
+| data_year | county rows | observed `economic_opportunity_index` | predicted flag (`economic_opportunity_index_predicted`) |
+|-----------|-------------|----------------------------------------|---------------------------------------------------------|
+| 2018 | 24 | 24 | 0 |
+| 2019 | 24 | 24 | 0 |
+| 2020 | 24 | 24 | 0 |
+| 2021 | 24 | 24 | 0 |
+| 2022 | 24 | 24 | 0 |
+| 2023 | 24 | 0 | 24 |
+| 2024 | 24 | 0 | 24 |
+| 2025 | 24 | 0 | 24 |
+
+**County Derived Columns and Methodology (current implementation):**
+
+| Column | Type | Method (simple) | Formula/logic | Feeds final county index? |
+|--------|------|------------------|---------------|---------------------------|
+| `high_wage_jobs_accessible_45min` | Derived | For each tract, sum high-wage jobs reachable in 45-min threshold; county takes tract max | Haversine thresholded catchment, then county max over tracts | Indirectly (through `economic_accessibility_score`) |
+| `high_wage_jobs_accessible_30min` | Derived | Same as above with tighter threshold | Same method, 30-min proxy distance | No (diagnostic context) |
+| `total_jobs_accessible_45min` | Derived | Sum all reachable jobs within 45-min threshold; county takes tract max | Thresholded catchment, then county max | Indirectly (through `job_market_reach_score`) |
+| `total_jobs_accessible_30min` | Derived | Same as above with tighter threshold | Thresholded catchment, then county max | No (diagnostic context) |
+| `wage_quality_ratio` | Derived | Share of reachable jobs that are high-wage | `high_wage_jobs_accessible_45min / total_jobs_accessible_45min` | Indirectly (through `job_quality_index`) |
+| `economic_accessibility_score` | Derived | Percentile rank (within Maryland) of high-wage reach | `rank_pct(high_wage_jobs_accessible_45min)` | Yes (primary direct term) |
+| `job_market_reach_score` | Derived | Percentile rank (within Maryland) of total job reach | `rank_pct(total_jobs_accessible_45min)` | No (supporting metric) |
+| `job_quality_index` | Derived | Blend access volume and wage mix quality | `0.7 * economic_accessibility_score + 0.3 * rank_pct(wage_quality_ratio)` | No (supporting metric) |
+| `upward_mobility_score` | Derived | Current proxy for mobility | equals `economic_accessibility_score` | No (supporting metric) |
+| `pct_regional_high_wage_accessible` | Derived | County share of Maryland high-wage jobs | `high_wage_jobs / statewide_high_wage_jobs` | No (diagnostic context) |
+| `pct_regional_jobs_accessible` | Derived | County share of Maryland jobs | `total_jobs / statewide_total_jobs` | No (diagnostic context) |
+| `high_wage_sector_concentration` | Derived | Concentration in high-wage sectors (risk of concentration) | Herfindahl-Hirschman Index on selected sectors | No (diagnostic context) |
+| `qwi_hire_rate` | Derived | Hiring intensity from QWI | hires / employment (or provided rate) | Indirectly (through `qwi_net_job_growth_score`) |
+| `qwi_separation_rate` | Derived | Separation intensity from QWI | separations / employment (or provided rate) | Indirectly (through `qwi_net_job_growth_score`) |
+| `qwi_turnover_rate` | Derived | Labor churn | `qwi_hire_rate + qwi_separation_rate` (or provided) | No (supporting metric) |
+| `qwi_net_job_growth_rate` | Derived | Net job dynamics | `qwi_hire_rate - qwi_separation_rate` (or `(hires-separations)/employment`) | Indirectly (ranked to `qwi_net_job_growth_score`) |
+| `employment_diversification_score` | Derived/fallback | Legacy local strength reused when available | from prior v1 fields; optional fallback | Yes (if available) |
+| `economic_opportunity_index` | Derived | Final observed county Layer 1 index | `base_index = 0.4 * local_strength + 0.6 * economic_accessibility_score`; if QWI score exists then `0.85 * base_index + 0.15 * qwi_net_job_growth_score` | Yes (final Layer 1 county metric) |
+| `economic_opportunity_index_pred` | Predicted | Trend-based continuation of final index for future years | Theil-Sen trend fit per county, clipped to [0,1] | Used only for modeled years |
+| `economic_opportunity_index_effective` | Derived wrapper | Single usable value column for consumers | `COALESCE(economic_opportunity_index, economic_opportunity_index_pred)` | Yes for cross-year continuity |
+
+**Observed Input/Provenance Fields written to the county table:**
+- LODES-derived observed counts: `high_wage_jobs`, `mid_wage_jobs`, `low_wage_jobs`
+- QWI observed counts: `qwi_emp_total`, `qwi_hires`, `qwi_separations`
+- Source-year lineage: `lodes_year`, `acs_year`, `qwi_year`
+- Versioning: `accessibility_version='v2-accessibility'` for observed v2 rows
+
 **Metrics Calculated:**
 - **Sector Diversity Entropy**: Shannon entropy across 20 NAICS sectors
   - Formula: H = -Σ(p_i * log₂(p_i)) where p_i = share of employment in sector i
@@ -356,7 +405,7 @@ Tested scenarios:
 
 - Add USPS vacancy, HUD FMR, and LIHTC data to strengthen Housing Elasticity.
 - Add graduation rates and early childhood access to strengthen School Trajectory.
-- Add Census QWI to improve employment timeliness.
+- Expand Census QWI longitudinal coverage and QA checks to improve employment timeliness.
 - Publish a weights table auto-generated from the feature registry.
 - Add a threshold sensitivity appendix (±0.05 thresholds, ±20% weights).
 - Evaluate a capped risk-drag penalty and report its impact before changing the primary score.
