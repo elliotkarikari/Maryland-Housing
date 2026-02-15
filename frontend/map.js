@@ -270,6 +270,15 @@ const appState = {
         previousResponseId: null,
         returnMode: 'empty'
     },
+    capabilities: window.AtlasCapabilities
+        ? window.AtlasCapabilities.defaultCapabilities()
+        : {
+            loaded: false,
+            chat_enabled: false,
+            ai_enabled: false,
+            api_version: null,
+            year_policy: null
+        },
     pendingCountyRequest: null,
     moveOpacityTimer: null,
     clickOpacityTimer: null,
@@ -343,10 +352,13 @@ if (!MAPBOX_TOKEN) {
     renderFatal('Mapbox access token is missing. Set MAPBOX_ACCESS_TOKEN in your environment.');
 } else {
     mapboxgl.accessToken = MAPBOX_TOKEN;
-    initialize();
+    initialize().catch((error) => {
+        renderFatal(`Failed to initialize map: ${getReadableFetchError(error, 'initialization')}`);
+    });
 }
 
-function initialize() {
+async function initialize() {
+    await loadCapabilities();
     setupLegendSwatches();
     setupLegendInteractions();
     setupPanelControls();
@@ -359,7 +371,56 @@ function initialize() {
     setupSidebarResize();
     setupGlobalEvents();
     setCompareButtonState(false, false);
+    applyCapabilitiesUI();
     initializeMap();
+}
+
+function isChatEnabled() {
+    if (window.AtlasCapabilities) {
+        return window.AtlasCapabilities.isChatEnabled(appState.capabilities);
+    }
+    return Boolean(appState.capabilities && appState.capabilities.chat_enabled);
+}
+
+async function loadCapabilities() {
+    try {
+        const { response } = await fetchApi('/metadata/capabilities');
+        if (!response.ok) {
+            return;
+        }
+        const payload = await response.json();
+        appState.capabilities = window.AtlasCapabilities
+            ? window.AtlasCapabilities.normalize(payload)
+            : {
+                loaded: true,
+                chat_enabled: Boolean(payload.chat_enabled),
+                ai_enabled: Boolean(payload.ai_enabled),
+                api_version: payload.api_version || null,
+                year_policy: payload.year_policy || null
+            };
+    } catch (_error) {
+        // Keep conservative defaults when capabilities are unavailable.
+    }
+}
+
+function applyCapabilitiesUI() {
+    const chatEnabled = isChatEnabled();
+    if (dom.askPill) {
+        dom.askPill.style.display = chatEnabled ? 'inline-flex' : 'none';
+    }
+    if (dom.askShell) {
+        dom.askShell.classList.remove('expanded');
+        dom.askShell.classList.remove('sending');
+        dom.askShell.setAttribute('aria-hidden', 'true');
+        dom.askShell.style.display = chatEnabled ? 'inline-flex' : 'none';
+    }
+    if (!chatEnabled) {
+        appState.chat.open = false;
+        appState.chat.busy = false;
+        if (dom.analysisFloat) {
+            dom.analysisFloat.classList.remove('chat-mode');
+        }
+    }
 }
 
 function renderFatal(message) {
@@ -2432,6 +2493,16 @@ function renderStoryPanel(county, options = {}) {
     const weakestLayerHtml = weakestLayer
         ? `${renderLayerLabelWithIcon(weakestLayer.key, weakestLayer.label)} <strong>${weakestLayer.value.toFixed(3)}</strong>`
         : 'Not enough data to determine pressure layer.';
+    const askAtlasSectionHtml = isChatEnabled()
+        ? `
+            <section class="story-section">
+                <h4>Ask Atlas</h4>
+                <div class="quick-prompts">
+                    ${QUICK_PROMPTS.map((prompt, idx) => `<button class="quick-prompt" type="button" data-quick-prompt="${idx}">${escapeHtml(shortPromptLabel(prompt))}</button>`).join('')}
+                </div>
+            </section>
+        `
+        : '';
 
     dom.panelBody.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
@@ -2490,12 +2561,7 @@ function renderStoryPanel(county, options = {}) {
                 </div>
             </section>
 
-            <section class="story-section">
-                <h4>Ask Atlas</h4>
-                <div class="quick-prompts">
-                    ${QUICK_PROMPTS.map((prompt, idx) => `<button class="quick-prompt" type="button" data-quick-prompt="${idx}">${escapeHtml(shortPromptLabel(prompt))}</button>`).join('')}
-                </div>
-            </section>
+            ${askAtlasSectionHtml}
         </div>
 
         <div class="story-tab-content" data-story-tab-content="layers">
@@ -3774,6 +3840,14 @@ function disableCompareMode() {
 }
 
 function setupAskAtlasPill() {
+    if (!dom.askPill || !dom.askClose || !dom.askSend || !dom.askInput) {
+        return;
+    }
+    if (!isChatEnabled()) {
+        applyCapabilitiesUI();
+        return;
+    }
+
     dom.askPill.addEventListener('click', () => {
         openAskInput();
     });
@@ -3797,6 +3871,9 @@ function setupAskAtlasPill() {
 }
 
 function openAskInput(prefill = '') {
+    if (!isChatEnabled()) {
+        return;
+    }
     dom.askPill.style.display = 'none';
     dom.askShell.classList.add('expanded');
     dom.askShell.setAttribute('aria-hidden', 'false');
@@ -3814,6 +3891,9 @@ function closeAskInput() {
 }
 
 async function submitInlineAskQuestion() {
+    if (!isChatEnabled()) {
+        return;
+    }
     const question = dom.askInput.value.trim();
     if (!question || appState.chat.busy) {
         return;
@@ -3826,11 +3906,17 @@ async function submitInlineAskQuestion() {
 }
 
 async function submitAtlasQuestion(question) {
+    if (!isChatEnabled()) {
+        return;
+    }
     enterChatMode();
     await sendChatMessage(question);
 }
 
 function enterChatMode() {
+    if (!isChatEnabled()) {
+        return;
+    }
     appState.chat.open = true;
     if (dom.analysisFloat) {
         dom.analysisFloat.classList.remove('hidden');
@@ -3928,6 +4014,9 @@ function renderChatPanel() {
 }
 
 async function sendChatMessage(message) {
+    if (!isChatEnabled()) {
+        return;
+    }
     if (appState.chat.busy) {
         return;
     }
