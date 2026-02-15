@@ -37,7 +37,7 @@ The Maryland Growth & Family Viability Atlas analyzes **structural tailwinds and
 
 > **"Which places in Maryland have stacked structural tailwinds if current policies and trends persist, and how confident should we be that those tailwinds will continue?"**
 
-This system uses **exclusively verifiable open data** from government sources to generate transparent, explainable classifications.
+This system uses **verifiable open data where available**, with explicit fallback flags when upstream sources are intermittent or blocked.
 
 ---
 
@@ -257,7 +257,9 @@ http://localhost:8000/api/v1
 | `GET` | `/areas/{fips}/layers/{layer}` | Layer-specific factor breakdown |
 | `GET` | `/metadata/refresh` | Latest data refresh status |
 | `GET` | `/metadata/sources` | Data source documentation |
+| `GET` | `/metadata/capabilities` | Runtime feature flags + year policy metadata |
 | `GET` | `/metadata/classifications` | Classification threshold definitions |
+| `POST` | `/chat` | Ask Atlas endpoint (enabled when capabilities report chat enabled) |
 | `GET` | `/counties` | List all 24 MD counties with FIPS codes |
 | `GET` | `/health` | Health check endpoint |
 
@@ -298,7 +300,7 @@ Interactive API documentation: `http://localhost:8000/docs`
 
 ## Data Sources
 
-All data sources are **publicly available government data** with programmatic access.
+Data-source availability is mixed by provider and run window (`available`, `intermittent`, `blocked`, `synthetic fallback`).
 
 ### Update Cadence
 
@@ -391,7 +393,7 @@ See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for full discussion.
 make help           # Show all available commands
 make install        # Install Python dependencies
 make init-db        # Initialize database with PostGIS
-make db-migrate     # Run Alembic migrations
+make db-migrate     # Run numbered SQL migrations (scripts/run_sql_migrations.py)
 make ingest-all     # Run all 6 layer ingestion pipelines
 make ingest-layer1  # Ingest Economic Opportunity data
 make process        # Run multi-year scoring + classification
@@ -404,6 +406,13 @@ make lint           # Run Black, isort, mypy
 make format         # Auto-format code
 make clean          # Remove cache and temp files
 ```
+
+### Runtime Configuration Notes
+
+- CORS is origin-scoped via `CORS_ALLOW_ORIGINS` (comma-separated).
+- Year policy is runtime-configurable with `LODES_LATEST_YEAR`, `LODES_LAG_YEARS`,
+  `ACS_LATEST_YEAR`, `ACS_GEOGRAPHY_MAX_YEAR`, `NCES_OBSERVED_MAX_YEAR`, and `PREDICT_TO_YEAR`.
+- Frontend Ask Atlas visibility is gated by `/api/v1/metadata/capabilities`.
 
 ---
 
@@ -437,4 +446,4 @@ MIT License - See [LICENSE](LICENSE) file.
 
 **Built with:** Python, PostgreSQL/PostGIS, FastAPI, Mapbox GL JS
 **Deployed on:** Railway
-**Last updated:** 2026-01-30
+**Last updated:** 2026-02-15
