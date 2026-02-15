@@ -19,6 +19,7 @@ from scipy import stats
 from config.settings import get_settings
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.db_bulk import execute_batch
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -315,17 +316,15 @@ def store_timeseries_features(features: List[Dict]):
             )
         """)
 
+        import json
+
+        rows = []
         for feature_dict in features:
-            # Convert data_gaps list to JSON string
-            import json
-            feature_dict['data_gaps'] = json.dumps(feature_dict['data_gaps'])
+            row = dict(feature_dict)
+            row['data_gaps'] = json.dumps(row.get('data_gaps', []))
+            rows.append(row)
 
-            # Handle NaN values
-            for key, value in feature_dict.items():
-                if isinstance(value, float) and np.isnan(value):
-                    feature_dict[key] = None
-
-            db.execute(insert_sql, feature_dict)
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 

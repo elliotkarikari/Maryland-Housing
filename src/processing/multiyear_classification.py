@@ -17,6 +17,7 @@ import json
 from config.settings import get_settings
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.db_bulk import execute_batch
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -386,6 +387,7 @@ def store_final_synthesis(df: pd.DataFrame):
             )
         """)
 
+        rows = []
         for _, row in df.iterrows():
             # Determine uncertainty level from reasons
             n_reasons = len(row['uncertainty_reasons'])
@@ -415,7 +417,9 @@ def store_final_synthesis(df: pd.DataFrame):
                 'classification_version': 'v2.0-multiyear'
             }
 
-            db.execute(insert_sql, row_dict)
+            rows.append(row_dict)
+
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 

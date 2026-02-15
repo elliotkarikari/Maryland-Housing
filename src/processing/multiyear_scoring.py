@@ -18,6 +18,7 @@ from sqlalchemy import text
 from config.settings import get_settings
 from config.database import get_db, log_refresh
 from src.utils.logging import get_logger
+from src.utils.db_bulk import execute_batch
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -323,6 +324,7 @@ def store_layer_summary_scores(df: pd.DataFrame):
 
         import json
 
+        rows = []
         for _, row in df.iterrows():
             row_dict = {
                 'geoid': row['geoid'],
@@ -339,8 +341,9 @@ def store_layer_summary_scores(df: pd.DataFrame):
                 'weights': json.dumps(row['weights_used']),
                 'normalization_method': 'percentile_rank'
             }
+            rows.append(row_dict)
 
-            db.execute(insert_sql, row_dict)
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
