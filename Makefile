@@ -52,7 +52,7 @@ db-setup:
 	psql $(DATABASE_URL) -f data/schemas/schema_timeseries.sql
 
 db-migrate:
-	alembic upgrade head
+	$(PYTHON) scripts/run_sql_migrations.py
 
 ingest-all:
 	@echo "Running all data ingestion pipelines..."
