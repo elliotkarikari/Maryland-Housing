@@ -56,7 +56,7 @@ def _fetch_md_counties() -> gpd.GeoDataFrame:
     # Fallback to local GeoJSON exports
     export_dir = Path("exports")
     candidates = sorted(export_dir.glob("md_counties_*.geojson"))
-    fallback_path = candidates[-1] if candidates else Path("frontend/md_counties_latest.geojson")
+    fallback_path = candidates[-1] if candidates else Path("exports/md_counties_latest.geojson")
     if not fallback_path.exists():
         raise RuntimeError("No local county GeoJSON available for fallback.")
 

@@ -41,8 +41,7 @@ const API_BASE_CANDIDATES = (() => {
 const COUNTY_GEOJSON_FALLBACK_STATIC_PATHS = [
     './md_counties_latest.geojson',
     'md_counties_latest.geojson',
-    '/md_counties_latest.geojson',
-    '/frontend/md_counties_latest.geojson'
+    '/md_counties_latest.geojson'
 ];
 
 const SIDEBAR_WIDTH_KEY = 'atlas.sidebar.width';
