@@ -4,14 +4,12 @@ Read-only API for serving map data and metadata
 """
 
 import os
-from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy.orm import Session
+from sqlalchemy import text
 
-from config.database import get_db_session, test_connection
+from config.database import get_db, test_connection
 from config.settings import get_settings
 from src.api.chat_routes import router as chat_router
 from src.api.routes import router
@@ -54,11 +52,7 @@ async def startup_event():
     """Run on application startup"""
     logger.info(f"Starting {settings.API_TITLE} v{settings.API_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
-
-    # Test database connection
-    if not test_connection():
-        logger.error("Database connection failed on startup")
-        # Don't raise - allow app to start but health check will fail
+    logger.info("Startup DB check deferred to /health to avoid blocking app boot")
 
 
 @app.on_event("shutdown")
@@ -96,16 +90,27 @@ async def health_check():
     """
     try:
         db_healthy = test_connection()
+        counties_count = 0
 
-        # Check if latest GeoJSON exists
+        if db_healthy:
+            with get_db() as db:
+                counties_count = int(
+                    db.execute(text("SELECT COUNT(*) FROM md_counties")).scalar() or 0
+                )
+
+        counties_available = counties_count > 0
+
+        # Legacy export presence is informational only (no longer required for healthy state).
         geojson_path = os.path.join(settings.EXPORT_DIR, "md_counties_latest.geojson")
         geojson_exists = os.path.exists(geojson_path)
 
-        status = "healthy" if (db_healthy and geojson_exists) else "degraded"
+        status = "healthy" if (db_healthy and counties_available) else "degraded"
 
         return {
             "status": status,
             "database": "connected" if db_healthy else "disconnected",
+            "county_boundaries": "available" if counties_available else "missing",
+            "county_count": counties_count,
             "geojson_export": "available" if geojson_exists else "missing",
             "environment": settings.ENVIRONMENT,
         }

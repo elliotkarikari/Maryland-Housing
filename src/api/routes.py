@@ -5,21 +5,55 @@ Endpoints for map data and metadata
 
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, NotRequired, Optional, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from config.database import get_db_session
+from config.database import DATABASE_BACKEND, get_db_session
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.logging import get_logger
 
 router = APIRouter()
 settings = get_settings()
 logger = get_logger(__name__)
+
+COUNTIES_DEFAULT_GROUPING = "high_uncertainty"
+COUNTIES_DEFAULT_DIRECTIONAL = "stable"
+COUNTIES_DEFAULT_CONFIDENCE = "fragile"
+
+_counties_geojson_cache: Optional[Dict[str, Any]] = None
+
+LAYER_LATEST_SNAPSHOT_CONFIG: Dict[str, Dict[str, str]] = {
+    "employment_gravity": {
+        "table": "layer1_employment_gravity",
+        "column": "economic_opportunity_index",
+    },
+    "mobility_optionality": {
+        "table": "layer2_mobility_optionality",
+        "column": "mobility_optionality_index",
+    },
+    "school_trajectory": {
+        "table": "layer3_school_trajectory",
+        "column": "education_opportunity_index",
+    },
+    "housing_elasticity": {
+        "table": "layer4_housing_elasticity",
+        "column": "housing_opportunity_index",
+    },
+    "demographic_momentum": {
+        "table": "layer5_demographic_momentum",
+        "column": "demographic_opportunity_index",
+    },
+    "risk_drag": {
+        "table": "layer6_risk_drag",
+        "column": "risk_drag_index",
+    },
+}
 
 
 # Response models
@@ -199,24 +233,464 @@ def _generate_explainability_payload(
     }
 
 
-@router.get("/layers/counties/latest")
-async def get_counties_geojson():
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coalesce_non_null(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _parse_geometry(raw_geometry: Any) -> Optional[Dict[str, Any]]:
+    if raw_geometry is None:
+        return None
+
+    if isinstance(raw_geometry, dict):
+        return raw_geometry
+
+    if isinstance(raw_geometry, str):
+        try:
+            parsed = json.loads(raw_geometry)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return None
+
+    return None
+
+
+def _parse_json_list(raw_value: Any) -> List[Any]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, list):
+        return raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _derive_directional_status(composite_score: Optional[float]) -> str:
+    if composite_score is None:
+        return COUNTIES_DEFAULT_DIRECTIONAL
+    if composite_score >= 0.62:
+        return "improving"
+    if composite_score <= 0.38:
+        return "at_risk"
+    return "stable"
+
+
+def _derive_confidence_level(layer_count: int) -> str:
+    if layer_count >= 4:
+        return "strong"
+    if layer_count >= 2:
+        return "conditional"
+    return "fragile"
+
+
+def _derive_synthesis_grouping(composite_score: Optional[float], directional_status: str) -> str:
+    if composite_score is None:
+        return COUNTIES_DEFAULT_GROUPING
+    if directional_status == "improving":
+        return "emerging_tailwinds" if composite_score >= 0.5 else "conditional_growth"
+    if directional_status == "at_risk":
+        return "at_risk_headwinds"
+    return "stable_constrained"
+
+
+def _fetch_latest_layer_snapshot(
+    db: Session, geoid: str
+) -> tuple[Dict[str, Optional[float]], List[int]]:
+    layer_scores: Dict[str, Optional[float]] = {}
+    year_candidates: List[int] = []
+
+    for layer_key, spec in LAYER_LATEST_SNAPSHOT_CONFIG.items():
+        table = spec["table"]
+        column = spec["column"]
+        latest_query = text(
+            f"""
+            SELECT data_year, {column} AS score
+            FROM {table}
+            WHERE fips_code = :geoid
+            ORDER BY data_year DESC
+            LIMIT 1
+        """
+        )
+        try:
+            row = db.execute(latest_query, {"geoid": geoid}).fetchone()
+        except Exception as exc:
+            logger.warning(
+                "Skipping layer snapshot for %s on %s due to query error: %s",
+                layer_key,
+                geoid,
+                exc,
+            )
+            row = None
+
+        score = _safe_float(getattr(row, "score", None) if row else None)
+        layer_scores[layer_key] = score
+
+        year_value = _safe_int(getattr(row, "data_year", None) if row else None)
+        if year_value is not None:
+            year_candidates.append(year_value)
+
+    return layer_scores, year_candidates
+
+
+def _counties_geojson_query() -> str:
+    if DATABASE_BACKEND == "databricks":
+        geometry_expr = "mc.geometry_geojson"
+    else:
+        geometry_expr = "ST_AsGeoJSON(mc.geometry)"
+
+    return f"""
+        WITH l1_latest AS (
+            SELECT fips_code, data_year AS l1_data_year, economic_opportunity_index AS l1_score
+            FROM (
+                SELECT
+                    fips_code,
+                    data_year,
+                    economic_opportunity_index,
+                    ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
+                FROM layer1_employment_gravity
+            ) t
+            WHERE rn = 1
+        ),
+        l2_latest AS (
+            SELECT fips_code, data_year AS l2_data_year, mobility_optionality_index AS l2_score
+            FROM (
+                SELECT
+                    fips_code,
+                    data_year,
+                    mobility_optionality_index,
+                    ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
+                FROM layer2_mobility_optionality
+            ) t
+            WHERE rn = 1
+        ),
+        l3_latest AS (
+            SELECT fips_code, data_year AS l3_data_year, education_opportunity_index AS l3_score
+            FROM (
+                SELECT
+                    fips_code,
+                    data_year,
+                    education_opportunity_index,
+                    ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
+                FROM layer3_school_trajectory
+            ) t
+            WHERE rn = 1
+        ),
+        l4_latest AS (
+            SELECT fips_code, data_year AS l4_data_year, housing_opportunity_index AS l4_score
+            FROM (
+                SELECT
+                    fips_code,
+                    data_year,
+                    housing_opportunity_index,
+                    ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
+                FROM layer4_housing_elasticity
+            ) t
+            WHERE rn = 1
+        ),
+        l5_latest AS (
+            SELECT fips_code, data_year AS l5_data_year, demographic_opportunity_index AS l5_score
+            FROM (
+                SELECT
+                    fips_code,
+                    data_year,
+                    demographic_opportunity_index,
+                    ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
+                FROM layer5_demographic_momentum
+            ) t
+            WHERE rn = 1
+        ),
+        l6_latest AS (
+            SELECT fips_code, data_year AS l6_data_year, risk_drag_index AS l6_score
+            FROM (
+                SELECT
+                    fips_code,
+                    data_year,
+                    risk_drag_index,
+                    ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
+                FROM layer6_risk_drag
+            ) t
+            WHERE rn = 1
+        )
+        SELECT
+            mc.fips_code,
+            mc.county_name,
+            {geometry_expr} AS geometry_geojson,
+            mc.updated_at AS county_updated_at,
+            fsc.current_as_of_year AS data_year,
+            fsc.final_grouping,
+            fsc.directional_status,
+            fsc.confidence_level,
+            fsc.uncertainty_level,
+            fsc.uncertainty_reasons,
+            fsc.composite_score,
+            fsc.employment_gravity_score,
+            fsc.mobility_optionality_score,
+            fsc.school_trajectory_score,
+            fsc.housing_elasticity_score,
+            fsc.demographic_momentum_score,
+            fsc.risk_drag_score,
+            fsc.classification_version,
+            fsc.updated_at AS synthesis_updated_at,
+            l1.l1_data_year,
+            l1.l1_score,
+            l2.l2_data_year,
+            l2.l2_score,
+            l3.l3_data_year,
+            l3.l3_score,
+            l4.l4_data_year,
+            l4.l4_score,
+            l5.l5_data_year,
+            l5.l5_score,
+            l6.l6_data_year,
+            l6.l6_score
+        FROM md_counties mc
+        LEFT JOIN final_synthesis_current fsc ON fsc.geoid = mc.fips_code
+        LEFT JOIN l1_latest l1 ON l1.fips_code = mc.fips_code
+        LEFT JOIN l2_latest l2 ON l2.fips_code = mc.fips_code
+        LEFT JOIN l3_latest l3 ON l3.fips_code = mc.fips_code
+        LEFT JOIN l4_latest l4 ON l4.fips_code = mc.fips_code
+        LEFT JOIN l5_latest l5 ON l5.fips_code = mc.fips_code
+        LEFT JOIN l6_latest l6 ON l6.fips_code = mc.fips_code
+        ORDER BY mc.fips_code
     """
-    Get latest county-level GeoJSON
+
+
+def _build_live_counties_geojson(rows: List[Any]) -> Dict[str, Any]:
+    features: List[Dict[str, Any]] = []
+    scored_count = 0
+
+    for row in rows:
+        geometry = _parse_geometry(getattr(row, "geometry_geojson", None))
+        if not geometry:
+            logger.warning(
+                "Skipping county with missing/invalid geometry payload: %s",
+                getattr(row, "fips_code", "unknown"),
+            )
+            continue
+
+        layer_scores = {
+            "employment_gravity": _safe_float(
+                _coalesce_non_null(
+                    getattr(row, "employment_gravity_score", None),
+                    getattr(row, "l1_score", None),
+                )
+            ),
+            "mobility_optionality": _safe_float(
+                _coalesce_non_null(
+                    getattr(row, "mobility_optionality_score", None),
+                    getattr(row, "l2_score", None),
+                )
+            ),
+            "school_trajectory": _safe_float(
+                _coalesce_non_null(
+                    getattr(row, "school_trajectory_score", None),
+                    getattr(row, "l3_score", None),
+                )
+            ),
+            "housing_elasticity": _safe_float(
+                _coalesce_non_null(
+                    getattr(row, "housing_elasticity_score", None),
+                    getattr(row, "l4_score", None),
+                )
+            ),
+            "demographic_momentum": _safe_float(
+                _coalesce_non_null(
+                    getattr(row, "demographic_momentum_score", None),
+                    getattr(row, "l5_score", None),
+                )
+            ),
+            "risk_drag": _safe_float(
+                _coalesce_non_null(
+                    getattr(row, "risk_drag_score", None),
+                    getattr(row, "l6_score", None),
+                )
+            ),
+        }
+
+        has_scores = any(score is not None for score in layer_scores.values())
+        if has_scores:
+            scored_count += 1
+
+        non_risk_scores = [
+            score for key, score in layer_scores.items() if key != "risk_drag" and score is not None
+        ]
+        composite_from_layers = _mean(non_risk_scores)
+        composite_score = _safe_float(getattr(row, "composite_score", None))
+        if composite_score is None:
+            composite_score = composite_from_layers
+
+        directional_status = getattr(row, "directional_status", None)
+        if not directional_status:
+            directional_status = _derive_directional_status(composite_score)
+
+        layer_count = len([score for score in layer_scores.values() if score is not None])
+        confidence_level = getattr(row, "confidence_level", None)
+        if not confidence_level:
+            confidence_level = _derive_confidence_level(layer_count)
+
+        synthesis_grouping = getattr(row, "final_grouping", None)
+        if not synthesis_grouping:
+            synthesis_grouping = _derive_synthesis_grouping(composite_score, directional_status)
+
+        explainability = _generate_explainability_payload(
+            directional_class=directional_status,
+            confidence_class=confidence_level,
+            risk_drag_score=layer_scores["risk_drag"],
+            layer_scores=layer_scores,
+        )
+        if not has_scores:
+            explainability["primary_strengths"] = []
+            explainability["primary_weaknesses"] = []
+            explainability["key_trends"] = [
+                "Live Databricks feed active; synthesis refresh pending."
+            ]
+
+        year_candidates = [
+            _safe_int(getattr(row, "data_year", None)),
+            _safe_int(getattr(row, "l1_data_year", None)),
+            _safe_int(getattr(row, "l2_data_year", None)),
+            _safe_int(getattr(row, "l3_data_year", None)),
+            _safe_int(getattr(row, "l4_data_year", None)),
+            _safe_int(getattr(row, "l5_data_year", None)),
+            _safe_int(getattr(row, "l6_data_year", None)),
+        ]
+        year_candidates = [year for year in year_candidates if year is not None]
+        data_year_int = max(year_candidates) if year_candidates else None
+
+        last_updated = getattr(row, "synthesis_updated_at", None) or getattr(
+            row, "county_updated_at", None
+        )
+        if isinstance(last_updated, datetime):
+            last_updated_iso = last_updated.isoformat()
+        else:
+            last_updated_iso = None
+
+        feature = {
+            "type": "Feature",
+            "id": getattr(row, "fips_code", None),
+            "geometry": geometry,
+            "properties": {
+                "fips_code": getattr(row, "fips_code", None),
+                "geoid": getattr(row, "fips_code", None),
+                "county_name": getattr(row, "county_name", None),
+                "data_year": data_year_int,
+                "synthesis_grouping": synthesis_grouping,
+                "final_grouping": synthesis_grouping,
+                "directional_class": directional_status,
+                "directional_status": directional_status,
+                "confidence_class": confidence_level,
+                "confidence_level": confidence_level,
+                "composite_score": composite_score,
+                "employment_gravity_score": layer_scores["employment_gravity"],
+                "mobility_optionality_score": layer_scores["mobility_optionality"],
+                "school_trajectory_score": layer_scores["school_trajectory"],
+                "housing_elasticity_score": layer_scores["housing_elasticity"],
+                "demographic_momentum_score": layer_scores["demographic_momentum"],
+                "risk_drag_score": layer_scores["risk_drag"],
+                "classification_version": getattr(row, "classification_version", None)
+                or "live-databricks",
+                "uncertainty_level": getattr(row, "uncertainty_level", None),
+                "uncertainty_reasons": _parse_json_list(getattr(row, "uncertainty_reasons", None)),
+                "primary_strengths": explainability["primary_strengths"],
+                "primary_weaknesses": explainability["primary_weaknesses"],
+                "key_trends": explainability["key_trends"],
+                "last_updated": last_updated_iso,
+                "live_feed": True,
+            },
+        }
+        features.append(feature)
+
+    if not features:
+        raise ValueError("No county geometries available in md_counties.")
+
+    as_of_year_candidates = [
+        feature["properties"]["data_year"]
+        for feature in features
+        if feature["properties"]["data_year"] is not None
+    ]
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "metadata": {
+            "source": "databricks_live",
+            "backend": DATABASE_BACKEND,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "county_count": len(features),
+            "counties_with_scores": scored_count,
+            "as_of_year": max(as_of_year_candidates) if as_of_year_candidates else None,
+        },
+    }
+
+
+@router.get("/layers/counties/latest")
+async def get_counties_geojson(db: Session = Depends(get_db_session)):
+    """
+    Get latest county-level GeoJSON directly from live database tables.
 
     Returns:
         GeoJSON FeatureCollection with all Maryland counties
     """
-    geojson_path = os.path.join(settings.EXPORT_DIR, "md_counties_latest.geojson")
+    global _counties_geojson_cache
 
-    if not os.path.exists(geojson_path):
-        raise HTTPException(
-            status_code=404, detail="GeoJSON export not found. Run export pipeline first."
+    try:
+        rows = db.execute(text(_counties_geojson_query())).fetchall()
+        payload = _build_live_counties_geojson(rows)
+        _counties_geojson_cache = payload
+
+        return JSONResponse(
+            content=payload,
+            media_type="application/geo+json",
+            headers={"Cache-Control": "no-store"},
         )
-
-    return FileResponse(
-        geojson_path, media_type="application/geo+json", filename="md_counties_latest.geojson"
-    )
+    except Exception as e:
+        logger.error("Failed to build live county GeoJSON feed: %s", e, exc_info=True)
+        if _counties_geojson_cache is not None:
+            cached_payload = dict(_counties_geojson_cache)
+            metadata = dict(cached_payload.get("metadata", {}))
+            metadata["served_from_cache"] = True
+            metadata["cache_reason"] = "live_query_failed"
+            metadata["generated_at"] = datetime.now(timezone.utc).isoformat()
+            cached_payload["metadata"] = metadata
+            return JSONResponse(
+                content=cached_payload,
+                media_type="application/geo+json",
+                headers={"Cache-Control": "no-store"},
+            )
+        raise HTTPException(status_code=503, detail="Live county feed unavailable")
+    finally:
+        db.close()
 
 
 @router.get("/layers/counties/{version}")
@@ -278,39 +752,101 @@ async def get_area_detail(geoid: str, db: Session = Depends(get_db_session)):
         )
 
         result = db.execute(query, {"geoid": geoid}).fetchone()
+        fallback_layer_scores, fallback_years = _fetch_latest_layer_snapshot(db, geoid)
 
-        if not result:
-            raise HTTPException(status_code=404, detail=f"No data found for FIPS code {geoid}")
+        if result:
+            layer_scores = {
+                "employment_gravity": _safe_float(
+                    _coalesce_non_null(
+                        result.employment_gravity_score, fallback_layer_scores["employment_gravity"]
+                    )
+                ),
+                "mobility_optionality": _safe_float(
+                    _coalesce_non_null(
+                        result.mobility_optionality_score,
+                        fallback_layer_scores["mobility_optionality"],
+                    )
+                ),
+                "school_trajectory": _safe_float(
+                    _coalesce_non_null(
+                        result.school_trajectory_score, fallback_layer_scores["school_trajectory"]
+                    )
+                ),
+                "housing_elasticity": _safe_float(
+                    _coalesce_non_null(
+                        result.housing_elasticity_score, fallback_layer_scores["housing_elasticity"]
+                    )
+                ),
+                "demographic_momentum": _safe_float(
+                    _coalesce_non_null(
+                        result.demographic_momentum_score,
+                        fallback_layer_scores["demographic_momentum"],
+                    )
+                ),
+                "risk_drag": _safe_float(
+                    _coalesce_non_null(result.risk_drag_score, fallback_layer_scores["risk_drag"])
+                ),
+            }
+        else:
+            layer_scores = fallback_layer_scores
 
-        layer_scores = {
-            "employment_gravity": result.employment_gravity_score,
-            "mobility_optionality": result.mobility_optionality_score,
-            "school_trajectory": result.school_trajectory_score,
-            "housing_elasticity": result.housing_elasticity_score,
-            "demographic_momentum": result.demographic_momentum_score,
-            "risk_drag": result.risk_drag_score,
-        }
+        layer_count = len([score for score in layer_scores.values() if score is not None])
+        non_risk_scores = [
+            score for key, score in layer_scores.items() if key != "risk_drag" and score is not None
+        ]
+
+        composite_score = _safe_float(getattr(result, "composite_score", None) if result else None)
+        if composite_score is None:
+            composite_score = _mean(non_risk_scores)
+
+        directional_class = getattr(result, "directional_status", None) if result else None
+        if not directional_class:
+            directional_class = _derive_directional_status(composite_score)
+
+        confidence_class = getattr(result, "confidence_level", None) if result else None
+        if not confidence_class:
+            confidence_class = _derive_confidence_level(layer_count)
+
+        synthesis_grouping = getattr(result, "final_grouping", None) if result else None
+        if not synthesis_grouping:
+            synthesis_grouping = _derive_synthesis_grouping(composite_score, directional_class)
+
+        data_year_candidates: List[int] = list(fallback_years)
+        if result and _safe_int(result.data_year) is not None:
+            data_year_candidates.append(int(result.data_year))
+        data_year = max(data_year_candidates) if data_year_candidates else settings.PREDICT_TO_YEAR
 
         explainability = _generate_explainability_payload(
-            directional_class=result.directional_status,
-            confidence_class=result.confidence_level,
-            risk_drag_score=result.risk_drag_score,
+            directional_class=directional_class,
+            confidence_class=confidence_class,
+            risk_drag_score=layer_scores["risk_drag"],
             layer_scores=layer_scores,
         )
+        if layer_count == 0:
+            explainability["primary_strengths"] = []
+            explainability["primary_weaknesses"] = []
+            explainability["key_trends"] = [
+                "No county-layer scores are ingested yet for this county."
+            ]
+
+        if result and isinstance(result.updated_at, datetime):
+            last_updated = result.updated_at.isoformat()
+        else:
+            last_updated = datetime.now(timezone.utc).isoformat()
 
         return AreaDetail(
-            fips_code=result.fips_code,
+            fips_code=geoid,
             county_name=MD_COUNTY_FIPS[geoid],
-            data_year=result.data_year,
-            directional_class=result.directional_status,
-            confidence_class=result.confidence_level,
-            synthesis_grouping=result.final_grouping,
-            composite_score=result.composite_score,
+            data_year=data_year,
+            directional_class=directional_class,
+            confidence_class=confidence_class,
+            synthesis_grouping=synthesis_grouping,
+            composite_score=composite_score,
             layer_scores=layer_scores,
             primary_strengths=explainability["primary_strengths"],
             primary_weaknesses=explainability["primary_weaknesses"],
             key_trends=explainability["key_trends"],
-            last_updated=result.updated_at.isoformat() if result.updated_at else None,
+            last_updated=last_updated,
         )
 
     except HTTPException:

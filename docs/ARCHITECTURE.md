@@ -61,7 +61,7 @@ The Maryland Viability Atlas is a **multi-layer spatial analytics system** that 
                                     │
                                     ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                       PostgreSQL + PostGIS                               │
+│   Databricks SQL Warehouse (primary) + PostgreSQL/PostGIS (fallback)    │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
 │  │  Raw Layer Data  │  │  Timeseries      │  │  Synthesis &         │   │
 │  │  (layer1_*, etc) │  │  Features        │  │  Classifications     │   │
@@ -81,10 +81,10 @@ The Maryland Viability Atlas is a **multi-layer spatial analytics system** that 
                                     │
                                     ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                           OUTPUT LAYER                                   │
+│                        API + OUTPUT LAYER                                │
 │  ┌─────────────────────────┐         ┌─────────────────────────────┐    │
-│  │    GeoJSON Export       │         │     FastAPI REST API        │    │
-│  │  (exports/*.geojson)    │         │    (src/api/main.py)        │    │
+│  │  Optional GeoJSON       │         │     FastAPI REST API        │    │
+│  │  snapshots (exports/)   │         │ live county feed from DB    │    │
 │  └─────────────────────────┘         └─────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -122,7 +122,7 @@ Each analytical layer has a dedicated ingestion module:
 - Fetch data from external APIs
 - Handle rate limiting and retries
 - Transform raw data to normalized format
-- Store in PostgreSQL with versioning
+- Store in Databricks SQL tables (Postgres fallback supported)
 - Manage local caching
 
 ### 2. Processing Layer
@@ -139,17 +139,19 @@ Each analytical layer has a dedicated ingestion module:
 | `scoring.py` | Legacy single-year scoring |
 | `classification.py` | Legacy classification logic |
 
-### 3. Export Layer
+### 3. Export Layer (Optional Artifacts)
 
 **Location:** `src/export/`
 
 | Module | Purpose |
 |--------|---------|
-| `geojson_export.py` | Generate map-ready GeoJSON files |
+| `geojson_export.py` | Generate optional map snapshot GeoJSON files |
 
-**Output Files:**
-- `exports/md_counties_latest.geojson` - Always the most recent
-- `exports/md_counties_YYYYMMDD.geojson` - Versioned snapshots
+**Primary map runtime source:** `GET /api/v1/layers/counties/latest` (live DB-backed feed)
+
+**Optional output files:**
+- `exports/md_counties_latest.geojson` - Latest snapshot artifact
+- `exports/md_counties_YYYYMMDD.geojson` - Versioned archive snapshots
 
 ### 4. API Layer
 
@@ -167,7 +169,7 @@ Each analytical layer has a dedicated ingestion module:
 | Module | Purpose |
 |--------|---------|
 | `settings.py` | Pydantic-based configuration management (CORS + year/runtime policy) |
-| `database.py` | SQLAlchemy + PostGIS connection management |
+| `database.py` | SQLAlchemy backend routing (Databricks primary, Postgres fallback) |
 
 ### 6. Frontend Layer
 
@@ -194,7 +196,7 @@ Each analytical layer has a dedicated ingestion module:
 │  External API ──▶ Fetch ──▶ Transform ──▶ Validate ──▶ Store            │
 │                      │                                    │             │
 │                      ▼                                    ▼             │
-│                   Cache                            PostgreSQL           │
+│                   Cache                    Databricks/Postgres          │
 │              (data/cache/)                   (layer*_* tables)          │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -252,13 +254,15 @@ Each analytical layer has a dedicated ingestion module:
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ STAGE 5: EXPORT                                                         │
+│ STAGE 5: LIVE MAP FEED + OPTIONAL EXPORT                                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  Classifications + County Boundaries ──▶ GeoJSON Generation             │
+│  County Boundaries + Layer/Synthesis Tables ──▶ API GeoJSON Assembly    │
 │          │                                       │                      │
 │          ▼                                       ▼                      │
-│     pygris TIGER/Line              exports/md_counties_*.geojson        │
+│       md_counties + layer*_*          /api/v1/layers/counties/latest    │
+│     (final_synthesis preferred, progressive fallback supported)          │
+│                               Optional: exports/md_counties_*.geojson   │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -267,8 +271,11 @@ Each analytical layer has a dedicated ingestion module:
 
 1. `make db-migrate` (executes all numbered SQL migrations with `scripts/run_sql_migrations.py`)
 2. `make ingest-all` (layers 1-6 + policy persistence ingestion)
-3. `make pipeline` (multi-year features, scoring, classification, export)
+3. `make pipeline` (multi-year features, scoring, classification, optional export)
 4. `make serve` + `make frontend` (API + UI runtime)
+
+Map runtime note:
+- Map/feed endpoints remain available during partial ingest by deriving county properties from latest layer tables when `final_synthesis_current` is sparse.
 
 ---
 
@@ -679,9 +686,9 @@ app.add_middleware(
 
 | Endpoint | Response Model | Purpose |
 |----------|---------------|---------|
-| `GET /layers/counties/latest` | GeoJSON | Latest county data |
+| `GET /layers/counties/latest` | GeoJSON | Live county data from Databricks tables (`final_synthesis_current` preferred; latest-layer fallback) |
 | `GET /layers/counties/{version}` | GeoJSON | Versioned snapshot |
-| `GET /areas/{fips}` | AreaDetail | County detail |
+| `GET /areas/{fips}` | AreaDetail | County detail (live + progressive fallback) |
 | `GET /areas/{fips}/layers/{layer}` | LayerDetail | Layer breakdown |
 | `GET /metadata/refresh` | RefreshStatus | Data refresh audit |
 | `GET /metadata/sources` | DataSource[] | Source documentation |
@@ -857,8 +864,8 @@ class Settings(BaseSettings):
 │                          Railway                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────┐     ┌─────────────────────────────────┐   │
-│  │  PostgreSQL     │     │  FastAPI Service                │   │
-│  │  + PostGIS      │◀───▶│  (from Procfile)                │   │
+│  │  Databricks SQL │     │  FastAPI Service                │   │
+│  │  Warehouse      │◀───▶│  (from Procfile)                │   │
 │  │                 │     │  uvicorn src.api.main:app       │   │
 │  └─────────────────┘     └─────────────────────────────────┘   │
 │                                     │                           │
@@ -894,8 +901,8 @@ class Settings(BaseSettings):
 
 **Checks:**
 1. Database connectivity
-2. PostGIS extension availability
-3. GeoJSON export file presence
+2. County boundary availability in `md_counties`
+3. Live county feed readiness
 
 ---
 

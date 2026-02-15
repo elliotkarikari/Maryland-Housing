@@ -423,7 +423,21 @@ Some counties have systematically missing data:
 - Cannot answer "Is Montgomery improving faster than Howard?"
 - Only current snapshot available via API
 
-### 9.4 Year Drift and Observed-vs-Modeled Boundaries
+### 9.4 Progressive API Fallback vs Full Synthesis
+
+**Status:**
+- Map and county detail endpoints are Databricks live-feed based.
+- API prefers `final_synthesis_current`, but falls back to latest available layer-table rows when synthesis is missing.
+
+**Impact:**
+- During partial ingest windows, map/detail values are deterministic but may differ from fully synthesized outputs.
+- County-level classifications can shift after running full multi-year scoring/classification.
+
+**Current mitigation:**
+- API metadata and logs expose when synthesis coverage is incomplete.
+- Run `make pipeline` (or `python -m src.run_multiyear_pipeline`) after major ingest updates to restore full synthesis parity.
+
+### 9.5 Year Drift and Observed-vs-Modeled Boundaries
 
 **Status:**
 - Source releases do not align to one calendar year (LODES, ACS, NCES, IRS each lag differently).
@@ -437,7 +451,7 @@ Some counties have systematically missing data:
 - Year bounds are centralized in `src/utils/year_policy.py`.
 - Runtime metadata exposes policy caps through `/api/v1/metadata/capabilities`.
 
-### 9.5 CI/Observability Coverage Gaps
+### 9.6 CI/Observability Coverage Gaps
 
 **Status:**
 - Baseline CI checks now exist (lint/tests/migration-prefix/year-literal/docs-consistency).

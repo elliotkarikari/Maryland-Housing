@@ -1,7 +1,7 @@
 # Maryland Growth & Family Viability Atlas
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![PostgreSQL 15+](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
+[![Databricks SQL](https://img.shields.io/badge/Databricks-SQL%20Warehouse-orange.svg)](https://www.databricks.com/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Railway Deployment](https://img.shields.io/badge/Deploy-Railway-blueviolet.svg)](https://railway.app/)
@@ -49,7 +49,8 @@ This system uses **verifiable open data where available**, with explicit fallbac
 - Measures **confidence levels** based on policy delivery track record
 - Provides **explainable classifications** with factor breakdowns
 - Uses **multi-year evidence** for robust trend detection
-- Exports **map-ready GeoJSON** for visualization
+- Serves a **live Databricks-backed county GeoJSON feed** for map visualization
+- Progressively improves map/detail output as new layer tables are ingested
 
 ### What It Does NOT Do
 
@@ -145,7 +146,8 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your API keys
 
-# 5. Initialize database
+# 5. (Optional) Initialize local Postgres fallback database
+# Skip when using DATA_BACKEND=databricks
 make init-db
 
 # 6. Run data ingestion
@@ -185,7 +187,7 @@ See [QUICKSTART.md](QUICKSTART.md) for detailed setup instructions.
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    PostgreSQL + PostGIS                          │
+│      Databricks SQL Warehouse (primary) + PostgreSQL fallback    │
 │  ─────────────────────────────────────────────────────────────  │
 │  layer1_employment_gravity  │  layer2_mobility_optionality      │
 │  layer3_school_trajectory   │  layer4_housing_elasticity        │
@@ -220,10 +222,10 @@ See [QUICKSTART.md](QUICKSTART.md) for detailed setup instructions.
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    EXPORT + API LAYER                            │
+│                       API + EXPORT LAYER                         │
 │  ─────────────────────────────────────────────────────────────  │
-│  src/export/geojson_export.py  →  exports/md_counties_*.geojson │
-│  src/api/main.py + routes.py   →  FastAPI REST endpoints        │
+│  src/api/main.py + routes.py   →  live Databricks county feed   │
+│  src/export/geojson_export.py  →  optional versioned snapshots  │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
@@ -251,7 +253,7 @@ http://localhost:8000/api/v1
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/layers/counties/latest` | Latest county GeoJSON with all classifications |
+| `GET` | `/layers/counties/latest` | Live county GeoJSON from Databricks (`md_counties` + latest layer scores, or `final_synthesis_current` when present) |
 | `GET` | `/layers/counties/{version}` | Versioned GeoJSON snapshot (YYYYMMDD) |
 | `GET` | `/areas/{fips}` | Detailed county analysis (scores, strengths, trends) |
 | `GET` | `/areas/{fips}/layers/{layer}` | Layer-specific factor breakdown |
@@ -295,6 +297,12 @@ curl http://localhost:8000/api/v1/areas/24031 | jq
 ```
 
 Interactive API documentation: `http://localhost:8000/docs`
+
+### Runtime Note
+
+- Map polygons and county properties are served live from Databricks-backed API queries.
+- `final_synthesis_current` is preferred when populated.
+- If synthesis rows are missing, the API derives county detail from the latest available layer tables so the map remains usable during incremental ingest.
 
 ---
 
@@ -392,13 +400,13 @@ See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for full discussion.
 ```bash
 make help           # Show all available commands
 make install        # Install Python dependencies
-make init-db        # Initialize database with PostGIS
+make init-db        # Initialize local Postgres fallback database (optional)
 make db-migrate     # Run numbered SQL migrations (scripts/run_sql_migrations.py)
 make ingest-all     # Run all 6 layer ingestion pipelines
 make ingest-layer1  # Ingest Economic Opportunity data
 make process        # Run multi-year scoring + classification
-make pipeline       # Complete V2 pipeline + GeoJSON export
-make export         # Generate GeoJSON outputs only
+make pipeline       # Complete V2 pipeline (live API feed + optional GeoJSON snapshots)
+make export         # Generate optional GeoJSON snapshots only
 make serve          # Start FastAPI server (port 8000)
 make frontend       # Start frontend dev server (port 3000)
 make test           # Run pytest with coverage

@@ -94,6 +94,34 @@ def check_database_connection() -> CheckResult:
     return CheckResult(name="database_connection", ok=True, detail="SELECT 1 succeeded")
 
 
+def check_live_county_feed_tables() -> CheckResult:
+    try:
+        with get_db() as db:
+            county_count = int(db.execute(text("SELECT COUNT(*) FROM md_counties")).scalar() or 0)
+            synthesis_count = int(
+                db.execute(text("SELECT COUNT(*) FROM final_synthesis_current")).scalar() or 0
+            )
+    except Exception as exc:
+        return CheckResult(
+            name="live_county_feed_tables",
+            ok=False,
+            detail=f"Failed to query county feed tables: {exc}",
+        )
+
+    if county_count <= 0:
+        return CheckResult(
+            name="live_county_feed_tables",
+            ok=False,
+            detail="md_counties has no geometry rows; live county feed cannot render",
+        )
+
+    return CheckResult(
+        name="live_county_feed_tables",
+        ok=True,
+        detail=f"md_counties={county_count}, final_synthesis_current={synthesis_count}",
+    )
+
+
 def check_census_api_key() -> CheckResult:
     settings = get_settings()
     url = f"{settings.CENSUS_API_BASE_URL}/2023/acs/acs5"
@@ -154,6 +182,7 @@ def run_checks() -> list[CheckResult]:
 
     checks: list[Callable[[], CheckResult]] = [
         check_database_connection,
+        check_live_county_feed_tables,
         check_census_api_key,
         check_mapbox_token,
     ]

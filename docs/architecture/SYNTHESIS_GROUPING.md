@@ -134,9 +134,11 @@ Takes precedence approach:
 }
 ```
 
-### GeoJSON Export
+### API/GeoJSON Delivery
 
-**File:** `exports/md_counties_latest.geojson`
+**Primary runtime source:** `GET /api/v1/layers/counties/latest` (live Databricks-backed feed)
+
+**Optional snapshot artifact:** `exports/md_counties_latest.geojson`
 
 **Each feature includes:**
 ```json
@@ -266,21 +268,16 @@ When AI synthesis is added:
 ## Testing
 
 ```bash
-# Check database
-psql postgresql://localhost/maryland_atlas -c \
-  "SELECT fips_code, synthesis_grouping, directional_class, confidence_class 
-   FROM county_classifications LIMIT 5;"
+# Check live county feed
+curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | length'
+# Expected: 24
 
 # Check API
-curl http://localhost:8000/api/v1/areas/24031 | grep synthesis_grouping
+curl http://localhost:8000/api/v1/areas/24031 | jq '.synthesis_grouping, .directional_class, .confidence_class'
 
-# Check GeoJSON
-python -c "
-import json
-with open('exports/md_counties_latest.geojson') as f:
-    data = json.load(f)
-    print(data['features'][0]['properties']['synthesis_grouping'])
-"
+# Optional snapshot artifact check
+python -m src.export.geojson_export --latest-only
+python -c "import json; data=json.load(open('exports/md_counties_latest.geojson')); print(data['features'][0]['properties']['synthesis_grouping'])"
 ```
 
 ---
@@ -289,4 +286,3 @@ with open('exports/md_counties_latest.geojson') as f:
 **Primary Map Layer:** synthesis_grouping  
 **Default Display:** 5-category color scheme  
 **Current Value:** All areas show "high_uncertainty" (correct for V1.0 sparse data)
-

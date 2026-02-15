@@ -1,7 +1,7 @@
 # AGENTS
 
 ## Project summary
-Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that ingests open government data across 6 layers, writes to Databricks tables (primary backend), and exports GeoJSON + API outputs for county-level growth signals.
+Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that ingests open government data across 6 layers, writes to Databricks tables (primary backend), and serves county-level map/detail data through a live FastAPI feed. GeoJSON exports are optional archival artifacts, not the primary map source.
 
 ## Source of truth docs
 - Architecture: `docs/ARCHITECTURE.md`
@@ -48,6 +48,8 @@ Optional source toggles (keep deterministic defaults):
 - Ensure `LODES_LATEST_YEAR`, `LODES_LAG_YEARS`, `ACS_LATEST_YEAR`, `ACS_GEOGRAPHY_MAX_YEAR`, `NCES_OBSERVED_MAX_YEAR`, and `PREDICT_TO_YEAR` match available data.
 - Confirm `CORS_ALLOW_ORIGINS` includes expected frontend origins.
 - Validate runtime flags with `GET /api/v1/metadata/capabilities` before frontend verification.
+- Validate live county feed with `GET /api/v1/layers/counties/latest` (expect 24 features).
+- Validate county detail fallback with `GET /api/v1/areas/24031` (should return 200 even if `final_synthesis_current` is sparse).
 
 ## Layer2-5 v2 ingestion defaults (recurring)
 - Layer2-5 v2 CLIs default to multi-year/full history; use `--single-year` for a single year.

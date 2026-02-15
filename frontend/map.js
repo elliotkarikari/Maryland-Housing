@@ -38,11 +38,9 @@ const API_BASE_CANDIDATES = (() => {
     });
     return deduped;
 })();
-const COUNTY_GEOJSON_FALLBACK_STATIC_PATHS = [
-    './md_counties_latest.geojson',
-    'md_counties_latest.geojson',
-    '/md_counties_latest.geojson'
-];
+const COUNTY_GEOJSON_MAX_ATTEMPTS = 6;
+const COUNTY_GEOJSON_RETRY_BASE_MS = 1200;
+const COUNTY_LAYER_AUTO_RECOVER_MS = 5000;
 
 const SIDEBAR_WIDTH_KEY = 'atlas.sidebar.width';
 const TOUR_STORAGE_KEY = 'atlas.guided_tour.dismissed.v1';
@@ -284,6 +282,9 @@ const appState = {
     flowAnimationTimer: null,
     hoverPopupFips: null,
     apiBaseUrl: null,
+    countyLayerLoaded: false,
+    countyLayerRetryTimer: null,
+    countyLayerRetryAttempt: 0,
     tableViewOpen: false,
     tour: {
         active: false,
@@ -1192,12 +1193,29 @@ async function loadCountyLayer() {
             }
         });
 
+        appState.countyLayerLoaded = true;
+        appState.countyLayerRetryAttempt = 0;
+        clearCountyLayerRetry();
+
         addDemographicFlowLayers();
         await addCountyIllustrationLayers();
         wireCountyInteractions();
         applyLegendFilter();
     } catch (error) {
-        renderTransientPanelError(getReadableFetchError(error, '/layers/counties/latest'));
+        appState.countyLayerLoaded = false;
+        const delaySeconds = Math.max(
+            1,
+            Math.round(
+                Math.min(
+                    COUNTY_LAYER_AUTO_RECOVER_MS * (appState.countyLayerRetryAttempt + 1),
+                    30000
+                ) / 1000
+            )
+        );
+        renderTransientPanelError(
+            `${getReadableFetchError(error, '/layers/counties/latest')} Retrying in ${delaySeconds}s.`
+        );
+        scheduleCountyLayerRetry();
     }
 }
 
@@ -1675,44 +1693,38 @@ function offsetLngLatByKm(center, offsetXKm, offsetYKm) {
 }
 
 async function loadCountyGeoJson() {
-    let apiError = null;
+    let lastError = null;
 
-    try {
-        const { response, url: resolvedUrl } = await fetchApi('/layers/counties/latest');
-        if (!response.ok) {
-            throw new Error(`Could not load ${resolvedUrl} (HTTP ${response.status})`);
-        }
-
-        const geojson = await response.json();
-        if (isValidCountyGeoJson(geojson)) {
-            return geojson;
-        }
-        throw new Error('County GeoJSON response is invalid.');
-    } catch (error) {
-        apiError = error;
-    }
-
-    const fallbackPaths = getCountyGeoJsonFallbackPaths();
-    for (const fallbackPath of fallbackPaths) {
+    for (let attempt = 1; attempt <= COUNTY_GEOJSON_MAX_ATTEMPTS; attempt += 1) {
         try {
-            const response = await fetch(fallbackPath, { cache: 'no-store' });
+            const { response, url: resolvedUrl } = await fetchApi('/layers/counties/latest', {
+                cache: 'no-store'
+            });
             if (!response.ok) {
-                continue;
+                throw new Error(`Could not load ${resolvedUrl} (HTTP ${response.status})`);
             }
+
             const geojson = await response.json();
             if (isValidCountyGeoJson(geojson)) {
                 return geojson;
             }
-        } catch (_error) {
-            // Try next fallback path.
+            throw new Error('County GeoJSON response is invalid.');
+        } catch (error) {
+            lastError = error;
+            if (attempt < COUNTY_GEOJSON_MAX_ATTEMPTS) {
+                const delayMs = Math.min(
+                    COUNTY_GEOJSON_RETRY_BASE_MS * (2 ** (attempt - 1)),
+                    8000
+                );
+                await wait(delayMs);
+            }
         }
     }
 
-    const fallbackError = `County GeoJSON is unavailable from local fallback paths (${fallbackPaths.join(', ')}).`;
-    if (apiError) {
-        throw new Error(`${getReadableFetchError(apiError, '/layers/counties/latest')} ${fallbackError}`);
-    }
-    throw new Error(fallbackError);
+    throw new Error(
+        `${getReadableFetchError(lastError, '/layers/counties/latest')} ` +
+        `Retried ${COUNTY_GEOJSON_MAX_ATTEMPTS} times.`
+    );
 }
 
 function isValidCountyGeoJson(geojson) {
@@ -1723,30 +1735,31 @@ function isValidCountyGeoJson(geojson) {
     );
 }
 
-function getCountyGeoJsonFallbackPaths() {
-    const protocol = window.location.protocol || 'http:';
-    const unique = new Set(COUNTY_GEOJSON_FALLBACK_STATIC_PATHS);
+function clearCountyLayerRetry() {
+    if (appState.countyLayerRetryTimer) {
+        window.clearTimeout(appState.countyLayerRetryTimer);
+        appState.countyLayerRetryTimer = null;
+    }
+}
 
-    try {
-        unique.add(new URL('md_counties_latest.geojson', window.location.href).href);
-    } catch (_error) {
-        // Ignore malformed location URL.
+function scheduleCountyLayerRetry() {
+    if (appState.countyLayerLoaded || appState.countyLayerRetryTimer || !appState.map) {
+        return;
     }
 
-    const scriptTag = Array.from(document.getElementsByTagName('script'))
-        .find((script) => script.src && /\/map\.js(\?|$)/.test(script.src));
-    if (scriptTag && scriptTag.src) {
-        try {
-            unique.add(new URL('md_counties_latest.geojson', scriptTag.src).href);
-        } catch (_error) {
-            // Ignore malformed script URL.
+    const delayMs = Math.min(
+        COUNTY_LAYER_AUTO_RECOVER_MS * (appState.countyLayerRetryAttempt + 1),
+        30000
+    );
+    appState.countyLayerRetryAttempt += 1;
+
+    appState.countyLayerRetryTimer = window.setTimeout(async () => {
+        appState.countyLayerRetryTimer = null;
+        if (!appState.map || appState.countyLayerLoaded) {
+            return;
         }
-    }
-
-    unique.add(`${protocol}//localhost:3000/md_counties_latest.geojson`);
-    unique.add(`${protocol}//127.0.0.1:3000/md_counties_latest.geojson`);
-
-    return Array.from(unique);
+        await loadCountyLayer();
+    }, delayMs);
 }
 
 function decorateGeoJson(geojson) {
@@ -4331,6 +4344,12 @@ function countyNameFromFips(fipsCode) {
 
 function trimTrailingSlash(value) {
     return String(value || '').replace(/\/+$/, '');
+}
+
+function wait(ms) {
+    return new Promise((resolve) => {
+        window.setTimeout(resolve, ms);
+    });
 }
 
 function apiBaseCandidatesInOrder() {

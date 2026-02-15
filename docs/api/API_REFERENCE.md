@@ -9,10 +9,10 @@ Canonical API implementation lives in `src/api/`:
 ## Core Endpoints
 
 - `GET /` - API metadata and endpoint list
-- `GET /health` - service health (database + export availability)
-- `GET /api/v1/layers/counties/latest` - latest county GeoJSON
+- `GET /health` - service health (database + live county feed readiness)
+- `GET /api/v1/layers/counties/latest` - live county GeoJSON feed (Databricks-backed; no static fallback required)
 - `GET /api/v1/layers/counties/{version}` - versioned county GeoJSON
-- `GET /api/v1/areas/{geoid}` - county-level synthesis details
+- `GET /api/v1/areas/{geoid}` - county-level details (prefers `final_synthesis_current`; falls back to latest layer-table rows)
 - `GET /api/v1/areas/{geoid}/layers/{layer_key}` - layer breakdown for a county
 - `GET /api/v1/metadata/sources` - data source registry metadata
 - `GET /api/v1/metadata/capabilities` - runtime capability flags
@@ -33,5 +33,9 @@ python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## Notes
 
+- Runtime county feed behavior:
+  - Primary geometry source: `md_counties`
+  - Preferred synthesis source: `final_synthesis_current`
+  - Progressive fallback source: latest rows from layer1-6 county tables when synthesis is sparse
 - The legacy root-level `api/` directory has been removed as part of file-structure cleanup.
 - Use `docs/ARCHITECTURE.md` for system architecture and `QUICKSTART.md` for runbook commands.

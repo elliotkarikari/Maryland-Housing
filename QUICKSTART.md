@@ -172,7 +172,8 @@ make pipeline
 1. **Timeseries Features** - Computes level, momentum, stability across years
 2. **Multi-Year Scoring** - Normalizes and aggregates layer scores
 3. **Multi-Year Classification** - Generates directional status + confidence
-4. **GeoJSON Export** - Creates map-ready output files
+4. **API-Ready Synthesis** - Populates `final_synthesis_current` for highest-quality map/detail output
+5. **GeoJSON Export (optional artifact)** - Creates versioned snapshots for archival/offline use
 
 **Expected output:**
 ```
@@ -180,7 +181,7 @@ Running multi-year pipeline and export...
 Computing timeseries features... 24 counties processed
 Running multi-year scoring... done
 Running classification... done
-Exporting GeoJSON... exports/md_counties_latest.geojson created
+Exporting GeoJSON... exports/md_counties_latest.geojson created (optional artifact)
 Pipeline complete
 ```
 
@@ -306,22 +307,19 @@ python -c "from config.database import test_connection; test_connection()"
 # 2. API health
 curl http://localhost:8000/health
 
-# 3. GeoJSON export exists
-ls -la exports/md_counties_*.geojson
+# 3. Live county feed responds
+curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | length'
+# Expected: 24
 ```
 
 ### Data Verification
 
 ```bash
-# Check county count
-psql $DATABASE_URL -c "SELECT COUNT(DISTINCT fips_code) FROM layer1_employment_gravity;"
-# Expected: 24
+# Check Databricks/Postgres layer coverage through SQLAlchemy (works for both backends)
+.venv/bin/python -c "from config.database import engine; from sqlalchemy import text; c=engine.connect(); print('l1_count=', c.execute(text('SELECT COUNT(*) FROM layer1_employment_gravity')).scalar()); print('final_synthesis_current=', c.execute(text('SELECT COUNT(*) FROM final_synthesis_current')).scalar()); c.close()"
 
-# Check layer data
-psql $DATABASE_URL -c "SELECT fips_code, data_year, economic_opportunity_index FROM layer1_employment_gravity LIMIT 5;"
-
-# Check classifications
-psql $DATABASE_URL -c "SELECT fips_code, synthesis_grouping, directional_class, confidence_class FROM final_synthesis_current LIMIT 5;"
+# Check a sample county detail (should return 200 for valid FIPS even before full synthesis)
+curl -i http://localhost:8000/api/v1/areas/24031 | head -n 20
 ```
 
 ### API Verification
@@ -346,10 +344,10 @@ curl http://localhost:8000/api/v1/metadata/capabilities | jq
 
 - [ ] Virtual environment activated
 - [ ] `.env` file configured with API keys
-- [ ] PostGIS extensions enabled
-- [ ] Database schema initialized (24 counties)
+- [ ] Databricks credentials configured (or PostGIS enabled for fallback mode)
+- [ ] County boundaries present in backend (`md_counties` = 24)
 - [ ] At least Layer 1 data ingested
-- [ ] Pipeline completed (GeoJSON exists)
+- [ ] Live county feed returns 24 features
 - [ ] API responds to `/health`
 - [ ] API returns county data at `/api/v1/areas/24031`
 - [ ] Frontend loads map at `http://localhost:3000`
@@ -467,6 +465,8 @@ python -m src.run_multiyear_pipeline
 python -m src.export.geojson_export
 ```
 
+**Note:** The map does not depend on exported files. Even if export fails, the frontend can still render from the live Databricks API feed.
+
 #### "Timeseries features require 3+ years"
 
 V2 requires multi-year data for momentum/stability calculations. With limited data:
@@ -478,7 +478,7 @@ V2 requires multi-year data for momentum/stability calculations. With limited da
 #### "Map doesn't load"
 
 1. Check API server is running on port 8000
-2. Verify GeoJSON file exists: `ls exports/md_counties_latest.geojson`
+2. Verify live feed endpoint responds: `curl -I http://localhost:8000/api/v1/layers/counties/latest`
 3. Check browser console (F12) for errors
 4. Verify CORS is not blocking requests
 
