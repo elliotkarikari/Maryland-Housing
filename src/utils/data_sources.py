@@ -3,15 +3,17 @@ Maryland Viability Atlas - Data Source Utilities
 Helper functions for accessing open data APIs with rate limiting
 """
 
-import requests
 import io
-import time
-import random
 import logging
+import random
+import time
 from datetime import datetime
-import pandas as pd
-from typing import Optional, Dict, Any, Tuple, List
 from functools import wraps
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+import requests
+
 from config.settings import get_settings
 from src.utils.logging import get_logger
 
@@ -46,6 +48,7 @@ class RateLimiter:
                 time.sleep(self.min_interval - elapsed)
             self.last_call = time.time()
             return func(*args, **kwargs)
+
         return wrapper
 
 
@@ -62,7 +65,7 @@ def fetch_census_data(
     geography: str,
     state: str = "24",
     year: Optional[int] = None,
-    **kwargs
+    **kwargs,
 ) -> pd.DataFrame:
     """
     Fetch data from Census API with rate limiting.
@@ -86,7 +89,7 @@ def fetch_census_data(
         "get": ",".join(["NAME"] + variables),
         "for": geography,
         "in": f"state:{state}",
-        "key": settings.CENSUS_API_KEY
+        "key": settings.CENSUS_API_KEY,
     }
     params.update(kwargs)
 
@@ -115,11 +118,7 @@ def fetch_census_data(
 
 
 @bls_limiter
-def fetch_bls_qcew(
-    year: int,
-    quarter: int,
-    area_codes: Optional[list[str]] = None
-) -> pd.DataFrame:
+def fetch_bls_qcew(year: int, quarter: int, area_codes: Optional[list[str]] = None) -> pd.DataFrame:
     """
     Fetch BLS QCEW data for Maryland counties.
 
@@ -135,6 +134,7 @@ def fetch_bls_qcew(
     if area_codes is None:
         # All Maryland counties
         from config.settings import MD_COUNTY_FIPS
+
         area_codes = [f"{fips[2:]}" for fips in MD_COUNTY_FIPS.keys() if fips != "24510"]
 
     all_data = []
@@ -148,7 +148,9 @@ def fetch_bls_qcew(
             # Use requests with explicit timeout instead of pd.read_csv(url) which can hang
             response = requests.get(url, timeout=60)
             if response.status_code == 404 and year > 2000:
-                fallback_url = f"https://data.bls.gov/cew/data/api/{year - 1}/{quarter}/area/24{area_code}.csv"
+                fallback_url = (
+                    f"https://data.bls.gov/cew/data/api/{year - 1}/{quarter}/area/24{area_code}.csv"
+                )
                 logger.warning(f"QCEW {year} Q{quarter} not found; trying {year - 1} Q{quarter}")
                 response = requests.get(fallback_url, timeout=60)
             response.raise_for_status()
@@ -166,8 +168,7 @@ def fetch_bls_qcew(
     if all_data:
         combined = pd.concat(all_data, ignore_index=True)
         combined = attach_source_metadata(
-            combined,
-            f"https://data.bls.gov/cew/data/api/{year}/{quarter}/area/24XXX.csv"
+            combined, f"https://data.bls.gov/cew/data/api/{year}/{quarter}/area/24XXX.csv"
         )
         logger.info(f"Fetched {len(combined)} QCEW records")
         return combined
@@ -178,9 +179,7 @@ def fetch_bls_qcew(
 
 @usaspending_limiter
 def fetch_usaspending_county(
-    start_date: str,
-    end_date: str,
-    state_code: str = "MD"
+    start_date: str, end_date: str, state_code: str = "MD"
 ) -> pd.DataFrame:
     """
     Fetch USASpending.gov data for Maryland counties.
@@ -200,8 +199,8 @@ def fetch_usaspending_county(
         "geo_layer": "county",
         "filters": {
             "time_period": [{"start_date": start_date, "end_date": end_date}],
-            "place_of_performance_locations": [{"country": "USA", "state": state_code}]
-        }
+            "place_of_performance_locations": [{"country": "USA", "state": state_code}],
+        },
     }
 
     logger.info(f"Fetching USASpending data: {start_date} to {end_date}")
@@ -226,7 +225,9 @@ def fetch_usaspending_county(
         raise
 
 
-def fetch_lodes_wac(state: str = "md", year: Optional[int] = None, job_type: str = "JT00") -> pd.DataFrame:
+def fetch_lodes_wac(
+    state: str = "md", year: Optional[int] = None, job_type: str = "JT00"
+) -> pd.DataFrame:
     """
     Fetch LEHD/LODES Workplace Area Characteristics data.
 
@@ -246,7 +247,7 @@ def fetch_lodes_wac(state: str = "md", year: Optional[int] = None, job_type: str
     logger.info(f"Fetching LODES WAC data: {state.upper()} {year}")
 
     try:
-        df = pd.read_csv(url, compression='gzip', dtype={'w_geocode': str})
+        df = pd.read_csv(url, compression="gzip", dtype={"w_geocode": str})
         df = attach_source_metadata(df, url)
         logger.info(f"Fetched {len(df)} LODES records")
         return df
@@ -263,7 +264,7 @@ class FEMAAPIError(RuntimeError):
 def fetch_fema_nfhl(
     state_fips: str = "MD",
     geometry: Optional[Tuple[float, float, float, float]] = None,
-    max_attempts: int = 10
+    max_attempts: int = 10,
 ):
     """
     Fetch FEMA National Flood Hazard Layer (NFHL) flood hazard polygons.
@@ -298,14 +299,16 @@ def fetch_fema_nfhl(
         "outSR": 4326,
         "f": "geojson",
         "resultRecordCount": 500,
-        "where": "1=1"
+        "where": "1=1",
     }
 
     def _request_with_retries(params: Dict[str, Any]) -> Dict[str, Any]:
         last_error: Optional[Exception] = None
         for attempt in range(1, max_attempts + 1):
             try:
-                local_logger.info(f"FEMA NFHL request attempt {attempt} offset={params.get('resultOffset')}")
+                local_logger.info(
+                    f"FEMA NFHL request attempt {attempt} offset={params.get('resultOffset')}"
+                )
                 response = session.get(base_url, params=params, timeout=60)
                 local_logger.info(f"FEMA NFHL response status: {response.status_code}")
                 response.raise_for_status()
@@ -313,21 +316,27 @@ def fetch_fema_nfhl(
                 if "error" in data:
                     raise RuntimeError(data["error"])
                 return data
-            except (requests.exceptions.HTTPError,
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.ReadTimeout) as e:
+            except (
+                requests.exceptions.HTTPError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ReadTimeout,
+            ) as e:
                 last_error = e
                 code = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
                 if code not in (500, 429, None) and attempt >= 2:
                     break
-                sleep_for = min(120, (4 ** attempt)) + random.uniform(0, 10)
-                local_logger.warning(f"FEMA NFHL error on attempt {attempt}: {e}. Retrying in {sleep_for:.1f}s")
+                sleep_for = min(120, (4**attempt)) + random.uniform(0, 10)
+                local_logger.warning(
+                    f"FEMA NFHL error on attempt {attempt}: {e}. Retrying in {sleep_for:.1f}s"
+                )
                 time.sleep(sleep_for)
             except Exception as e:
                 last_error = e
-                sleep_for = min(120, (4 ** attempt)) + random.uniform(0, 10)
-                local_logger.warning(f"FEMA NFHL parse error on attempt {attempt}: {e}. Retrying in {sleep_for:.1f}s")
+                sleep_for = min(120, (4**attempt)) + random.uniform(0, 10)
+                local_logger.warning(
+                    f"FEMA NFHL parse error on attempt {attempt}: {e}. Retrying in {sleep_for:.1f}s"
+                )
                 time.sleep(sleep_for)
 
         raise FEMAAPIError(f"FEMA NFHL API failed after retries: {last_error}")
@@ -335,12 +344,14 @@ def fetch_fema_nfhl(
     def _fetch_bbox_features(bbox: Tuple[float, float, float, float]) -> List[Dict[str, Any]]:
         minx, miny, maxx, maxy = bbox
         params = dict(base_params)
-        params.update({
-            "geometry": f"{minx},{miny},{maxx},{maxy}",
-            "geometryType": "esriGeometryEnvelope",
-            "spatialRel": "esriSpatialRelIntersects",
-            "inSR": 4326
-        })
+        params.update(
+            {
+                "geometry": f"{minx},{miny},{maxx},{maxy}",
+                "geometryType": "esriGeometryEnvelope",
+                "spatialRel": "esriSpatialRelIntersects",
+                "inSR": 4326,
+            }
+        )
 
         all_features: List[Dict[str, Any]] = []
         offset = 0
@@ -357,7 +368,9 @@ def fetch_fema_nfhl(
             offset += base_params["resultRecordCount"]
         return all_features
 
-    def _split_bbox(bbox: Tuple[float, float, float, float], grid_size: float = 0.5) -> List[Tuple[float, float, float, float]]:
+    def _split_bbox(
+        bbox: Tuple[float, float, float, float], grid_size: float = 0.5
+    ) -> List[Tuple[float, float, float, float]]:
         minx, miny, maxx, maxy = bbox
         tiles = []
         x = minx
@@ -379,14 +392,16 @@ def fetch_fema_nfhl(
         cy = (miny + maxy) / 2
         test_bbox = (cx - 0.01, cy - 0.01, cx + 0.01, cy + 0.01)
         params = dict(base_params)
-        params.update({
-            "geometry": f"{test_bbox[0]},{test_bbox[1]},{test_bbox[2]},{test_bbox[3]}",
-            "geometryType": "esriGeometryEnvelope",
-            "spatialRel": "esriSpatialRelIntersects",
-            "inSR": 4326,
-            "resultRecordCount": 1,
-            "resultOffset": 0
-        })
+        params.update(
+            {
+                "geometry": f"{test_bbox[0]},{test_bbox[1]},{test_bbox[2]},{test_bbox[3]}",
+                "geometryType": "esriGeometryEnvelope",
+                "spatialRel": "esriSpatialRelIntersects",
+                "inSR": 4326,
+                "resultRecordCount": 1,
+                "resultOffset": 0,
+            }
+        )
         _request_with_retries(params)
 
     def _fetch_wfs(bbox: Tuple[float, float, float, float]) -> List[Dict[str, Any]]:
@@ -399,7 +414,7 @@ def fetch_fema_nfhl(
             "TYPENAME": "public_NFHL:S_Fld_Haz_Ar",
             "OUTPUTFORMAT": "application/json",
             "BBOX": f"{minx},{miny},{maxx},{maxy},urn:ogc:def:crs:EPSG::4326",
-            "MAXFEATURES": 1000
+            "MAXFEATURES": 1000,
         }
         try:
             resp = session.get(wfs_url, params=params, timeout=60)
@@ -462,7 +477,7 @@ def fetch_irs_migration(year_range: str = "2122") -> pd.DataFrame:
     logger.info(f"Fetching IRS migration data: {year_range}")
 
     try:
-        df = pd.read_csv(url, dtype={'y1_countyfips': str, 'y2_countyfips': str})
+        df = pd.read_csv(url, dtype={"y1_countyfips": str, "y2_countyfips": str})
         df = attach_source_metadata(df, url)
         logger.info(f"Fetched {len(df)} IRS migration records")
         return df
@@ -480,7 +495,7 @@ def _read_csv_from_bytes(content: bytes, dtype: Optional[Dict[str, Any]] = None)
     if zipfile.is_zipfile(buffer):
         buffer.seek(0)
         with zipfile.ZipFile(buffer) as zf:
-            csv_candidates = [f for f in zf.namelist() if f.lower().endswith('.csv')]
+            csv_candidates = [f for f in zf.namelist() if f.lower().endswith(".csv")]
             if not csv_candidates:
                 raise ValueError("EJScreen zip did not contain a CSV file")
             with zf.open(csv_candidates[0]) as f:
@@ -562,9 +577,7 @@ def _discover_ejscreen_urls(base_url: str, year: int) -> list[str]:
 
 
 def fetch_epa_ejscreen(
-    year: int = 2023,
-    lookback_years: int = 3,
-    prefer_zenodo: bool = False
+    year: int = 2023, lookback_years: int = 3, prefer_zenodo: bool = False
 ) -> pd.DataFrame:
     """
     Fetch EPA EJScreen data.
@@ -578,19 +591,25 @@ def fetch_epa_ejscreen(
     """
     logger.info(f"Fetching EPA EJScreen data for {year}")
 
-    years_to_try = [year - offset for offset in range(max(1, lookback_years) + 1) if year - offset > 0]
+    years_to_try = [
+        year - offset for offset in range(max(1, lookback_years) + 1) if year - offset > 0
+    ]
     last_error = None
 
     if prefer_zenodo and settings.EPA_EJSCREEN_ZENODO_URL:
         try:
             response = requests.get(settings.EPA_EJSCREEN_ZENODO_URL, timeout=180)
             if response.status_code == 200:
-                df = _read_csv_from_bytes(response.content, dtype={'ID': str})
-                if 'ID' in df.columns:
-                    df_md = df[df['ID'].astype(str).str.startswith('24')].copy().reset_index(drop=True)
-                    df_md['ejscreen_year'] = year
+                df = _read_csv_from_bytes(response.content, dtype={"ID": str})
+                if "ID" in df.columns:
+                    df_md = (
+                        df[df["ID"].astype(str).str.startswith("24")].copy().reset_index(drop=True)
+                    )
+                    df_md["ejscreen_year"] = year
                     df_md = attach_source_metadata(df_md, settings.EPA_EJSCREEN_ZENODO_URL)
-                    logger.info(f"Fetched {len(df_md)} Maryland EJScreen records from Zenodo archive")
+                    logger.info(
+                        f"Fetched {len(df_md)} Maryland EJScreen records from Zenodo archive"
+                    )
                     return df_md
         except Exception as e:
             logger.warning(f"Zenodo EJScreen fetch failed: {e}")
@@ -605,13 +624,15 @@ def fetch_epa_ejscreen(
                     response = requests.get(url, timeout=120)
                     if response.status_code != 200:
                         continue
-                    df = _read_csv_from_bytes(response.content, dtype={'ID': str})
+                    df = _read_csv_from_bytes(response.content, dtype={"ID": str})
 
-                    if 'ID' not in df.columns:
+                    if "ID" not in df.columns:
                         continue
 
-                    df_md = df[df['ID'].astype(str).str.startswith('24')].copy().reset_index(drop=True)
-                    df_md['ejscreen_year'] = target_year
+                    df_md = (
+                        df[df["ID"].astype(str).str.startswith("24")].copy().reset_index(drop=True)
+                    )
+                    df_md["ejscreen_year"] = target_year
                     df_md = attach_source_metadata(df_md, url)
 
                     logger.info(f"Fetched {len(df_md)} Maryland EJScreen records for {target_year}")
@@ -642,9 +663,9 @@ def download_file(url: str, save_path: str, timeout: int = 300) -> bool:
         response = requests.get(url, stream=True, timeout=timeout)
         response.raise_for_status()
 
-        total_size = int(response.headers.get('content-length', 0))
+        total_size = int(response.headers.get("content-length", 0))
 
-        with open(save_path, 'wb') as f:
+        with open(save_path, "wb") as f:
             if total_size == 0:
                 f.write(response.content)
             else:

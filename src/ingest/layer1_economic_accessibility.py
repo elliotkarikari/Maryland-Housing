@@ -24,31 +24,31 @@ Date: 2026-01-29
 Version: 2.0
 """
 
+import hashlib
 import os
 import sys
-import hashlib
-from pathlib import Path
-from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
 import warnings
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-import pandas as pd
 import geopandas as gpd
 import numpy as np
-from sqlalchemy import text
+import pandas as pd
 import requests
+from sqlalchemy import text
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from config.settings import MD_COUNTY_FIPS, get_settings
+from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
-from src.utils.data_sources import download_file
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -74,9 +74,9 @@ QWI_CACHE_DIR.mkdir(exist_ok=True)
 # SE02: $1,251/month to $3,333/month (~$15k-$40k/year)
 # SE03: More than $3,333/month (>$40k/year) - "high wage"
 WAGE_SEGMENTS = {
-    'SE01': 'low_wage',      # <$15k/year
-    'SE02': 'mid_wage',      # $15k-$40k/year
-    'SE03': 'high_wage'      # >$40k/year
+    "SE01": "low_wage",  # <$15k/year
+    "SE02": "mid_wage",  # $15k-$40k/year
+    "SE03": "high_wage",  # >$40k/year
 }
 
 # County-level composite weights
@@ -88,34 +88,35 @@ QWI_BLEND_WEIGHT = 0.15
 
 # Sectors for diversity analysis (NAICS 2-digit via CNS codes)
 NAICS_SECTORS = {
-    'CNS01': 'Agriculture',
-    'CNS02': 'Mining',
-    'CNS03': 'Utilities',
-    'CNS04': 'Construction',
-    'CNS05': 'Manufacturing',
-    'CNS06': 'Wholesale',
-    'CNS07': 'Retail',
-    'CNS08': 'Transportation',
-    'CNS09': 'Information',
-    'CNS10': 'Finance',
-    'CNS11': 'Real Estate',
-    'CNS12': 'Professional/Tech',
-    'CNS13': 'Management',
-    'CNS14': 'Admin Support',
-    'CNS15': 'Education',
-    'CNS16': 'Healthcare',
-    'CNS17': 'Arts/Entertainment',
-    'CNS18': 'Accommodation/Food',
-    'CNS19': 'Other Services',
-    'CNS20': 'Public Admin'
+    "CNS01": "Agriculture",
+    "CNS02": "Mining",
+    "CNS03": "Utilities",
+    "CNS04": "Construction",
+    "CNS05": "Manufacturing",
+    "CNS06": "Wholesale",
+    "CNS07": "Retail",
+    "CNS08": "Transportation",
+    "CNS09": "Information",
+    "CNS10": "Finance",
+    "CNS11": "Real Estate",
+    "CNS12": "Professional/Tech",
+    "CNS13": "Management",
+    "CNS14": "Admin Support",
+    "CNS15": "Education",
+    "CNS16": "Healthcare",
+    "CNS17": "Arts/Entertainment",
+    "CNS18": "Accommodation/Food",
+    "CNS19": "Other Services",
+    "CNS20": "Public Admin",
 }
 
 # High-wage intensive sectors (typically pay above median)
-HIGH_WAGE_SECTORS = ['CNS09', 'CNS10', 'CNS11', 'CNS12', 'CNS13', 'CNS20']
+HIGH_WAGE_SECTORS = ["CNS09", "CNS10", "CNS11", "CNS12", "CNS13", "CNS20"]
 
 # =============================================================================
 # DATA ACQUISITION
 # =============================================================================
+
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -134,7 +135,9 @@ def _find_col(columns: List[str], candidates: List[str]) -> Optional[str]:
     return None
 
 
-def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str) -> Optional[Path]:
+def _resolve_data_path(
+    local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str
+) -> Optional[Path]:
     if local_path:
         path = Path(local_path)
         if path.exists():
@@ -167,10 +170,10 @@ def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
     get_variants = ["Emp,HirA,Sep", "Emp,HirA,SepA"]
     base_params = {
         # Explicit defaults to avoid overly large queries and missing required predicates.
-        "sex": "0",        # both sexes
-        "agegrp": "A00",   # all ages
+        "sex": "0",  # both sexes
+        "agegrp": "A00",  # all ages
         "ownercode": "A00",  # all ownership
-        "seasonadj": "U"   # unadjusted
+        "seasonadj": "U",  # unadjusted
     }
 
     for year in target_years:
@@ -183,7 +186,7 @@ def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
                     "year": str(year),
                     "quarter": str(quarter),
                     "key": settings.CENSUS_API_KEY,
-                    **base_params
+                    **base_params,
                 }
                 try:
                     resp = requests.get(base_url, params=params, timeout=30)
@@ -200,8 +203,8 @@ def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
                                     "status_code": resp.status_code,
                                     "year": year,
                                     "quarter": quarter,
-                                    "url": resp.url
-                                }
+                                    "url": resp.url,
+                                },
                             )
                         continue
                     data = resp.json()
@@ -209,18 +212,17 @@ def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
                         continue
                     df = pd.DataFrame(data[1:], columns=data[0])
                     df = _normalize_columns(df)
-                    df['fips_code'] = (
-                        df['state'].astype(str).str.zfill(2) +
-                        df['county'].astype(str).str.zfill(3)
-                    )
-                    df['emp'] = pd.to_numeric(df.get('emp'), errors='coerce')
-                    df['hira'] = pd.to_numeric(df.get('hira'), errors='coerce')
-                    sep_col = df.get('sep')
+                    df["fips_code"] = df["state"].astype(str).str.zfill(2) + df["county"].astype(
+                        str
+                    ).str.zfill(3)
+                    df["emp"] = pd.to_numeric(df.get("emp"), errors="coerce")
+                    df["hira"] = pd.to_numeric(df.get("hira"), errors="coerce")
+                    sep_col = df.get("sep")
                     if sep_col is None:
-                        sep_col = df.get('sepa')
-                    df['sep'] = pd.to_numeric(sep_col, errors='coerce')
-                    df['qwi_year'] = year
-                    df['qwi_quarter'] = quarter
+                        sep_col = df.get("sepa")
+                    df["sep"] = pd.to_numeric(sep_col, errors="coerce")
+                    df["qwi_year"] = year
+                    df["qwi_quarter"] = quarter
 
                     cache_path = QWI_CACHE_DIR / f"qwi_{year}_q{quarter}.csv"
                     try:
@@ -255,7 +257,7 @@ def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
             settings.CENSUS_QWI_DATA_PATH,
             settings.CENSUS_QWI_DATA_URL,
             QWI_CACHE_DIR,
-            f"qwi_{data_year}.csv"
+            f"qwi_{data_year}.csv",
         )
 
         if source_path is None:
@@ -274,7 +276,7 @@ def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
     year_col = _find_col(columns, ["year", "yr", "time"])
     qwi_year = data_year
     if year_col:
-        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        df[year_col] = pd.to_numeric(df[year_col], errors="coerce")
         if df[year_col].notna().any():
             if (df[year_col] == data_year).any():
                 qwi_year = data_year
@@ -285,20 +287,19 @@ def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
 
     fips_col = _find_col(columns, ["fips_code", "fips", "county_fips", "geoid", "geo_id"])
     if fips_col:
-        df['fips_code'] = df[fips_col].astype(str).str.zfill(5)
+        df["fips_code"] = df[fips_col].astype(str).str.zfill(5)
     else:
         state_col = _find_col(columns, ["state", "state_fips", "st"])
         county_col = _find_col(columns, ["county", "county_fips", "cnty"])
         if state_col and county_col:
-            df['fips_code'] = (
-                df[state_col].astype(str).str.zfill(2) +
-                df[county_col].astype(str).str.zfill(3)
-            )
+            df["fips_code"] = df[state_col].astype(str).str.zfill(2) + df[county_col].astype(
+                str
+            ).str.zfill(3)
         else:
             logger.warning("QWI data missing FIPS columns; skipping QWI enrichment")
             return pd.DataFrame()
 
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
     if df.empty:
         logger.warning("QWI data contains no Maryland counties after filtering")
         return pd.DataFrame()
@@ -311,51 +312,51 @@ def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
     turnover_col = _find_col(columns, ["turnover", "turnovr", "turnover_rate", "turno"])
 
     if emp_col:
-        df[emp_col] = pd.to_numeric(df[emp_col], errors='coerce')
+        df[emp_col] = pd.to_numeric(df[emp_col], errors="coerce")
     if hires_col:
-        df[hires_col] = pd.to_numeric(df[hires_col], errors='coerce')
+        df[hires_col] = pd.to_numeric(df[hires_col], errors="coerce")
     if seps_col:
-        df[seps_col] = pd.to_numeric(df[seps_col], errors='coerce')
+        df[seps_col] = pd.to_numeric(df[seps_col], errors="coerce")
     if hire_rate_col:
-        df[hire_rate_col] = pd.to_numeric(df[hire_rate_col], errors='coerce')
+        df[hire_rate_col] = pd.to_numeric(df[hire_rate_col], errors="coerce")
     if sep_rate_col:
-        df[sep_rate_col] = pd.to_numeric(df[sep_rate_col], errors='coerce')
+        df[sep_rate_col] = pd.to_numeric(df[sep_rate_col], errors="coerce")
     if turnover_col:
-        df[turnover_col] = pd.to_numeric(df[turnover_col], errors='coerce')
+        df[turnover_col] = pd.to_numeric(df[turnover_col], errors="coerce")
 
     # Derive rates if needed
-    df['qwi_emp_total'] = df[emp_col] if emp_col else pd.NA
-    df['qwi_hires'] = df[hires_col] if hires_col else pd.NA
-    df['qwi_separations'] = df[seps_col] if seps_col else pd.NA
+    df["qwi_emp_total"] = df[emp_col] if emp_col else pd.NA
+    df["qwi_hires"] = df[hires_col] if hires_col else pd.NA
+    df["qwi_separations"] = df[seps_col] if seps_col else pd.NA
 
     if hire_rate_col:
-        df['qwi_hire_rate'] = df[hire_rate_col]
+        df["qwi_hire_rate"] = df[hire_rate_col]
     elif emp_col and hires_col:
-        df['qwi_hire_rate'] = df['qwi_hires'] / df['qwi_emp_total']
+        df["qwi_hire_rate"] = df["qwi_hires"] / df["qwi_emp_total"]
     else:
-        df['qwi_hire_rate'] = pd.NA
+        df["qwi_hire_rate"] = pd.NA
 
     if sep_rate_col:
-        df['qwi_separation_rate'] = df[sep_rate_col]
+        df["qwi_separation_rate"] = df[sep_rate_col]
     elif emp_col and seps_col:
-        df['qwi_separation_rate'] = df['qwi_separations'] / df['qwi_emp_total']
+        df["qwi_separation_rate"] = df["qwi_separations"] / df["qwi_emp_total"]
     else:
-        df['qwi_separation_rate'] = pd.NA
+        df["qwi_separation_rate"] = pd.NA
 
     if turnover_col:
-        df['qwi_turnover_rate'] = df[turnover_col]
-    elif df['qwi_hire_rate'].notna().any() and df['qwi_separation_rate'].notna().any():
-        df['qwi_turnover_rate'] = df['qwi_hire_rate'] + df['qwi_separation_rate']
+        df["qwi_turnover_rate"] = df[turnover_col]
+    elif df["qwi_hire_rate"].notna().any() and df["qwi_separation_rate"].notna().any():
+        df["qwi_turnover_rate"] = df["qwi_hire_rate"] + df["qwi_separation_rate"]
     else:
-        df['qwi_turnover_rate'] = pd.NA
+        df["qwi_turnover_rate"] = pd.NA
 
-    df['qwi_net_job_growth_rate'] = pd.NA
-    if df['qwi_hire_rate'].notna().any() and df['qwi_separation_rate'].notna().any():
-        df['qwi_net_job_growth_rate'] = df['qwi_hire_rate'] - df['qwi_separation_rate']
+    df["qwi_net_job_growth_rate"] = pd.NA
+    if df["qwi_hire_rate"].notna().any() and df["qwi_separation_rate"].notna().any():
+        df["qwi_net_job_growth_rate"] = df["qwi_hire_rate"] - df["qwi_separation_rate"]
     elif emp_col and hires_col and seps_col:
-        df['qwi_net_job_growth_rate'] = (
-            (df['qwi_hires'] - df['qwi_separations']) / df['qwi_emp_total']
-        )
+        df["qwi_net_job_growth_rate"] = (df["qwi_hires"] - df["qwi_separations"]) / df[
+            "qwi_emp_total"
+        ]
 
     def _weighted_mean(values: pd.Series, weights: pd.Series) -> float:
         mask = values.notna() & weights.notna() & (weights > 0)
@@ -364,19 +365,19 @@ def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
         return float((values[mask] * weights[mask]).sum() / weights[mask].sum())
 
     grouped = []
-    for fips_code, sub in df.groupby('fips_code'):
-        emp_total = sub['qwi_emp_total'].sum(min_count=1)
-        hires_total = sub['qwi_hires'].sum(min_count=1)
-        seps_total = sub['qwi_separations'].sum(min_count=1)
+    for fips_code, sub in df.groupby("fips_code"):
+        emp_total = sub["qwi_emp_total"].sum(min_count=1)
+        hires_total = sub["qwi_hires"].sum(min_count=1)
+        seps_total = sub["qwi_separations"].sum(min_count=1)
 
         if emp_col and emp_total and emp_total > 0:
-            hire_rate = _weighted_mean(sub['qwi_hire_rate'], sub['qwi_emp_total'])
-            sep_rate = _weighted_mean(sub['qwi_separation_rate'], sub['qwi_emp_total'])
-            turnover_rate = _weighted_mean(sub['qwi_turnover_rate'], sub['qwi_emp_total'])
+            hire_rate = _weighted_mean(sub["qwi_hire_rate"], sub["qwi_emp_total"])
+            sep_rate = _weighted_mean(sub["qwi_separation_rate"], sub["qwi_emp_total"])
+            turnover_rate = _weighted_mean(sub["qwi_turnover_rate"], sub["qwi_emp_total"])
         else:
-            hire_rate = sub['qwi_hire_rate'].mean()
-            sep_rate = sub['qwi_separation_rate'].mean()
-            turnover_rate = sub['qwi_turnover_rate'].mean()
+            hire_rate = sub["qwi_hire_rate"].mean()
+            sep_rate = sub["qwi_separation_rate"].mean()
+            turnover_rate = sub["qwi_turnover_rate"].mean()
 
         net_growth = np.nan
         if pd.notna(hire_rate) and pd.notna(sep_rate):
@@ -384,21 +385,24 @@ def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
         elif pd.notna(emp_total) and emp_total and pd.notna(hires_total) and pd.notna(seps_total):
             net_growth = (hires_total - seps_total) / emp_total
 
-        grouped.append({
-            'fips_code': fips_code,
-            'qwi_emp_total': int(emp_total) if pd.notna(emp_total) else None,
-            'qwi_hires': int(hires_total) if pd.notna(hires_total) else None,
-            'qwi_separations': int(seps_total) if pd.notna(seps_total) else None,
-            'qwi_hire_rate': hire_rate,
-            'qwi_separation_rate': sep_rate,
-            'qwi_turnover_rate': turnover_rate,
-            'qwi_net_job_growth_rate': net_growth,
-            'qwi_year': qwi_year
-        })
+        grouped.append(
+            {
+                "fips_code": fips_code,
+                "qwi_emp_total": int(emp_total) if pd.notna(emp_total) else None,
+                "qwi_hires": int(hires_total) if pd.notna(hires_total) else None,
+                "qwi_separations": int(seps_total) if pd.notna(seps_total) else None,
+                "qwi_hire_rate": hire_rate,
+                "qwi_separation_rate": sep_rate,
+                "qwi_turnover_rate": turnover_rate,
+                "qwi_net_job_growth_rate": net_growth,
+                "qwi_year": qwi_year,
+            }
+        )
 
     qwi_df = pd.DataFrame(grouped)
     logger.info(f"Loaded QWI records for {len(qwi_df)} counties (year={qwi_year})")
     return qwi_df
+
 
 def download_lodes_wac_segments(year: int) -> pd.DataFrame:
     """
@@ -420,74 +424,97 @@ def download_lodes_wac_segments(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached LODES WAC: {cache_path}")
-        df = pd.read_csv(cache_path, dtype={'w_geocode': str, 'tract_geoid': str, 'fips_code': str})
+        df = pd.read_csv(cache_path, dtype={"w_geocode": str, "tract_geoid": str, "fips_code": str})
         # Ensure proper string formatting
-        if 'tract_geoid' in df.columns:
-            df['tract_geoid'] = df['tract_geoid'].astype(str)
-            df['fips_code'] = df['fips_code'].astype(str)
-        df['source_url'] = "https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/"
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
-        df['is_real'] = True
+        if "tract_geoid" in df.columns:
+            df["tract_geoid"] = df["tract_geoid"].astype(str)
+            df["fips_code"] = df["fips_code"].astype(str)
+        df["source_url"] = "https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/"
+        df["fetch_date"] = datetime.utcnow().date().isoformat()
+        df["is_real"] = True
         return df
 
     logger.info(f"Downloading LODES WAC with wage segments for {year}...")
 
     try:
         # Download S000 (total jobs and sectors)
-        url_s000 = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_S000_JT00_{year}.csv.gz"
+        url_s000 = (
+            f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_S000_JT00_{year}.csv.gz"
+        )
         logger.info(f"  Downloading S000 (all jobs)...")
-        df = pd.read_csv(url_s000, compression='gzip', dtype={'w_geocode': str})
+        df = pd.read_csv(url_s000, compression="gzip", dtype={"w_geocode": str})
 
         # Keep relevant columns from S000
-        columns_to_keep = ['w_geocode', 'C000',
-                          'CNS01', 'CNS02', 'CNS03', 'CNS04', 'CNS05',
-                          'CNS06', 'CNS07', 'CNS08', 'CNS09', 'CNS10',
-                          'CNS11', 'CNS12', 'CNS13', 'CNS14', 'CNS15',
-                          'CNS16', 'CNS17', 'CNS18', 'CNS19', 'CNS20']
+        columns_to_keep = [
+            "w_geocode",
+            "C000",
+            "CNS01",
+            "CNS02",
+            "CNS03",
+            "CNS04",
+            "CNS05",
+            "CNS06",
+            "CNS07",
+            "CNS08",
+            "CNS09",
+            "CNS10",
+            "CNS11",
+            "CNS12",
+            "CNS13",
+            "CNS14",
+            "CNS15",
+            "CNS16",
+            "CNS17",
+            "CNS18",
+            "CNS19",
+            "CNS20",
+        ]
         available_cols = [c for c in columns_to_keep if c in df.columns]
         df = df[available_cols].copy()
 
         # Download and merge wage segments
-        for seg_code, seg_name in [('SE01', 'low'), ('SE02', 'mid'), ('SE03', 'high')]:
+        for seg_code, seg_name in [("SE01", "low"), ("SE02", "mid"), ("SE03", "high")]:
             url_seg = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_{seg_code}_JT00_{year}.csv.gz"
             logger.info(f"  Downloading {seg_code} ({seg_name} wage)...")
-            df_seg = pd.read_csv(url_seg, compression='gzip', dtype={'w_geocode': str})
+            df_seg = pd.read_csv(url_seg, compression="gzip", dtype={"w_geocode": str})
 
             # Keep only w_geocode and C000 (job count for this segment)
-            df_seg = df_seg[['w_geocode', 'C000']].copy()
-            df_seg = df_seg.rename(columns={'C000': seg_code})
+            df_seg = df_seg[["w_geocode", "C000"]].copy()
+            df_seg = df_seg.rename(columns={"C000": seg_code})
 
             # Merge with main dataframe
-            df = df.merge(df_seg, on='w_geocode', how='left')
+            df = df.merge(df_seg, on="w_geocode", how="left")
 
         # Fill NaN values with 0
-        df['SE01'] = df['SE01'].fillna(0).astype(int)
-        df['SE02'] = df['SE02'].fillna(0).astype(int)
-        df['SE03'] = df['SE03'].fillna(0).astype(int)
+        df["SE01"] = df["SE01"].fillna(0).astype(int)
+        df["SE02"] = df["SE02"].fillna(0).astype(int)
+        df["SE03"] = df["SE03"].fillna(0).astype(int)
 
         # Extract tract GEOID and ensure string formatting
-        df['w_geocode'] = df['w_geocode'].astype(str).str.zfill(15)  # Block codes are 15 digits
-        df['tract_geoid'] = df['w_geocode'].str[:11]
-        df['fips_code'] = df['w_geocode'].str[:5]
+        df["w_geocode"] = df["w_geocode"].astype(str).str.zfill(15)  # Block codes are 15 digits
+        df["tract_geoid"] = df["w_geocode"].str[:11]
+        df["fips_code"] = df["w_geocode"].str[:5]
 
         # Filter to Maryland (state FIPS 24)
-        df = df[df['fips_code'].str.startswith('24')]
+        df = df[df["fips_code"].str.startswith("24")]
 
-        df['source_url'] = (
+        df["source_url"] = (
             f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/"
             f"md_wac_S000_JT00_{year}.csv.gz; "
             f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE01_JT00_{year}.csv.gz; "
             f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE02_JT00_{year}.csv.gz; "
             f"https://lehd.ces.census.gov/data/lodes/LODES8/md/wac/md_wac_SE03_JT00_{year}.csv.gz"
         )
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
-        df['is_real'] = True
+        df["fetch_date"] = datetime.utcnow().date().isoformat()
+        df["is_real"] = True
 
         # Cache
         df.to_csv(cache_path, index=False)
 
         logger.info(f"✓ Downloaded LODES WAC: {len(df)} blocks, {df['C000'].sum():,} total jobs")
-        logger.info(f"   Low wage: {df['SE01'].sum():,}, Mid wage: {df['SE02'].sum():,}, High wage: {df['SE03'].sum():,}")
+        logger.info(
+            f"   Low wage: {df['SE01'].sum():,}, Mid wage: {df['SE02'].sum():,}, High wage: {df['SE03'].sum():,}"
+        )
         return df
 
     except Exception as e:
@@ -511,10 +538,12 @@ def download_lodes_rac(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached LODES RAC: {cache_path}")
-        df = pd.read_csv(cache_path, dtype={'h_geocode': str})
-        df['source_url'] = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
-        df['is_real'] = True
+        df = pd.read_csv(cache_path, dtype={"h_geocode": str})
+        df["source_url"] = (
+            f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
+        )
+        df["fetch_date"] = datetime.utcnow().date().isoformat()
+        df["is_real"] = True
         return df
 
     url = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
@@ -522,23 +551,25 @@ def download_lodes_rac(year: int) -> pd.DataFrame:
     logger.info(f"Downloading LODES RAC for {year}...")
 
     try:
-        df = pd.read_csv(url, compression='gzip', dtype={'h_geocode': str})
+        df = pd.read_csv(url, compression="gzip", dtype={"h_geocode": str})
 
         # Keep relevant columns
-        columns_to_keep = ['h_geocode', 'C000', 'SE01', 'SE02', 'SE03']
+        columns_to_keep = ["h_geocode", "C000", "SE01", "SE02", "SE03"]
         available_cols = [c for c in columns_to_keep if c in df.columns]
         df = df[available_cols].copy()
 
         # Extract tract GEOID
-        df['tract_geoid'] = df['h_geocode'].str[:11]
-        df['fips_code'] = df['h_geocode'].str[:5]
+        df["tract_geoid"] = df["h_geocode"].str[:11]
+        df["fips_code"] = df["h_geocode"].str[:5]
 
         # Filter to Maryland
-        df = df[df['fips_code'].str.startswith('24')]
+        df = df[df["fips_code"].str.startswith("24")]
 
-        df['source_url'] = f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
-        df['fetch_date'] = datetime.utcnow().date().isoformat()
-        df['is_real'] = True
+        df["source_url"] = (
+            f"https://lehd.ces.census.gov/data/lodes/LODES8/md/rac/md_rac_S000_JT00_{year}.csv.gz"
+        )
+        df["fetch_date"] = datetime.utcnow().date().isoformat()
+        df["is_real"] = True
 
         # Cache
         df.to_csv(cache_path, index=False)
@@ -562,27 +593,50 @@ def aggregate_lodes_to_tract(wac_df: pd.DataFrame) -> pd.DataFrame:
         Tract-level aggregated DataFrame
     """
     # Ensure tract_geoid and fips_code are strings
-    wac_df['tract_geoid'] = wac_df['tract_geoid'].astype(str)
-    wac_df['fips_code'] = wac_df['fips_code'].astype(str)
+    wac_df["tract_geoid"] = wac_df["tract_geoid"].astype(str)
+    wac_df["fips_code"] = wac_df["fips_code"].astype(str)
 
     # Numeric columns to sum
-    sum_cols = ['C000', 'SE01', 'SE02', 'SE03',
-               'CNS01', 'CNS02', 'CNS03', 'CNS04', 'CNS05',
-               'CNS06', 'CNS07', 'CNS08', 'CNS09', 'CNS10',
-               'CNS11', 'CNS12', 'CNS13', 'CNS14', 'CNS15',
-               'CNS16', 'CNS17', 'CNS18', 'CNS19', 'CNS20']
+    sum_cols = [
+        "C000",
+        "SE01",
+        "SE02",
+        "SE03",
+        "CNS01",
+        "CNS02",
+        "CNS03",
+        "CNS04",
+        "CNS05",
+        "CNS06",
+        "CNS07",
+        "CNS08",
+        "CNS09",
+        "CNS10",
+        "CNS11",
+        "CNS12",
+        "CNS13",
+        "CNS14",
+        "CNS15",
+        "CNS16",
+        "CNS17",
+        "CNS18",
+        "CNS19",
+        "CNS20",
+    ]
 
     available_sum = [c for c in sum_cols if c in wac_df.columns]
 
-    tract_agg = wac_df.groupby(['tract_geoid', 'fips_code'])[available_sum].sum().reset_index()
+    tract_agg = wac_df.groupby(["tract_geoid", "fips_code"])[available_sum].sum().reset_index()
 
     # Rename for clarity
-    tract_agg = tract_agg.rename(columns={
-        'C000': 'total_jobs',
-        'SE01': 'low_wage_jobs',
-        'SE02': 'mid_wage_jobs',
-        'SE03': 'high_wage_jobs'
-    })
+    tract_agg = tract_agg.rename(
+        columns={
+            "C000": "total_jobs",
+            "SE01": "low_wage_jobs",
+            "SE02": "mid_wage_jobs",
+            "SE03": "high_wage_jobs",
+        }
+    )
 
     logger.info(f"Aggregated to {len(tract_agg)} tracts")
     return tract_agg
@@ -602,7 +656,7 @@ def fetch_tract_centroids(year: int = 2020) -> gpd.GeoDataFrame:
 
     if cache_path.exists():
         logger.info("Using cached tract centroids")
-        df = pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        df = pd.read_csv(cache_path, dtype={"tract_geoid": str, "fips_code": str})
         return df
 
     try:
@@ -613,23 +667,27 @@ def fetch_tract_centroids(year: int = 2020) -> gpd.GeoDataFrame:
 
         # Compute centroids
         tracts_proj = tracts.to_crs("EPSG:3857")
-        tracts['centroid_lon'] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").x
-        tracts['centroid_lat'] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").y
-        tracts['area_sq_mi'] = tracts_proj.geometry.area / 2.59e6
+        tracts["centroid_lon"] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").x
+        tracts["centroid_lat"] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").y
+        tracts["area_sq_mi"] = tracts_proj.geometry.area / 2.59e6
 
         # Rename columns and ensure string types
-        tracts['tract_geoid'] = tracts['GEOID'].astype(str).str.zfill(11)  # Ensure 11-digit format
-        tracts['fips_code'] = (tracts['STATEFP'].astype(str) + tracts['COUNTYFP'].astype(str)).str.zfill(5)
+        tracts["tract_geoid"] = tracts["GEOID"].astype(str).str.zfill(11)  # Ensure 11-digit format
+        tracts["fips_code"] = (
+            tracts["STATEFP"].astype(str) + tracts["COUNTYFP"].astype(str)
+        ).str.zfill(5)
 
         # Filter to valid counties
-        tracts = tracts[tracts['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+        tracts = tracts[tracts["fips_code"].isin(MD_COUNTY_FIPS.keys())]
 
         # Keep essential columns
-        result = tracts[['tract_geoid', 'fips_code', 'centroid_lon', 'centroid_lat', 'area_sq_mi']].copy()
+        result = tracts[
+            ["tract_geoid", "fips_code", "centroid_lon", "centroid_lat", "area_sq_mi"]
+        ].copy()
 
         # Ensure string types are preserved
-        result['tract_geoid'] = result['tract_geoid'].astype(str)
-        result['fips_code'] = result['fips_code'].astype(str)
+        result["tract_geoid"] = result["tract_geoid"].astype(str)
+        result["fips_code"] = result["fips_code"].astype(str)
 
         # Cache
         result.to_csv(cache_path, index=False)
@@ -656,7 +714,7 @@ def fetch_acs_demographics(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached ACS demographics: {cache_path}")
-        return pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        return pd.read_csv(cache_path, dtype={"tract_geoid": str, "fips_code": str})
 
     try:
         from census import Census
@@ -665,56 +723,80 @@ def fetch_acs_demographics(year: int) -> pd.DataFrame:
 
         # ACS variables
         variables = (
-            'B01003_001E',  # Total population
-            'B01001_011E', 'B01001_012E', 'B01001_013E', 'B01001_014E',  # Male 25-44
-            'B01001_015E', 'B01001_016E', 'B01001_017E',  # Male 45-64
-            'B01001_035E', 'B01001_036E', 'B01001_037E', 'B01001_038E',  # Female 25-44
-            'B01001_039E', 'B01001_040E', 'B01001_041E',  # Female 45-64
-            'B23025_003E',  # In labor force
-            'B23025_002E',  # Labor force total
+            "B01003_001E",  # Total population
+            "B01001_011E",
+            "B01001_012E",
+            "B01001_013E",
+            "B01001_014E",  # Male 25-44
+            "B01001_015E",
+            "B01001_016E",
+            "B01001_017E",  # Male 45-64
+            "B01001_035E",
+            "B01001_036E",
+            "B01001_037E",
+            "B01001_038E",  # Female 25-44
+            "B01001_039E",
+            "B01001_040E",
+            "B01001_041E",  # Female 45-64
+            "B23025_003E",  # In labor force
+            "B23025_002E",  # Labor force total
         )
 
         data = c.acs5.state_county_tract(
-            variables,
-            state_fips='24',
-            county_fips='*',
-            tract='*',
-            year=year
+            variables, state_fips="24", county_fips="*", tract="*", year=year
         )
 
         df = pd.DataFrame(data)
-        df['tract_geoid'] = df['state'] + df['county'] + df['tract']
-        df['fips_code'] = df['state'] + df['county']
+        df["tract_geoid"] = df["state"] + df["county"] + df["tract"]
+        df["fips_code"] = df["state"] + df["county"]
 
         # Compute working age population (25-64)
-        male_25_64_cols = ['B01001_011E', 'B01001_012E', 'B01001_013E', 'B01001_014E',
-                          'B01001_015E', 'B01001_016E', 'B01001_017E']
-        female_25_64_cols = ['B01001_035E', 'B01001_036E', 'B01001_037E', 'B01001_038E',
-                            'B01001_039E', 'B01001_040E', 'B01001_041E']
+        male_25_64_cols = [
+            "B01001_011E",
+            "B01001_012E",
+            "B01001_013E",
+            "B01001_014E",
+            "B01001_015E",
+            "B01001_016E",
+            "B01001_017E",
+        ]
+        female_25_64_cols = [
+            "B01001_035E",
+            "B01001_036E",
+            "B01001_037E",
+            "B01001_038E",
+            "B01001_039E",
+            "B01001_040E",
+            "B01001_041E",
+        ]
 
         for col in male_25_64_cols + female_25_64_cols:
             if col not in df.columns:
                 df[col] = 0
 
-        df['working_age_pop'] = (
-            df[male_25_64_cols].fillna(0).sum(axis=1) +
-            df[female_25_64_cols].fillna(0).sum(axis=1)
+        df["working_age_pop"] = (
+            df[male_25_64_cols].fillna(0).sum(axis=1) + df[female_25_64_cols].fillna(0).sum(axis=1)
         ).astype(int)
 
         # Labor force participation
-        df['labor_force'] = pd.to_numeric(df.get('B23025_003E', 0), errors='coerce').fillna(0)
-        df['labor_force_total'] = pd.to_numeric(df.get('B23025_002E', 0), errors='coerce').fillna(0)
-        df['labor_force_participation'] = np.where(
-            df['labor_force_total'] > 0,
-            df['labor_force'] / df['labor_force_total'],
-            0
+        df["labor_force"] = pd.to_numeric(df.get("B23025_003E", 0), errors="coerce").fillna(0)
+        df["labor_force_total"] = pd.to_numeric(df.get("B23025_002E", 0), errors="coerce").fillna(0)
+        df["labor_force_participation"] = np.where(
+            df["labor_force_total"] > 0, df["labor_force"] / df["labor_force_total"], 0
         )
 
-        df = df.rename(columns={'B01003_001E': 'population'})
-        df['population'] = pd.to_numeric(df['population'], errors='coerce').fillna(0).astype(int)
+        df = df.rename(columns={"B01003_001E": "population"})
+        df["population"] = pd.to_numeric(df["population"], errors="coerce").fillna(0).astype(int)
 
-        result = df[['tract_geoid', 'fips_code', 'population', 'working_age_pop',
-                    'labor_force_participation']].copy()
+        result = df[
+            [
+                "tract_geoid",
+                "fips_code",
+                "population",
+                "working_age_pop",
+                "labor_force_participation",
+            ]
+        ].copy()
 
         # Cache
         result.to_csv(cache_path, index=False)
@@ -725,17 +807,24 @@ def fetch_acs_demographics(year: int) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Failed to fetch ACS demographics: {e}")
         # Return empty with expected columns
-        return pd.DataFrame(columns=['tract_geoid', 'fips_code', 'population',
-                                     'working_age_pop', 'labor_force_participation'])
+        return pd.DataFrame(
+            columns=[
+                "tract_geoid",
+                "fips_code",
+                "population",
+                "working_age_pop",
+                "labor_force_participation",
+            ]
+        )
 
 
 # =============================================================================
 # ACCESSIBILITY COMPUTATION
 # =============================================================================
 
+
 def compute_economic_accessibility(
-    tract_jobs: pd.DataFrame,
-    tract_centroids: pd.DataFrame
+    tract_jobs: pd.DataFrame, tract_centroids: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Compute economic accessibility metrics using proximity-based model.
@@ -762,13 +851,13 @@ def compute_economic_accessibility(
     logger.info("Computing economic accessibility (proximity-based model)...")
 
     # Ensure both have string types for merge keys
-    tract_centroids['tract_geoid'] = tract_centroids['tract_geoid'].astype(str)
-    tract_centroids['fips_code'] = tract_centroids['fips_code'].astype(str)
-    tract_jobs['tract_geoid'] = tract_jobs['tract_geoid'].astype(str)
-    tract_jobs['fips_code'] = tract_jobs['fips_code'].astype(str)
+    tract_centroids["tract_geoid"] = tract_centroids["tract_geoid"].astype(str)
+    tract_centroids["fips_code"] = tract_centroids["fips_code"].astype(str)
+    tract_jobs["tract_geoid"] = tract_jobs["tract_geoid"].astype(str)
+    tract_jobs["fips_code"] = tract_jobs["fips_code"].astype(str)
 
     # Merge centroids with jobs
-    df = tract_centroids.merge(tract_jobs, on=['tract_geoid', 'fips_code'], how='inner')
+    df = tract_centroids.merge(tract_jobs, on=["tract_geoid", "fips_code"], how="inner")
     logger.info(f"Merged {len(df)} tracts with job and location data")
 
     # Fill missing values
@@ -780,10 +869,10 @@ def compute_economic_accessibility(
 
     # Create coordinate arrays for efficient computation
     n_tracts = len(df)
-    lons = df['centroid_lon'].values
-    lats = df['centroid_lat'].values
-    high_wage = df['high_wage_jobs'].values if 'high_wage_jobs' in df else np.zeros(n_tracts)
-    total = df['total_jobs'].values if 'total_jobs' in df else np.zeros(n_tracts)
+    lons = df["centroid_lon"].values
+    lats = df["centroid_lat"].values
+    high_wage = df["high_wage_jobs"].values if "high_wage_jobs" in df else np.zeros(n_tracts)
+    total = df["total_jobs"].values if "total_jobs" in df else np.zeros(n_tracts)
 
     # Results arrays
     high_wage_45 = np.zeros(n_tracts)
@@ -803,7 +892,7 @@ def compute_economic_accessibility(
         dlat = np.radians(lat2 - lat1)
         dlon = np.radians(lon2 - lon1)
 
-        a = np.sin(dlat/2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon/2)**2
+        a = np.sin(dlat / 2) ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2) ** 2
         c = 2 * np.arcsin(np.sqrt(a))
 
         return R * c
@@ -833,33 +922,29 @@ def compute_economic_accessibility(
             logger.info(f"  Processed {batch_end}/{n_tracts} tracts")
 
     # Add results to DataFrame
-    df['high_wage_jobs_accessible_45min'] = high_wage_45.astype(int)
-    df['high_wage_jobs_accessible_30min'] = high_wage_30.astype(int)
-    df['total_jobs_accessible_45min'] = total_45.astype(int)
-    df['total_jobs_accessible_30min'] = total_30.astype(int)
+    df["high_wage_jobs_accessible_45min"] = high_wage_45.astype(int)
+    df["high_wage_jobs_accessible_30min"] = high_wage_30.astype(int)
+    df["total_jobs_accessible_45min"] = total_45.astype(int)
+    df["total_jobs_accessible_30min"] = total_30.astype(int)
 
     # Regional totals for normalization
     regional_high_wage = high_wage.sum()
     regional_total = total.sum()
 
     # Compute normalized scores
-    df['pct_regional_high_wage_accessible'] = np.where(
-        regional_high_wage > 0,
-        df['high_wage_jobs_accessible_45min'] / regional_high_wage,
-        0
+    df["pct_regional_high_wage_accessible"] = np.where(
+        regional_high_wage > 0, df["high_wage_jobs_accessible_45min"] / regional_high_wage, 0
     )
 
-    df['pct_regional_jobs_accessible'] = np.where(
-        regional_total > 0,
-        df['total_jobs_accessible_45min'] / regional_total,
-        0
+    df["pct_regional_jobs_accessible"] = np.where(
+        regional_total > 0, df["total_jobs_accessible_45min"] / regional_total, 0
     )
 
     # Wage quality ratio (high-wage / total accessible)
-    df['wage_quality_ratio'] = np.where(
-        df['total_jobs_accessible_45min'] > 0,
-        df['high_wage_jobs_accessible_45min'] / df['total_jobs_accessible_45min'],
-        0
+    df["wage_quality_ratio"] = np.where(
+        df["total_jobs_accessible_45min"] > 0,
+        df["high_wage_jobs_accessible_45min"] / df["total_jobs_accessible_45min"],
+        0,
     )
 
     logger.info("✓ Economic accessibility computed")
@@ -876,12 +961,12 @@ def compute_sector_diversity(tract_jobs: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with diversity metrics added
     """
-    sector_cols = [f'CNS{i:02d}' for i in range(1, 21)]
+    sector_cols = [f"CNS{i:02d}" for i in range(1, 21)]
     available_sectors = [c for c in sector_cols if c in tract_jobs.columns]
 
     if not available_sectors:
-        tract_jobs['sector_diversity_entropy'] = 0
-        tract_jobs['high_wage_sector_concentration'] = 0
+        tract_jobs["sector_diversity_entropy"] = 0
+        tract_jobs["high_wage_sector_concentration"] = 0
         return tract_jobs
 
     def shannon_entropy(row):
@@ -903,10 +988,10 @@ def compute_sector_diversity(tract_jobs: pd.DataFrame) -> pd.DataFrame:
         if total == 0:
             return 0
         shares = jobs / total
-        return np.sum(shares ** 2)
+        return np.sum(shares**2)
 
-    tract_jobs['sector_diversity_entropy'] = tract_jobs.apply(shannon_entropy, axis=1)
-    tract_jobs['high_wage_sector_concentration'] = tract_jobs.apply(hhi_concentration, axis=1)
+    tract_jobs["sector_diversity_entropy"] = tract_jobs.apply(shannon_entropy, axis=1)
+    tract_jobs["high_wage_sector_concentration"] = tract_jobs.apply(hhi_concentration, axis=1)
 
     return tract_jobs
 
@@ -925,21 +1010,20 @@ def normalize_accessibility_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
     # Economic accessibility score (primary metric)
     # Based on high-wage jobs accessible within 45 min
-    df['economic_accessibility_score'] = df['high_wage_jobs_accessible_45min'].rank(pct=True)
+    df["economic_accessibility_score"] = df["high_wage_jobs_accessible_45min"].rank(pct=True)
 
     # Job market reach score (total jobs accessible)
-    df['job_market_reach_score'] = df['total_jobs_accessible_45min'].rank(pct=True)
+    df["job_market_reach_score"] = df["total_jobs_accessible_45min"].rank(pct=True)
 
     # Job quality index (weighted by wage quality ratio)
-    df['job_quality_index'] = (
-        0.7 * df['economic_accessibility_score'] +
-        0.3 * df['wage_quality_ratio'].rank(pct=True)
-    )
+    df["job_quality_index"] = 0.7 * df["economic_accessibility_score"] + 0.3 * df[
+        "wage_quality_ratio"
+    ].rank(pct=True)
 
     # Upward mobility score (composite)
     # For now, use economic accessibility as proxy
     # Can be enhanced with Opportunity Insights data
-    df['upward_mobility_score'] = df['economic_accessibility_score']
+    df["upward_mobility_score"] = df["economic_accessibility_score"]
 
     return df
 
@@ -947,6 +1031,7 @@ def normalize_accessibility_scores(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # AGGREGATION
 # =============================================================================
+
 
 def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -961,45 +1046,47 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with county-level metrics
     """
     # Prepare population weights
-    tract_df['population'] = tract_df['population'].fillna(0)
-    tract_df['pop_weight'] = tract_df.groupby('fips_code')['population'].transform(
+    tract_df["population"] = tract_df["population"].fillna(0)
+    tract_df["pop_weight"] = tract_df.groupby("fips_code")["population"].transform(
         lambda x: x / x.sum() if x.sum() > 0 else 1 / len(x)
     )
 
     # Weighted averages for scores
-    score_cols = ['economic_accessibility_score', 'job_market_reach_score',
-                  'wage_quality_ratio', 'job_quality_index', 'upward_mobility_score',
-                  'sector_diversity_entropy', 'labor_force_participation']
+    score_cols = [
+        "economic_accessibility_score",
+        "job_market_reach_score",
+        "wage_quality_ratio",
+        "job_quality_index",
+        "upward_mobility_score",
+        "sector_diversity_entropy",
+        "labor_force_participation",
+    ]
 
     weighted_cols = {}
     for col in score_cols:
         if col in tract_df.columns:
-            tract_df[f'{col}_weighted'] = tract_df[col] * tract_df['pop_weight']
-            weighted_cols[f'{col}_weighted'] = (f'{col}_weighted', 'sum')
+            tract_df[f"{col}_weighted"] = tract_df[col] * tract_df["pop_weight"]
+            weighted_cols[f"{col}_weighted"] = (f"{col}_weighted", "sum")
 
     # Aggregation spec
     agg_spec = {
         # Sum job counts
-        'total_jobs': ('total_jobs', 'sum'),
-        'high_wage_jobs': ('high_wage_jobs', 'sum'),
-        'mid_wage_jobs': ('mid_wage_jobs', 'sum'),
-        'low_wage_jobs': ('low_wage_jobs', 'sum'),
-
+        "total_jobs": ("total_jobs", "sum"),
+        "high_wage_jobs": ("high_wage_jobs", "sum"),
+        "mid_wage_jobs": ("mid_wage_jobs", "sum"),
+        "low_wage_jobs": ("low_wage_jobs", "sum"),
         # Sum accessible jobs (max of tracts is more meaningful)
-        'high_wage_jobs_accessible_45min': ('high_wage_jobs_accessible_45min', 'max'),
-        'high_wage_jobs_accessible_30min': ('high_wage_jobs_accessible_30min', 'max'),
-        'total_jobs_accessible_45min': ('total_jobs_accessible_45min', 'max'),
-        'total_jobs_accessible_30min': ('total_jobs_accessible_30min', 'max'),
-
+        "high_wage_jobs_accessible_45min": ("high_wage_jobs_accessible_45min", "max"),
+        "high_wage_jobs_accessible_30min": ("high_wage_jobs_accessible_30min", "max"),
+        "total_jobs_accessible_45min": ("total_jobs_accessible_45min", "max"),
+        "total_jobs_accessible_30min": ("total_jobs_accessible_30min", "max"),
         # Sum population
-        'population': ('population', 'sum'),
-        'working_age_pop': ('working_age_pop', 'sum'),
-
+        "population": ("population", "sum"),
+        "working_age_pop": ("working_age_pop", "sum"),
         # Count tracts
-        'tract_count': ('tract_geoid', 'count'),
-
+        "tract_count": ("tract_geoid", "count"),
         # Area
-        'area_sq_mi': ('area_sq_mi', 'sum'),
+        "area_sq_mi": ("area_sq_mi", "sum"),
     }
 
     # Add weighted columns to spec
@@ -1007,34 +1094,30 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
         if src_col in tract_df.columns:
             agg_spec[new_col] = (src_col, func)
 
-    county_agg = tract_df.groupby('fips_code').agg(**agg_spec).reset_index()
+    county_agg = tract_df.groupby("fips_code").agg(**agg_spec).reset_index()
 
     # Rename weighted columns back
     for col in score_cols:
-        weighted_name = f'{col}_weighted'
+        weighted_name = f"{col}_weighted"
         if weighted_name in county_agg.columns:
             county_agg[col] = county_agg[weighted_name]
             county_agg = county_agg.drop(columns=[weighted_name])
 
     # Compute regional percentages
-    regional_high_wage = county_agg['high_wage_jobs'].sum()
-    regional_total = county_agg['total_jobs'].sum()
+    regional_high_wage = county_agg["high_wage_jobs"].sum()
+    regional_total = county_agg["total_jobs"].sum()
 
-    county_agg['pct_regional_high_wage_accessible'] = np.where(
-        regional_high_wage > 0,
-        county_agg['high_wage_jobs'] / regional_high_wage,
-        0
+    county_agg["pct_regional_high_wage_accessible"] = np.where(
+        regional_high_wage > 0, county_agg["high_wage_jobs"] / regional_high_wage, 0
     )
 
-    county_agg['pct_regional_jobs_accessible'] = np.where(
-        regional_total > 0,
-        county_agg['total_jobs'] / regional_total,
-        0
+    county_agg["pct_regional_jobs_accessible"] = np.where(
+        regional_total > 0, county_agg["total_jobs"] / regional_total, 0
     )
 
     # Entrepreneurship density (establishments per 1000 pop)
     # This would need BLS QCEW data - set to None for now
-    county_agg['entrepreneurship_density'] = None
+    county_agg["entrepreneurship_density"] = None
 
     return county_agg
 
@@ -1043,7 +1126,10 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
 # DATABASE STORAGE
 # =============================================================================
 
-def store_tract_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_year: int, acs_year: int):
+
+def store_tract_economic_opportunity(
+    df: pd.DataFrame, data_year: int, lodes_year: int, acs_year: int
+):
     """
     Store tract-level economic opportunity data in database.
 
@@ -1057,20 +1143,27 @@ def store_tract_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_yea
 
     with get_db() as db:
         # Clear existing data for this year
-        db.execute(text("""
+        db.execute(
+            text(
+                """
             DELETE FROM layer1_economic_opportunity_tract
             WHERE data_year = :data_year
-        """), {"data_year": data_year})
+        """
+            ),
+            {"data_year": data_year},
+        )
 
         # Insert new records
         for _, row in df.iterrows():
-            econ_score = row.get('economic_accessibility_score', None)
+            econ_score = row.get("economic_accessibility_score", None)
             if econ_score is not None and pd.isna(econ_score):
                 econ_score = None
             elif econ_score is not None:
                 econ_score = float(econ_score)
 
-            db.execute(text("""
+            db.execute(
+                text(
+                    """
                 INSERT INTO layer1_economic_opportunity_tract (
                     tract_geoid, fips_code, data_year,
                     total_jobs, high_wage_jobs, mid_wage_jobs, low_wage_jobs,
@@ -1093,40 +1186,45 @@ def store_tract_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_yea
                     :population, :working_age, :lfp,
                     :lodes_year, :acs_year
                 )
-            """), {
-                'tract_geoid': row['tract_geoid'],
-                'fips_code': row['fips_code'],
-                'data_year': data_year,
-                'total_jobs': int(row.get('total_jobs', 0)),
-                'high_wage_jobs': int(row.get('high_wage_jobs', 0)),
-                'mid_wage_jobs': int(row.get('mid_wage_jobs', 0)),
-                'low_wage_jobs': int(row.get('low_wage_jobs', 0)),
-                'high_wage_45': int(row.get('high_wage_jobs_accessible_45min', 0)),
-                'high_wage_30': int(row.get('high_wage_jobs_accessible_30min', 0)),
-                'total_45': int(row.get('total_jobs_accessible_45min', 0)),
-                'total_30': int(row.get('total_jobs_accessible_30min', 0)),
-                'econ_score': econ_score,
-                'market_score': float(row.get('job_market_reach_score', 0)),
-                'wage_ratio': float(row.get('wage_quality_ratio', 0)),
-                'pct_hw': float(row.get('pct_regional_high_wage_accessible', 0)),
-                'pct_total': float(row.get('pct_regional_jobs_accessible', 0)),
-                'entropy': float(row.get('sector_diversity_entropy', 0)),
-                'concentration': float(row.get('high_wage_sector_concentration', 0)),
-                'mobility': float(row.get('upward_mobility_score', 0)),
-                'quality': float(row.get('job_quality_index', 0)),
-                'population': int(row.get('population', 0)),
-                'working_age': int(row.get('working_age_pop', 0)),
-                'lfp': float(row.get('labor_force_participation', 0)),
-                'lodes_year': lodes_year,
-                'acs_year': acs_year
-            })
+            """
+                ),
+                {
+                    "tract_geoid": row["tract_geoid"],
+                    "fips_code": row["fips_code"],
+                    "data_year": data_year,
+                    "total_jobs": int(row.get("total_jobs", 0)),
+                    "high_wage_jobs": int(row.get("high_wage_jobs", 0)),
+                    "mid_wage_jobs": int(row.get("mid_wage_jobs", 0)),
+                    "low_wage_jobs": int(row.get("low_wage_jobs", 0)),
+                    "high_wage_45": int(row.get("high_wage_jobs_accessible_45min", 0)),
+                    "high_wage_30": int(row.get("high_wage_jobs_accessible_30min", 0)),
+                    "total_45": int(row.get("total_jobs_accessible_45min", 0)),
+                    "total_30": int(row.get("total_jobs_accessible_30min", 0)),
+                    "econ_score": econ_score,
+                    "market_score": float(row.get("job_market_reach_score", 0)),
+                    "wage_ratio": float(row.get("wage_quality_ratio", 0)),
+                    "pct_hw": float(row.get("pct_regional_high_wage_accessible", 0)),
+                    "pct_total": float(row.get("pct_regional_jobs_accessible", 0)),
+                    "entropy": float(row.get("sector_diversity_entropy", 0)),
+                    "concentration": float(row.get("high_wage_sector_concentration", 0)),
+                    "mobility": float(row.get("upward_mobility_score", 0)),
+                    "quality": float(row.get("job_quality_index", 0)),
+                    "population": int(row.get("population", 0)),
+                    "working_age": int(row.get("working_age_pop", 0)),
+                    "lfp": float(row.get("labor_force_participation", 0)),
+                    "lodes_year": lodes_year,
+                    "acs_year": acs_year,
+                },
+            )
 
         db.commit()
 
     logger.info("✓ Tract economic opportunity data stored")
 
 
-def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_year: int, acs_year: int):
+def store_county_economic_opportunity(
+    df: pd.DataFrame, data_year: int, lodes_year: int, acs_year: int
+):
     """
     Store county-level economic opportunity data.
 
@@ -1143,14 +1241,19 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
 
     with get_db() as db:
         local_strength_scores = {}
-        local_result = db.execute(text("""
+        local_result = db.execute(
+            text(
+                """
             SELECT fips_code,
                    employment_diversification_score,
                    sector_diversity_entropy,
                    stable_sector_share
             FROM layer1_employment_gravity
             WHERE data_year = :data_year
-        """), {"data_year": data_year})
+        """
+            ),
+            {"data_year": data_year},
+        )
         for row in local_result.fetchall():
             fips_code, v1_score, entropy, stable_share = row
             local_strength = None
@@ -1207,19 +1310,19 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
                     },
                 )
 
-            local_strength = local_strength_scores.get(row['fips_code'])
+            local_strength = local_strength_scores.get(row["fips_code"])
             if local_strength is not None and pd.isna(local_strength):
                 local_strength = None
             elif local_strength is not None:
                 local_strength = float(local_strength)
 
-            econ_score = row.get('economic_accessibility_score', None)
+            econ_score = row.get("economic_accessibility_score", None)
             if econ_score is not None and pd.isna(econ_score):
                 econ_score = None
             elif econ_score is not None:
                 econ_score = float(econ_score)
 
-            qwi_score = row.get('qwi_net_job_growth_score', None)
+            qwi_score = row.get("qwi_net_job_growth_score", None)
             if qwi_score is not None and pd.isna(qwi_score):
                 qwi_score = None
             elif qwi_score is not None:
@@ -1233,8 +1336,7 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
                 base_index = local_strength
             else:
                 base_index = (
-                    LOCAL_STRENGTH_WEIGHT * local_strength +
-                    REGIONAL_ACCESS_WEIGHT * econ_score
+                    LOCAL_STRENGTH_WEIGHT * local_strength + REGIONAL_ACCESS_WEIGHT * econ_score
                 )
 
             if qwi_score is None:
@@ -1243,12 +1345,13 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
                 opportunity_index = qwi_score
             else:
                 opportunity_index = (
-                    (1 - QWI_BLEND_WEIGHT) * base_index +
-                    QWI_BLEND_WEIGHT * qwi_score
-                )
+                    1 - QWI_BLEND_WEIGHT
+                ) * base_index + QWI_BLEND_WEIGHT * qwi_score
 
             # Update existing records with new accessibility columns
-            db.execute(text("""
+            db.execute(
+                text(
+                    """
                 UPDATE layer1_employment_gravity
                 SET
                     high_wage_jobs = :high_wage_jobs,
@@ -1283,39 +1386,68 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
                     accessibility_version = 'v2-accessibility',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE fips_code = :fips_code AND data_year = :data_year
-            """), {
-                'fips_code': row['fips_code'],
-                'data_year': data_year,
-                'high_wage_jobs': int(row.get('high_wage_jobs', 0)),
-                'mid_wage_jobs': int(row.get('mid_wage_jobs', 0)),
-                'low_wage_jobs': int(row.get('low_wage_jobs', 0)),
-                'high_wage_45': int(row.get('high_wage_jobs_accessible_45min', 0)),
-                'high_wage_30': int(row.get('high_wage_jobs_accessible_30min', 0)),
-                'total_45': int(row.get('total_jobs_accessible_45min', 0)),
-                'total_30': int(row.get('total_jobs_accessible_30min', 0)),
-                'econ_score': float(row.get('economic_accessibility_score', 0)),
-                'market_score': float(row.get('job_market_reach_score', 0)),
-                'wage_ratio': float(row.get('wage_quality_ratio', 0)),
-                'pct_hw': float(row.get('pct_regional_high_wage_accessible', 0)),
-                'pct_total': float(row.get('pct_regional_jobs_accessible', 0)),
-                'concentration': float(row.get('high_wage_sector_concentration', 0)),
-                'mobility': float(row.get('upward_mobility_score', 0)),
-                'quality': float(row.get('job_quality_index', 0)),
-                'local_strength': local_strength,
-                'opportunity_index': opportunity_index,
-                'qwi_emp_total': int(row.get('qwi_emp_total')) if pd.notna(row.get('qwi_emp_total')) else None,
-                'qwi_hires': int(row.get('qwi_hires')) if pd.notna(row.get('qwi_hires')) else None,
-                'qwi_separations': int(row.get('qwi_separations')) if pd.notna(row.get('qwi_separations')) else None,
-                'qwi_hire_rate': float(row.get('qwi_hire_rate')) if pd.notna(row.get('qwi_hire_rate')) else None,
-                'qwi_separation_rate': float(row.get('qwi_separation_rate')) if pd.notna(row.get('qwi_separation_rate')) else None,
-                'qwi_turnover_rate': float(row.get('qwi_turnover_rate')) if pd.notna(row.get('qwi_turnover_rate')) else None,
-                'qwi_net_job_growth_rate': float(row.get('qwi_net_job_growth_rate')) if pd.notna(row.get('qwi_net_job_growth_rate')) else None,
-                'qwi_year': int(row.get('qwi_year')) if pd.notna(row.get('qwi_year')) else None,
-                'working_age': int(row.get('working_age_pop', 0)),
-                'lfp': float(row.get('labor_force_participation', 0)),
-                'lodes_year': lodes_year,
-                'acs_year': acs_year
-            })
+            """
+                ),
+                {
+                    "fips_code": row["fips_code"],
+                    "data_year": data_year,
+                    "high_wage_jobs": int(row.get("high_wage_jobs", 0)),
+                    "mid_wage_jobs": int(row.get("mid_wage_jobs", 0)),
+                    "low_wage_jobs": int(row.get("low_wage_jobs", 0)),
+                    "high_wage_45": int(row.get("high_wage_jobs_accessible_45min", 0)),
+                    "high_wage_30": int(row.get("high_wage_jobs_accessible_30min", 0)),
+                    "total_45": int(row.get("total_jobs_accessible_45min", 0)),
+                    "total_30": int(row.get("total_jobs_accessible_30min", 0)),
+                    "econ_score": float(row.get("economic_accessibility_score", 0)),
+                    "market_score": float(row.get("job_market_reach_score", 0)),
+                    "wage_ratio": float(row.get("wage_quality_ratio", 0)),
+                    "pct_hw": float(row.get("pct_regional_high_wage_accessible", 0)),
+                    "pct_total": float(row.get("pct_regional_jobs_accessible", 0)),
+                    "concentration": float(row.get("high_wage_sector_concentration", 0)),
+                    "mobility": float(row.get("upward_mobility_score", 0)),
+                    "quality": float(row.get("job_quality_index", 0)),
+                    "local_strength": local_strength,
+                    "opportunity_index": opportunity_index,
+                    "qwi_emp_total": (
+                        int(row.get("qwi_emp_total"))
+                        if pd.notna(row.get("qwi_emp_total"))
+                        else None
+                    ),
+                    "qwi_hires": (
+                        int(row.get("qwi_hires")) if pd.notna(row.get("qwi_hires")) else None
+                    ),
+                    "qwi_separations": (
+                        int(row.get("qwi_separations"))
+                        if pd.notna(row.get("qwi_separations"))
+                        else None
+                    ),
+                    "qwi_hire_rate": (
+                        float(row.get("qwi_hire_rate"))
+                        if pd.notna(row.get("qwi_hire_rate"))
+                        else None
+                    ),
+                    "qwi_separation_rate": (
+                        float(row.get("qwi_separation_rate"))
+                        if pd.notna(row.get("qwi_separation_rate"))
+                        else None
+                    ),
+                    "qwi_turnover_rate": (
+                        float(row.get("qwi_turnover_rate"))
+                        if pd.notna(row.get("qwi_turnover_rate"))
+                        else None
+                    ),
+                    "qwi_net_job_growth_rate": (
+                        float(row.get("qwi_net_job_growth_rate"))
+                        if pd.notna(row.get("qwi_net_job_growth_rate"))
+                        else None
+                    ),
+                    "qwi_year": int(row.get("qwi_year")) if pd.notna(row.get("qwi_year")) else None,
+                    "working_age": int(row.get("working_age_pop", 0)),
+                    "lfp": float(row.get("labor_force_participation", 0)),
+                    "lodes_year": lodes_year,
+                    "acs_year": acs_year,
+                },
+            )
 
         db.commit()
 
@@ -1326,10 +1458,9 @@ def store_county_economic_opportunity(df: pd.DataFrame, data_year: int, lodes_ye
 # MAIN EXECUTION
 # =============================================================================
 
+
 def calculate_economic_opportunity_indicators(
-    data_year: int = None,
-    lodes_year: int = None,
-    acs_year: int = None
+    data_year: int = None, lodes_year: int = None, acs_year: int = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Main function to calculate economic opportunity indicators.
@@ -1378,15 +1509,15 @@ def calculate_economic_opportunity_indicators(
     acs_df = fetch_acs_demographics(acs_year)
     if not acs_df.empty:
         tract_df = tract_df.merge(
-            acs_df[['tract_geoid', 'population', 'working_age_pop', 'labor_force_participation']],
-            on='tract_geoid',
-            how='left'
+            acs_df[["tract_geoid", "population", "working_age_pop", "labor_force_participation"]],
+            on="tract_geoid",
+            how="left",
         )
 
     # Fill missing demographics
-    tract_df['population'] = tract_df.get('population', 0).fillna(0).astype(int)
-    tract_df['working_age_pop'] = tract_df.get('working_age_pop', 0).fillna(0).astype(int)
-    tract_df['labor_force_participation'] = tract_df.get('labor_force_participation', 0).fillna(0)
+    tract_df["population"] = tract_df.get("population", 0).fillna(0).astype(int)
+    tract_df["working_age_pop"] = tract_df.get("working_age_pop", 0).fillna(0).astype(int)
+    tract_df["labor_force_participation"] = tract_df.get("labor_force_participation", 0).fillna(0)
 
     # Normalize scores
     tract_df = normalize_accessibility_scores(tract_df)
@@ -1397,13 +1528,15 @@ def calculate_economic_opportunity_indicators(
     # Optional: QWI enrichment for job dynamics
     qwi_df = fetch_qwi_by_county(data_year)
     if not qwi_df.empty:
-        county_df = county_df.merge(qwi_df, on='fips_code', how='left')
-        if 'qwi_net_job_growth_rate' in county_df.columns:
-            growth = county_df['qwi_net_job_growth_rate']
+        county_df = county_df.merge(qwi_df, on="fips_code", how="left")
+        if "qwi_net_job_growth_rate" in county_df.columns:
+            growth = county_df["qwi_net_job_growth_rate"]
             valid_mask = growth.notna()
-            county_df['qwi_net_job_growth_score'] = pd.NA
+            county_df["qwi_net_job_growth_score"] = pd.NA
             if valid_mask.sum() >= 3:
-                county_df.loc[valid_mask, 'qwi_net_job_growth_score'] = growth[valid_mask].rank(pct=True)
+                county_df.loc[valid_mask, "qwi_net_job_growth_score"] = growth[valid_mask].rank(
+                    pct=True
+                )
 
     # Summary
     logger.info("\n" + "=" * 60)
@@ -1423,7 +1556,7 @@ def run_layer1_v2_ingestion(
     multi_year: bool = True,
     store_data: bool = True,
     window_years: int = 5,
-    predict_to_year: Optional[int] = None
+    predict_to_year: Optional[int] = None,
 ):
     """
     Run complete Layer 1 v2 ingestion pipeline.
@@ -1470,18 +1603,12 @@ def run_layer1_v2_ingestion(
 
             try:
                 tract_df, county_df = calculate_economic_opportunity_indicators(
-                    data_year=year,
-                    lodes_year=lodes_year,
-                    acs_year=acs_year
+                    data_year=year, lodes_year=lodes_year, acs_year=acs_year
                 )
 
                 if store_data and not tract_df.empty:
-                    store_tract_economic_opportunity(
-                        tract_df, year, lodes_year, acs_year
-                    )
-                    store_county_economic_opportunity(
-                        county_df, year, lodes_year, acs_year
-                    )
+                    store_tract_economic_opportunity(tract_df, year, lodes_year, acs_year)
+                    store_county_economic_opportunity(county_df, year, lodes_year, acs_year)
 
                     log_refresh(
                         layer_name="layer1_employment_gravity",
@@ -1496,9 +1623,9 @@ def run_layer1_v2_ingestion(
                             "version": "v2-accessibility",
                             "tracts": len(tract_df),
                             "counties": len(county_df),
-                            "total_jobs": int(tract_df['total_jobs'].sum()),
-                            "high_wage_jobs": int(tract_df['high_wage_jobs'].sum())
-                        }
+                            "total_jobs": int(tract_df["total_jobs"].sum()),
+                            "high_wage_jobs": int(tract_df["high_wage_jobs"].sum()),
+                        },
                     )
 
                 total_records += len(tract_df)
@@ -1519,7 +1646,9 @@ def run_layer1_v2_ingestion(
                 f"({len(years_to_fetch)} years)"
             )
             logger.info(f"  Years successful: {len(years_to_fetch) - len(failed_years)}")
-            logger.info(f"  Years failed: {len(failed_years)} {failed_years if failed_years else ''}")
+            logger.info(
+                f"  Years failed: {len(failed_years)} {failed_years if failed_years else ''}"
+            )
             logger.info(f"  Total tract records stored: {total_records}")
         else:
             logger.info(f"Single-year ingestion {'succeeded' if not failed_years else 'failed'}")
@@ -1533,7 +1662,7 @@ def run_layer1_v2_ingestion(
                 table="layer1_employment_gravity",
                 metric_col="economic_opportunity_index",
                 target_year=target_year,
-                clip=(0.0, 1.0)
+                clip=(0.0, 1.0),
             )
 
         logger.info("✓ Layer 1 v2 ingestion complete")
@@ -1545,7 +1674,7 @@ def run_layer1_v2_ingestion(
             layer_name="layer1_employment_gravity",
             data_source="LODES+ACS (v2 accessibility)",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
         raise
 
@@ -1555,23 +1684,25 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Layer 1 v2: Economic Opportunity Accessibility Analysis'
+        description="Layer 1 v2: Economic Opportunity Accessibility Analysis"
     )
     parser.add_argument(
-        '--year', type=int, default=None,
-        help='End year for window (default: latest available year)'
+        "--year",
+        type=int,
+        default=None,
+        help="End year for window (default: latest available year)",
     )
     parser.add_argument(
-        '--single-year', action='store_true',
-        help='Fetch only single year (default: multi-year window)'
+        "--single-year",
+        action="store_true",
+        help="Fetch only single year (default: multi-year window)",
     )
+    parser.add_argument("--dry-run", action="store_true", help="Calculate but do not store results")
     parser.add_argument(
-        '--dry-run', action='store_true',
-        help='Calculate but do not store results'
-    )
-    parser.add_argument(
-        '--predict-to-year', type=int, default=None,
-        help='Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)'
+        "--predict-to-year",
+        type=int,
+        default=None,
+        help="Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)",
     )
 
     args = parser.parse_args()
@@ -1580,7 +1711,7 @@ def main():
         data_year=args.year,
         multi_year=not args.single_year,
         store_data=not args.dry_run,
-        predict_to_year=args.predict_to_year
+        predict_to_year=args.predict_to_year,
     )
 
 

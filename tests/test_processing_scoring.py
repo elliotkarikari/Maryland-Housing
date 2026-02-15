@@ -2,12 +2,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.processing.feature_registry import FEATURES_BY_LAYER
 from src.processing.scoring import (
-    calculate_layer_score,
     calculate_all_layer_scores,
     calculate_composite_score,
+    calculate_layer_score,
 )
-from src.processing.feature_registry import FEATURES_BY_LAYER
 
 
 def test_calculate_layer_score_weighted():

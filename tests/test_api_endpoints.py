@@ -123,10 +123,12 @@ def test_layer_detail_endpoint():
         coverage_years=5,
     )
 
-    client = _client_with_db([
-        DummyResult(fetchone_value=layer_result),
-        DummyResult(fetchone_value=ts_result),
-    ])
+    client = _client_with_db(
+        [
+            DummyResult(fetchone_value=layer_result),
+            DummyResult(fetchone_value=ts_result),
+        ]
+    )
 
     resp = client.get("/api/v1/areas/24001/layers/employment_gravity")
     assert resp.status_code == 200

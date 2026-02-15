@@ -2,13 +2,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.processing.feature_registry import Directionality, FeatureDefinition, NormMethod
 from src.processing.normalization import (
-    percentile_normalize,
-    robust_zscore_normalize,
     minmax_normalize,
     normalize_feature,
+    percentile_normalize,
+    robust_zscore_normalize,
 )
-from src.processing.feature_registry import Directionality, NormMethod, FeatureDefinition
 
 
 def test_percentile_normalize_positive():

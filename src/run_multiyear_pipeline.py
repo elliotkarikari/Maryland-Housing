@@ -24,9 +24,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.processing.timeseries_features import compute_all_timeseries_features
-from src.processing.multiyear_scoring import compute_all_layer_scores
 from src.processing.multiyear_classification import classify_all_counties, store_final_synthesis
+from src.processing.multiyear_scoring import compute_all_layer_scores
+from src.processing.timeseries_features import compute_all_timeseries_features
 from src.utils.logging import get_logger
 from src.utils.year_policy import pipeline_default_year
 
@@ -35,9 +35,7 @@ DEFAULT_YEAR = pipeline_default_year()
 
 
 def run_pipeline(
-    as_of_year: int = DEFAULT_YEAR,
-    skip_timeseries: bool = False,
-    skip_scoring: bool = False
+    as_of_year: int = DEFAULT_YEAR, skip_timeseries: bool = False, skip_scoring: bool = False
 ):
     """
     Run the complete multi-year evidence pipeline.
@@ -61,10 +59,7 @@ def run_pipeline(
             logger.info("STEP 1/3: Computing Timeseries Features")
             logger.info("         (Level, Momentum, Stability)")
             logger.info("─" * 80)
-            feature_count = compute_all_timeseries_features(
-                window_size=5,
-                as_of_year=as_of_year
-            )
+            feature_count = compute_all_timeseries_features(window_size=5, as_of_year=as_of_year)
             logger.info(f"✓ Step 1 complete: {feature_count} feature records computed\n")
         else:
             logger.info("⏭  Skipping timeseries computation (using existing)\n")
@@ -100,17 +95,17 @@ def run_pipeline(
         logger.info("=" * 80)
 
         # Log final distribution
-        grouping_dist = classifications_df['final_grouping'].value_counts()
+        grouping_dist = classifications_df["final_grouping"].value_counts()
         logger.info("\nFinal Synthesis Grouping Distribution:")
         for grouping, count in grouping_dist.items():
             logger.info(f"  {grouping}: {count} counties")
 
-        directional_dist = classifications_df['directional_status'].value_counts()
+        directional_dist = classifications_df["directional_status"].value_counts()
         logger.info("\nDirectional Status Distribution:")
         for status, count in directional_dist.items():
             logger.info(f"  {status}: {count} counties")
 
-        confidence_dist = classifications_df['confidence_level'].value_counts()
+        confidence_dist = classifications_df["confidence_level"].value_counts()
         logger.info("\nConfidence Level Distribution:")
         for conf, count in confidence_dist.items():
             logger.info(f"  {conf}: {count} counties")
@@ -132,31 +127,27 @@ def run_pipeline(
 def main():
     """Main execution with CLI argument parsing"""
     parser = argparse.ArgumentParser(
-        description='Run the multi-year evidence pipeline for Maryland Viability Atlas'
+        description="Run the multi-year evidence pipeline for Maryland Viability Atlas"
     )
     parser.add_argument(
-        '--year',
+        "--year",
         type=int,
         default=DEFAULT_YEAR,
-        help=f'Reference year for analysis (default: {DEFAULT_YEAR})'
+        help=f"Reference year for analysis (default: {DEFAULT_YEAR})",
     )
     parser.add_argument(
-        '--skip-timeseries',
-        action='store_true',
-        help='Skip timeseries computation (use existing features)'
+        "--skip-timeseries",
+        action="store_true",
+        help="Skip timeseries computation (use existing features)",
     )
     parser.add_argument(
-        '--skip-scoring',
-        action='store_true',
-        help='Skip scoring computation (use existing scores)'
+        "--skip-scoring", action="store_true", help="Skip scoring computation (use existing scores)"
     )
 
     args = parser.parse_args()
 
     success = run_pipeline(
-        as_of_year=args.year,
-        skip_timeseries=args.skip_timeseries,
-        skip_scoring=args.skip_scoring
+        as_of_year=args.year, skip_timeseries=args.skip_timeseries, skip_scoring=args.skip_scoring
     )
 
     sys.exit(0 if success else 1)

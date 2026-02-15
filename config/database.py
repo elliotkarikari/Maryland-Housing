@@ -3,22 +3,24 @@ Maryland Viability Atlas - Database Connection Management
 SQLAlchemy + PostGIS configuration
 """
 
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.exc import NoSuchModuleError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import NullPool
-from geoalchemy2 import Geometry
+import logging
 from contextlib import contextmanager
 from typing import Generator
 from urllib.parse import quote_plus
-import logging
+
+from geoalchemy2 import Geometry
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import NoSuchModuleError
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
 
 def _normalized_backend() -> str:
     return (settings.DATA_BACKEND or "databricks").strip().lower()
@@ -43,8 +45,7 @@ def _build_databricks_url() -> str:
     missing = [key for key, value in required.items() if not value]
     if missing:
         raise RuntimeError(
-            "DATA_BACKEND=databricks but required settings are missing: "
-            + ", ".join(missing)
+            "DATA_BACKEND=databricks but required settings are missing: " + ", ".join(missing)
         )
 
     token = quote_plus(settings.DATABRICKS_ACCESS_TOKEN or "")
@@ -94,6 +95,7 @@ except NoSuchModuleError as exc:
         ) from exc
     raise
 
+
 # Enable PostGIS on connection
 @event.listens_for(engine, "connect")
 def receive_connect(dbapi_conn, connection_record):
@@ -107,11 +109,7 @@ def receive_connect(dbapi_conn, connection_record):
 
 
 # Session factory
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Base class for ORM models
 Base = declarative_base()
@@ -175,10 +173,12 @@ def test_connection() -> bool:
                 logger.info(f"Database connection successful. PostGIS version: {version}")
 
                 # Test Maryland counties table exists
-                result = db.execute(text(
-                    "SELECT COUNT(*) FROM information_schema.tables "
-                    "WHERE table_name = 'md_counties'"
-                ))
+                result = db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM information_schema.tables "
+                        "WHERE table_name = 'md_counties'"
+                    )
+                )
                 if result.scalar() == 1:
                     result = db.execute(text("SELECT COUNT(*) FROM md_counties"))
                     count = result.scalar()
@@ -206,26 +206,24 @@ def init_db():
 
     try:
         # Use psql command directly to avoid SQL parsing issues
-        import subprocess
         import os
         import platform
-        schema_files = [
-            "data/schemas/schema.sql",
-            "data/schemas/schema_timeseries.sql"
-        ]
+        import subprocess
+
+        schema_files = ["data/schemas/schema.sql", "data/schemas/schema_timeseries.sql"]
 
         # Get database URL from settings
         db_url = settings.DATABASE_URL
 
         # Find psql command (check common locations)
-        psql_cmd = 'psql'
-        if platform.system() == 'Darwin':  # macOS
+        psql_cmd = "psql"
+        if platform.system() == "Darwin":  # macOS
             # Try Homebrew paths
             homebrew_paths = [
-                '/opt/homebrew/opt/postgresql@17/bin/psql',
-                '/opt/homebrew/opt/postgresql@16/bin/psql',
-                '/usr/local/opt/postgresql@17/bin/psql',
-                '/usr/local/opt/postgresql@16/bin/psql'
+                "/opt/homebrew/opt/postgresql@17/bin/psql",
+                "/opt/homebrew/opt/postgresql@16/bin/psql",
+                "/usr/local/opt/postgresql@17/bin/psql",
+                "/usr/local/opt/postgresql@16/bin/psql",
             ]
             for path in homebrew_paths:
                 if os.path.exists(path):
@@ -240,9 +238,7 @@ def init_db():
 
             logger.info(f"Executing schema from {schema_path} using {psql_cmd}")
             result = subprocess.run(
-                [psql_cmd, db_url, '-f', schema_path],
-                capture_output=True,
-                text=True
+                [psql_cmd, db_url, "-f", schema_path], capture_output=True, text=True
             )
 
             if result.returncode == 0:
@@ -256,17 +252,14 @@ def init_db():
         # psql not in PATH - fall back to SQLAlchemy
         logger.warning("psql not found, using SQLAlchemy (may have issues with functions)")
 
-        schema_files = [
-            "data/schemas/schema.sql",
-            "data/schemas/schema_timeseries.sql"
-        ]
+        schema_files = ["data/schemas/schema.sql", "data/schemas/schema_timeseries.sql"]
         with get_db() as db:
             for schema_path in schema_files:
                 if not os.path.exists(schema_path):
                     logger.warning(f"Schema file not found, skipping: {schema_path}")
                     continue
 
-                with open(schema_path, 'r') as f:
+                with open(schema_path, "r") as f:
                     schema_sql = f.read()
 
                 try:
@@ -278,7 +271,7 @@ def init_db():
                     logger.error(f"Failed to initialize schema {schema_path}: {e}")
                     logger.info("Trying statement-by-statement (may have issues)...")
                     # Fall back to splitting by semicolons
-                    statements = [s.strip() for s in schema_sql.split(';') if s.strip()]
+                    statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
                     for statement in statements:
                         try:
                             db.execute(text(statement))
@@ -299,7 +292,7 @@ def log_refresh(
     records_inserted: int = 0,
     records_updated: int = 0,
     error_message: str = None,
-    metadata: dict = None
+    metadata: dict = None,
 ):
     """
     Log data refresh operation to data_refresh_log table.
@@ -316,10 +309,11 @@ def log_refresh(
     """
     try:
         with get_db() as db:
-            from datetime import datetime
             import json
+            from datetime import datetime
 
-            sql = text("""
+            sql = text(
+                """
                 INSERT INTO data_refresh_log (
                     layer_name, data_source, refresh_date, status,
                     records_processed, records_inserted, records_updated,
@@ -329,19 +323,23 @@ def log_refresh(
                     :records_processed, :records_inserted, :records_updated,
                     :error_message, :metadata
                 )
-            """)
+            """
+            )
 
-            db.execute(sql, {
-                "layer_name": layer_name,
-                "data_source": data_source,
-                "refresh_date": datetime.utcnow(),
-                "status": status,
-                "records_processed": records_processed,
-                "records_inserted": records_inserted,
-                "records_updated": records_updated,
-                "error_message": error_message,
-                "metadata": json.dumps(metadata) if metadata else None
-            })
+            db.execute(
+                sql,
+                {
+                    "layer_name": layer_name,
+                    "data_source": data_source,
+                    "refresh_date": datetime.utcnow(),
+                    "status": status,
+                    "records_processed": records_processed,
+                    "records_inserted": records_inserted,
+                    "records_updated": records_updated,
+                    "error_message": error_message,
+                    "metadata": json.dumps(metadata) if metadata else None,
+                },
+            )
 
             logger.info(
                 f"Logged refresh: {layer_name} ({data_source}) - "
@@ -355,6 +353,7 @@ def log_refresh(
 
 # Utility functions for common queries
 
+
 def get_county_fips_list() -> list[str]:
     """Get list of all Maryland county FIPS codes from database."""
     with get_db() as db:
@@ -365,9 +364,7 @@ def get_county_fips_list() -> list[str]:
 def get_latest_data_year(layer_table: str) -> int:
     """Get the most recent data year for a given layer table."""
     with get_db() as db:
-        result = db.execute(text(
-            f"SELECT MAX(data_year) FROM {layer_table}"
-        ))
+        result = db.execute(text(f"SELECT MAX(data_year) FROM {layer_table}"))
         year = result.scalar()
         return year if year else 0
 
@@ -386,7 +383,7 @@ def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] =
         return
 
     with get_db() as db:
-        from sqlalchemy import table, column, insert
+        from sqlalchemy import column, insert, table
 
         # Dynamically create table object
         cols = [column(k) for k in records[0].keys()]
@@ -399,6 +396,7 @@ def bulk_insert(table_name: str, records: list[dict], conflict_cols: list[str] =
                     "Use explicit delete+insert for Databricks compatibility."
                 )
             from sqlalchemy.dialects.postgresql import insert as pg_insert
+
             stmt = pg_insert(tbl).values(records)
             update_dict = {c.name: c for c in stmt.excluded if c.name not in conflict_cols}
             stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_dict)

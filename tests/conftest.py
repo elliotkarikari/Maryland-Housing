@@ -3,9 +3,10 @@ Pytest configuration and shared fixtures for Maryland Housing Atlas tests.
 """
 
 import os
-import pytest
+from typing import Any, Dict
+
 import pandas as pd
-from typing import Dict, Any
+import pytest
 
 # Keep tests backend-stable regardless of developer .env runtime backend.
 os.environ.setdefault("DATA_BACKEND", "postgres")
@@ -30,18 +31,20 @@ def sample_fips_codes() -> list:
 @pytest.fixture
 def sample_county_data() -> pd.DataFrame:
     """Generate sample county data for testing."""
-    return pd.DataFrame({
-        "fips_code": SAMPLE_FIPS_CODES,
-        "county_name": [
-            "Montgomery County",
-            "Prince George's County",
-            "Anne Arundel County",
-            "Baltimore County",
-            "Baltimore City",
-        ],
-        "population": [1062061, 967201, 588261, 854535, 585708],
-        "data_year": [2023] * 5,
-    })
+    return pd.DataFrame(
+        {
+            "fips_code": SAMPLE_FIPS_CODES,
+            "county_name": [
+                "Montgomery County",
+                "Prince George's County",
+                "Anne Arundel County",
+                "Baltimore County",
+                "Baltimore City",
+            ],
+            "population": [1062061, 967201, 588261, 854535, 585708],
+            "data_year": [2023] * 5,
+        }
+    )
 
 
 @pytest.fixture

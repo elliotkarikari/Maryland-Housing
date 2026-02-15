@@ -8,10 +8,11 @@ These tests verify that:
 4. Synthetic data is properly flagged with is_synthetic=True
 """
 
-import pytest
 from datetime import datetime
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pandas as pd
+import pytest
 
 
 class TestDynamicYearCalculation:
@@ -19,48 +20,46 @@ class TestDynamicYearCalculation:
 
     def test_acs_geography_max_year_is_dynamic(self):
         """ACS_GEOGRAPHY_MAX_YEAR should honor configured policy cap."""
-        from src.ingest.layer6_risk_vulnerability import ACS_GEOGRAPHY_MAX_YEAR
         from config.settings import get_settings
+        from src.ingest.layer6_risk_vulnerability import ACS_GEOGRAPHY_MAX_YEAR
 
         expected_year = get_settings().ACS_GEOGRAPHY_MAX_YEAR
-        assert ACS_GEOGRAPHY_MAX_YEAR == expected_year, (
-            f"ACS_GEOGRAPHY_MAX_YEAR should be {expected_year}, got {ACS_GEOGRAPHY_MAX_YEAR}"
-        )
+        assert (
+            ACS_GEOGRAPHY_MAX_YEAR == expected_year
+        ), f"ACS_GEOGRAPHY_MAX_YEAR should be {expected_year}, got {ACS_GEOGRAPHY_MAX_YEAR}"
 
     def test_ejscreen_year_is_dynamic_v1(self):
         """EJSCREEN_YEAR in v1 module should be current year - 1."""
         from src.ingest.layer6_risk import EJSCREEN_YEAR
 
         expected_year = datetime.now().year - 1
-        assert EJSCREEN_YEAR == expected_year, (
-            f"EJSCREEN_YEAR should be {expected_year}, got {EJSCREEN_YEAR}"
-        )
+        assert (
+            EJSCREEN_YEAR == expected_year
+        ), f"EJSCREEN_YEAR should be {expected_year}, got {EJSCREEN_YEAR}"
 
     def test_cdc_svi_default_year_is_none(self):
         """fetch_cdc_svi_data should default year to None (then calculate dynamically)."""
-        from src.ingest.layer6_risk_vulnerability import fetch_cdc_svi_data
         import inspect
 
+        from src.ingest.layer6_risk_vulnerability import fetch_cdc_svi_data
+
         sig = inspect.signature(fetch_cdc_svi_data)
-        year_param = sig.parameters.get('year')
+        year_param = sig.parameters.get("year")
 
         assert year_param is not None, "year parameter should exist"
-        assert year_param.default is None, (
-            f"year default should be None, got {year_param.default}"
-        )
+        assert year_param.default is None, f"year default should be None, got {year_param.default}"
 
     def test_ejscreen_fetch_default_year_is_none(self):
         """fetch_expanded_ejscreen_data should default year to None."""
-        from src.ingest.layer6_risk_vulnerability import fetch_expanded_ejscreen_data
         import inspect
 
+        from src.ingest.layer6_risk_vulnerability import fetch_expanded_ejscreen_data
+
         sig = inspect.signature(fetch_expanded_ejscreen_data)
-        year_param = sig.parameters.get('year')
+        year_param = sig.parameters.get("year")
 
         assert year_param is not None, "year parameter should exist"
-        assert year_param.default is None, (
-            f"year default should be None, got {year_param.default}"
-        )
+        assert year_param.default is None, f"year default should be None, got {year_param.default}"
 
 
 class TestSyntheticDataFlagging:
@@ -72,22 +71,22 @@ class TestSyntheticDataFlagging:
 
         df = _generate_synthetic_svi_data()
 
-        assert 'is_synthetic' in df.columns, "is_synthetic column should exist"
-        assert df['is_synthetic'].all(), "All rows should have is_synthetic=True"
+        assert "is_synthetic" in df.columns, "is_synthetic column should exist"
+        assert df["is_synthetic"].all(), "All rows should have is_synthetic=True"
 
     def test_synthetic_svi_data_covers_all_counties(self):
         """Synthetic SVI data should cover all 24 MD counties."""
-        from src.ingest.layer6_risk_vulnerability import _generate_synthetic_svi_data
         from config.settings import MD_COUNTY_FIPS
+        from src.ingest.layer6_risk_vulnerability import _generate_synthetic_svi_data
 
         df = _generate_synthetic_svi_data()
 
-        assert len(df) == len(MD_COUNTY_FIPS), (
-            f"Should have {len(MD_COUNTY_FIPS)} rows, got {len(df)}"
-        )
+        assert len(df) == len(
+            MD_COUNTY_FIPS
+        ), f"Should have {len(MD_COUNTY_FIPS)} rows, got {len(df)}"
 
         for fips in MD_COUNTY_FIPS.keys():
-            assert fips in df['fips_code'].values, f"Missing county {fips}"
+            assert fips in df["fips_code"].values, f"Missing county {fips}"
 
     def test_synthetic_data_has_valid_vulnerability_scores(self):
         """Synthetic SVI scores should be in valid 0-1 range."""
@@ -96,11 +95,11 @@ class TestSyntheticDataFlagging:
         df = _generate_synthetic_svi_data()
 
         score_cols = [
-            'socioeconomic_vulnerability',
-            'household_vulnerability',
-            'minority_language_vulnerability',
-            'housing_transport_vulnerability',
-            'social_vulnerability_index'
+            "socioeconomic_vulnerability",
+            "household_vulnerability",
+            "minority_language_vulnerability",
+            "housing_transport_vulnerability",
+            "social_vulnerability_index",
         ]
 
         for col in score_cols:
@@ -118,9 +117,9 @@ class TestYearCalculationEdgeCases:
         max_year = _get_acs_max_year()
         current_year = datetime.now().year
 
-        assert max_year < current_year, (
-            f"ACS max year {max_year} should be less than current year {current_year}"
-        )
+        assert (
+            max_year < current_year
+        ), f"ACS max year {max_year} should be less than current year {current_year}"
 
     def test_acs_max_year_is_reasonable(self):
         """ACS max year should be within reasonable range (last 5 years)."""
@@ -129,9 +128,9 @@ class TestYearCalculationEdgeCases:
         max_year = _get_acs_max_year()
         current_year = datetime.now().year
 
-        assert current_year - max_year <= 5, (
-            f"ACS max year {max_year} is too old (> 5 years from current)"
-        )
-        assert current_year - max_year >= 1, (
-            f"ACS max year {max_year} should be at least 1 year behind"
-        )
+        assert (
+            current_year - max_year <= 5
+        ), f"ACS max year {max_year} is too old (> 5 years from current)"
+        assert (
+            current_year - max_year >= 1
+        ), f"ACS max year {max_year} should be at least 1 year behind"

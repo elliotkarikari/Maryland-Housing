@@ -15,8 +15,8 @@ Usage:
 """
 
 import argparse
-import sys
 import os
+import sys
 from datetime import datetime
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,10 +24,10 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from config.database import test_connection
+from src.export.geojson_export import run_geojson_export
+from src.run_multiyear_pipeline import run_pipeline as run_multiyear_pipeline
 from src.utils.logging import setup_logging
 from src.utils.year_policy import pipeline_default_year
-from src.run_multiyear_pipeline import run_pipeline as run_multiyear_pipeline
-from src.export.geojson_export import run_geojson_export
 
 logger = setup_logging("pipeline")
 DEFAULT_YEAR = pipeline_default_year()
@@ -61,31 +61,27 @@ def main():
         "--year",
         type=int,
         default=DEFAULT_YEAR,
-        help=f"As-of year for multi-year synthesis (default: {DEFAULT_YEAR})"
+        help=f"As-of year for multi-year synthesis (default: {DEFAULT_YEAR})",
     )
 
     parser.add_argument(
         "--skip-timeseries",
         action="store_true",
-        help="Skip timeseries computation (use existing features)"
+        help="Skip timeseries computation (use existing features)",
     )
 
     parser.add_argument(
-        "--skip-scoring",
-        action="store_true",
-        help="Skip multi-year scoring (use existing scores)"
+        "--skip-scoring", action="store_true", help="Skip multi-year scoring (use existing scores)"
     )
 
     parser.add_argument(
         "--export-only",
         action="store_true",
-        help="Only run export (skip timeseries + scoring + classification)"
+        help="Only run export (skip timeseries + scoring + classification)",
     )
 
     parser.add_argument(
-        "--no-export",
-        action="store_true",
-        help="Skip GeoJSON export after pipeline"
+        "--no-export", action="store_true", help="Skip GeoJSON export after pipeline"
     )
 
     args = parser.parse_args()
@@ -110,7 +106,7 @@ def main():
             success = run_multiyear_pipeline(
                 as_of_year=args.year,
                 skip_timeseries=args.skip_timeseries,
-                skip_scoring=args.skip_scoring
+                skip_scoring=args.skip_scoring,
             )
 
             if not success:

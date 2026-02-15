@@ -103,9 +103,15 @@ def test_discover_ejscreen_urls_parses_listing(monkeypatch):
 def test_fetch_epa_ejscreen_success(monkeypatch):
     csv_bytes = b"ID,VAL\n24001,1\n11001,2\n"
 
-    monkeypatch.setattr(ds, "_candidate_ejscreen_urls", lambda base, year: ["https://example.com/file.csv"])
+    monkeypatch.setattr(
+        ds, "_candidate_ejscreen_urls", lambda base, year: ["https://example.com/file.csv"]
+    )
     monkeypatch.setattr(ds, "_discover_ejscreen_urls", lambda base, year: [])
-    monkeypatch.setattr(ds.requests, "get", lambda url, timeout=120: DummyResponse(status_code=200, content=csv_bytes))
+    monkeypatch.setattr(
+        ds.requests,
+        "get",
+        lambda url, timeout=120: DummyResponse(status_code=200, content=csv_bytes),
+    )
 
     df = ds.fetch_epa_ejscreen(year=2023, lookback_years=0)
     assert df["ID"].tolist() == ["24001"]

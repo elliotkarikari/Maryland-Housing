@@ -11,14 +11,15 @@ Outputs:
 - exports/md_counties_{YYYYMMDD}.geojson (versioned snapshots)
 """
 
-import geopandas as gpd
-import pandas as pd
+import hashlib
 import json
 import os
 from datetime import datetime
 from typing import Optional
+
+import geopandas as gpd
+import pandas as pd
 from sqlalchemy import text
-import hashlib
 
 from config.database import get_db, log_refresh
 from config.settings import get_settings
@@ -48,22 +49,24 @@ def fetch_maryland_county_boundaries() -> gpd.GeoDataFrame:
         md_counties = counties(state="MD", year=2023, cb=True)  # cb=True for simplified boundaries
 
         # Ensure FIPS code is properly formatted
-        md_counties['GEOID'] = md_counties['GEOID'].astype(str).str.zfill(5)
+        md_counties["GEOID"] = md_counties["GEOID"].astype(str).str.zfill(5)
 
         # Rename for clarity
-        md_counties = md_counties.rename(columns={
-            'GEOID': 'fips_code',
-            'NAME': 'county_name',
-            'ALAND': 'land_area_m2',
-            'AWATER': 'water_area_m2'
-        })
+        md_counties = md_counties.rename(
+            columns={
+                "GEOID": "fips_code",
+                "NAME": "county_name",
+                "ALAND": "land_area_m2",
+                "AWATER": "water_area_m2",
+            }
+        )
 
         # Convert to WGS84 (EPSG:4326) for web mapping
-        if md_counties.crs != 'EPSG:4326':
-            md_counties = md_counties.to_crs('EPSG:4326')
+        if md_counties.crs != "EPSG:4326":
+            md_counties = md_counties.to_crs("EPSG:4326")
 
         # Select relevant columns
-        md_counties = md_counties[['fips_code', 'county_name', 'geometry']]
+        md_counties = md_counties[["fips_code", "county_name", "geometry"]]
 
         logger.info(f"Fetched {len(md_counties)} Maryland county boundaries")
 
@@ -91,17 +94,14 @@ def _identify_top_weaknesses(layer_scores: dict, top_n: int = 2) -> list:
 
 
 def _generate_explainability_payload(
-    directional_class: str,
-    confidence_class: str,
-    risk_drag_score: float,
-    layer_scores: dict
+    directional_class: str, confidence_class: str, risk_drag_score: float, layer_scores: dict
 ) -> dict:
     layer_names = {
         "employment_gravity": "Employment Gravity",
         "mobility_optionality": "Mobility Optionality",
         "school_trajectory": "School System Trajectory",
         "housing_elasticity": "Housing Elasticity",
-        "demographic_momentum": "Demographic Momentum"
+        "demographic_momentum": "Demographic Momentum",
     }
 
     strengths = _identify_top_strengths(layer_scores, top_n=2)
@@ -111,16 +111,16 @@ def _generate_explainability_payload(
     primary_weaknesses = [layer_names.get(w, w) for w in weaknesses]
 
     key_trends = []
-    if directional_class == 'improving':
+    if directional_class == "improving":
         key_trends.append("Multiple reinforcing structural tailwinds present")
-    elif directional_class == 'at_risk':
+    elif directional_class == "at_risk":
         key_trends.append("Structural headwinds constraining growth capacity")
     else:
         key_trends.append("Balanced signals, mixed pressure directions")
 
-    if confidence_class == 'strong':
+    if confidence_class == "strong":
         key_trends.append("High policy delivery reliability")
-    elif confidence_class == 'fragile':
+    elif confidence_class == "fragile":
         key_trends.append("Low policy follow-through, high uncertainty")
 
     if pd.notna(risk_drag_score) and risk_drag_score >= 0.5:
@@ -129,7 +129,7 @@ def _generate_explainability_payload(
     return {
         "primary_strengths": primary_strengths,
         "primary_weaknesses": primary_weaknesses,
-        "key_trends": key_trends
+        "key_trends": key_trends,
     }
 
 
@@ -143,7 +143,8 @@ def fetch_latest_synthesis() -> pd.DataFrame:
     logger.info("Fetching latest synthesis from database")
 
     with get_db() as db:
-        query = text("""
+        query = text(
+            """
             SELECT
                 fsc.geoid AS fips_code,
                 fsc.current_as_of_year AS data_year,
@@ -162,7 +163,8 @@ def fetch_latest_synthesis() -> pd.DataFrame:
                 fsc.classification_version,
                 fsc.updated_at
             FROM final_synthesis_current fsc
-        """)
+        """
+        )
 
         df = pd.read_sql(query, db.connection())
 
@@ -171,25 +173,25 @@ def fetch_latest_synthesis() -> pd.DataFrame:
         return pd.DataFrame()
 
     # Map V2 fields to V1-compatible property names for frontend
-    df['synthesis_grouping'] = df['final_grouping']
-    df['directional_class'] = df['directional_status']
-    df['confidence_class'] = df['confidence_level']
+    df["synthesis_grouping"] = df["final_grouping"]
+    df["directional_class"] = df["directional_status"]
+    df["confidence_class"] = df["confidence_level"]
 
     # Generate explainability fields (not stored in V2 table)
     explainability = []
     for _, row in df.iterrows():
         layer_scores = {
-            "employment_gravity": row.get('employment_gravity_score'),
-            "mobility_optionality": row.get('mobility_optionality_score'),
-            "school_trajectory": row.get('school_trajectory_score'),
-            "housing_elasticity": row.get('housing_elasticity_score'),
-            "demographic_momentum": row.get('demographic_momentum_score')
+            "employment_gravity": row.get("employment_gravity_score"),
+            "mobility_optionality": row.get("mobility_optionality_score"),
+            "school_trajectory": row.get("school_trajectory_score"),
+            "housing_elasticity": row.get("housing_elasticity_score"),
+            "demographic_momentum": row.get("demographic_momentum_score"),
         }
         payload = _generate_explainability_payload(
-            directional_class=row.get('directional_status'),
-            confidence_class=row.get('confidence_level'),
-            risk_drag_score=row.get('risk_drag_score'),
-            layer_scores=layer_scores
+            directional_class=row.get("directional_status"),
+            confidence_class=row.get("confidence_level"),
+            risk_drag_score=row.get("risk_drag_score"),
+            layer_scores=layer_scores,
         )
         explainability.append(payload)
 
@@ -202,8 +204,7 @@ def fetch_latest_synthesis() -> pd.DataFrame:
 
 
 def merge_geojson_data(
-    boundaries_gdf: gpd.GeoDataFrame,
-    classifications_df: pd.DataFrame
+    boundaries_gdf: gpd.GeoDataFrame, classifications_df: pd.DataFrame
 ) -> gpd.GeoDataFrame:
     """
     Merge county boundaries with classification data.
@@ -218,14 +219,10 @@ def merge_geojson_data(
     logger.info("Merging geometries with classification data")
 
     # Merge on FIPS code
-    merged = boundaries_gdf.merge(
-        classifications_df,
-        on='fips_code',
-        how='left'
-    )
+    merged = boundaries_gdf.merge(classifications_df, on="fips_code", how="left")
 
     # Add metadata
-    merged['last_updated'] = datetime.utcnow().isoformat()
+    merged["last_updated"] = datetime.utcnow().isoformat()
 
     logger.info(f"Merged data for {len(merged)} counties")
 
@@ -247,18 +244,21 @@ def prepare_geojson_properties(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     logger.info("Preparing GeoJSON properties")
 
     # Normalize common list-like fields
-    for col in ['primary_strengths', 'primary_weaknesses', 'key_trends']:
+    for col in ["primary_strengths", "primary_weaknesses", "key_trends"]:
         if col in gdf.columns:
-            gdf[col] = gdf[col].apply(
-                lambda x: list(x) if isinstance(x, (list, tuple)) else []
-            )
+            gdf[col] = gdf[col].apply(lambda x: list(x) if isinstance(x, (list, tuple)) else [])
 
     # Round numeric columns
     numeric_cols = [
-        'composite_score', 'composite_raw', 'composite_normalized',
-        'employment_gravity_score', 'mobility_optionality_score',
-        'school_trajectory_score', 'housing_elasticity_score',
-        'demographic_momentum_score', 'risk_drag_score'
+        "composite_score",
+        "composite_raw",
+        "composite_normalized",
+        "employment_gravity_score",
+        "mobility_optionality_score",
+        "school_trajectory_score",
+        "housing_elasticity_score",
+        "demographic_momentum_score",
+        "risk_drag_score",
     ]
 
     # Round numeric columns (only non-null values)
@@ -284,21 +284,28 @@ def prepare_geojson_properties(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
     # Known array/json fields
     array_cols = [
-        'primary_strengths', 'primary_weaknesses', 'key_trends',
-        'uncertainty_reasons', 'per_layer_coverage', 'drivers', 'constraints',
-        'coverage_summary'
+        "primary_strengths",
+        "primary_weaknesses",
+        "key_trends",
+        "uncertainty_reasons",
+        "per_layer_coverage",
+        "drivers",
+        "constraints",
+        "coverage_summary",
     ]
     for col in array_cols:
         if col in gdf.columns:
             gdf[col] = gdf[col].apply(safe_json_dumps)
 
     # Fallback: stringify any remaining list/dict values in object columns
-    object_cols = [c for c in gdf.columns if gdf[c].dtype == 'object']
+    object_cols = [c for c in gdf.columns if gdf[c].dtype == "object"]
     for col in object_cols:
+
         def coerce_obj(v):
             if isinstance(v, (list, dict, tuple)):
                 return safe_json_dumps(v)
             return v
+
         gdf[col] = gdf[col].apply(coerce_obj)
 
     # Fill NaN with None (for JSON null)
@@ -307,11 +314,7 @@ def prepare_geojson_properties(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return gdf
 
 
-def export_geojson(
-    gdf: gpd.GeoDataFrame,
-    output_path: str,
-    indent: Optional[int] = None
-) -> str:
+def export_geojson(gdf: gpd.GeoDataFrame, output_path: str, indent: Optional[int] = None) -> str:
     """
     Export GeoDataFrame to GeoJSON file.
 
@@ -329,7 +332,7 @@ def export_geojson(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # Export
-    gdf.to_file(output_path, driver='GeoJSON', indent=indent)
+    gdf.to_file(output_path, driver="GeoJSON", indent=indent)
 
     # Calculate file size
     file_size = os.path.getsize(output_path)
@@ -350,19 +353,14 @@ def calculate_file_checksum(file_path: str) -> str:
     """
     sha256 = hashlib.sha256()
 
-    with open(file_path, 'rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
             sha256.update(chunk)
 
     return sha256.hexdigest()
 
 
-def log_export_version(
-    version: str,
-    geojson_path: str,
-    record_count: int,
-    data_year: int
-):
+def log_export_version(version: str, geojson_path: str, record_count: int, data_year: int):
     """
     Log export version to database for reproducibility.
 
@@ -377,7 +375,8 @@ def log_export_version(
     checksum = calculate_file_checksum(geojson_path)
 
     with get_db() as db:
-        sql = text("""
+        sql = text(
+            """
             INSERT INTO export_versions (
                 version, export_date, data_year, geojson_path,
                 record_count, checksum, metadata
@@ -392,29 +391,32 @@ def log_export_version(
                 record_count = EXCLUDED.record_count,
                 checksum = EXCLUDED.checksum,
                 metadata = EXCLUDED.metadata
-        """)
+        """
+        )
 
-        db.execute(sql, {
-            "version": version,
-            "export_date": datetime.utcnow(),
-            "data_year": data_year,
-            "geojson_path": geojson_path,
-            "record_count": record_count,
-            "checksum": checksum,
-            "metadata": json.dumps({
-                "file_size_bytes": os.path.getsize(geojson_path),
-                "export_tool": "geojson_export.py",
-                "crs": "EPSG:4326"
-            })
-        })
+        db.execute(
+            sql,
+            {
+                "version": version,
+                "export_date": datetime.utcnow(),
+                "data_year": data_year,
+                "geojson_path": geojson_path,
+                "record_count": record_count,
+                "checksum": checksum,
+                "metadata": json.dumps(
+                    {
+                        "file_size_bytes": os.path.getsize(geojson_path),
+                        "export_tool": "geojson_export.py",
+                        "crs": "EPSG:4326",
+                    }
+                ),
+            },
+        )
 
         db.commit()
 
 
-def run_geojson_export(
-    level: str = "county",
-    versioned: bool = True
-) -> dict:
+def run_geojson_export(level: str = "county", versioned: bool = True) -> dict:
     """
     Main entry point for GeoJSON export pipeline.
 
@@ -447,7 +449,7 @@ def run_geojson_export(
         merged_gdf = prepare_geojson_properties(merged_gdf)
 
         # Determine data year
-        data_year = int(merged_gdf['data_year'].iloc[0])
+        data_year = int(merged_gdf["data_year"].iloc[0])
 
         # Export latest
         latest_path = os.path.join(settings.EXPORT_DIR, "md_counties_latest.geojson")
@@ -457,10 +459,7 @@ def run_geojson_export(
         versioned_path = None
         if versioned:
             version = datetime.utcnow().strftime("%Y%m%d")
-            versioned_path = os.path.join(
-                settings.EXPORT_DIR,
-                f"md_counties_{version}.geojson"
-            )
+            versioned_path = os.path.join(settings.EXPORT_DIR, f"md_counties_{version}.geojson")
             export_geojson(merged_gdf, versioned_path, indent=2)  # Readable for archive
 
             # Log version
@@ -476,8 +475,8 @@ def run_geojson_export(
             metadata={
                 "data_year": data_year,
                 "output_latest": latest_path,
-                "output_versioned": versioned_path
-            }
+                "output_versioned": versioned_path,
+            },
         )
 
         logger.info("GeoJSON export completed successfully")
@@ -487,7 +486,7 @@ def run_geojson_export(
             "record_count": len(merged_gdf),
             "data_year": data_year,
             "latest_path": latest_path,
-            "versioned_path": versioned_path
+            "versioned_path": versioned_path,
         }
 
     except Exception as e:
@@ -497,43 +496,29 @@ def run_geojson_export(
             layer_name="geojson_export",
             data_source="final_synthesis_current",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
 
         raise
 
 
 if __name__ == "__main__":
-    import sys
     import argparse
+    import sys
+
     from src.utils.logging import setup_logging
 
     setup_logging("geojson_export")
 
     parser = argparse.ArgumentParser(description="Export Maryland county data to GeoJSON")
     parser.add_argument(
-        "--level",
-        type=str,
-        default="county",
-        choices=["county"],
-        help="Geography level"
+        "--level", type=str, default="county", choices=["county"], help="Geography level"
     )
-    parser.add_argument(
-        "--versioned",
-        action="store_true",
-        help="Create versioned snapshot"
-    )
-    parser.add_argument(
-        "--latest-only",
-        action="store_true",
-        help="Only update 'latest' file"
-    )
+    parser.add_argument("--versioned", action="store_true", help="Create versioned snapshot")
+    parser.add_argument("--latest-only", action="store_true", help="Only update 'latest' file")
 
     args = parser.parse_args()
 
-    result = run_geojson_export(
-        level=args.level,
-        versioned=not args.latest_only
-    )
+    result = run_geojson_export(level=args.level, versioned=not args.latest_only)
 
     print(json.dumps(result, indent=2))

@@ -24,22 +24,22 @@ Date: 2026-01-29
 Version: 2.0
 """
 
+import hashlib
 import os
 import sys
-import hashlib
 import tempfile
-import zipfile
-from pathlib import Path
-from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional, Tuple, Union
-from dataclasses import dataclass
 import warnings
+import zipfile
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 
-import pandas as pd
 import geopandas as gpd
 import numpy as np
-from sqlalchemy import text
+import pandas as pd
 import requests
+from sqlalchemy import text
 
 # Note: gtfs_kit imports are deferred to avoid r5py import hook triggering
 # when Java is not available. Import only in functions that need it.
@@ -49,12 +49,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
-from src.utils.db_bulk import execute_batch
 from src.utils.year_policy import current_year, lodes_year_for_data_year
 
 logger = get_logger(__name__)
@@ -80,40 +80,35 @@ R5_CACHE_DIR = CACHE_DIR / "r5_networks"
 R5_CACHE_DIR.mkdir(exist_ok=True)
 
 # Maryland bounding box (approximate)
-MD_BBOX = {
-    'west': -79.5,
-    'south': 37.9,
-    'east': -75.0,
-    'north': 39.75
-}
+MD_BBOX = {"west": -79.5, "south": 37.9, "east": -75.0, "north": 39.75}
 
 # GTFS feeds for Maryland region
 GTFS_FEEDS = {
     # MTA Maryland feeds
-    'mta_local_bus': {
-        'url': 'https://feeds.mta.maryland.gov/gtfs/local-bus',
-        'agency': 'MTA Maryland',
-        'priority': 1
+    "mta_local_bus": {
+        "url": "https://feeds.mta.maryland.gov/gtfs/local-bus",
+        "agency": "MTA Maryland",
+        "priority": 1,
     },
-    'mta_light_rail': {
-        'url': 'https://feeds.mta.maryland.gov/gtfs/light-rail',
-        'agency': 'MTA Maryland',
-        'priority': 1
+    "mta_light_rail": {
+        "url": "https://feeds.mta.maryland.gov/gtfs/light-rail",
+        "agency": "MTA Maryland",
+        "priority": 1,
     },
-    'mta_metro': {
-        'url': 'https://feeds.mta.maryland.gov/gtfs/metro',
-        'agency': 'MTA Maryland',
-        'priority': 1
+    "mta_metro": {
+        "url": "https://feeds.mta.maryland.gov/gtfs/metro",
+        "agency": "MTA Maryland",
+        "priority": 1,
     },
-    'mta_marc': {
-        'url': 'https://feeds.mta.maryland.gov/gtfs/marc',
-        'agency': 'MTA Maryland',
-        'priority': 1
+    "mta_marc": {
+        "url": "https://feeds.mta.maryland.gov/gtfs/marc",
+        "agency": "MTA Maryland",
+        "priority": 1,
     },
-    'mta_commuter_bus': {
-        'url': 'https://feeds.mta.maryland.gov/gtfs/commuter-bus',
-        'agency': 'MTA Maryland',
-        'priority': 1
+    "mta_commuter_bus": {
+        "url": "https://feeds.mta.maryland.gov/gtfs/commuter-bus",
+        "agency": "MTA Maryland",
+        "priority": 1,
     },
     # WMATA (for DC-adjacent counties) - Note: requires API key or use Transitland
     # Disabled by default due to API key requirement
@@ -123,36 +118,32 @@ GTFS_FEEDS = {
     #     'priority': 2
     # },
     # Regional transit (optional)
-    'ride_on': {
-        'url': 'https://www.montgomerycountymd.gov/DOT-Transit/Resources/Files/gtfs.zip',
-        'agency': 'Montgomery County Ride On',
-        'priority': 3
+    "ride_on": {
+        "url": "https://www.montgomerycountymd.gov/DOT-Transit/Resources/Files/gtfs.zip",
+        "agency": "Montgomery County Ride On",
+        "priority": 3,
     },
 }
 
 # Time thresholds for accessibility computation (minutes)
-TIME_THRESHOLDS = {
-    'transit_45': 45,
-    'transit_30': 30,
-    'walk_30': 30,
-    'bike_30': 30,
-    'car_30': 30
-}
+TIME_THRESHOLDS = {"transit_45": 45, "transit_30": 30, "walk_30": 30, "bike_30": 30, "car_30": 30}
 
 # Accessibility score weights (must sum to 1.0)
 ACCESSIBILITY_WEIGHTS = {
-    'transit_45': 0.60,  # Primary: transit within 45 min
-    'walk_30': 0.25,     # Secondary: walkable jobs
-    'bike_30': 0.15      # Tertiary: bikeable jobs
+    "transit_45": 0.60,  # Primary: transit within 45 min
+    "walk_30": 0.25,  # Secondary: walkable jobs
+    "bike_30": 0.15,  # Tertiary: bikeable jobs
 }
 
 # =============================================================================
 # DATA CLASSES
 # =============================================================================
 
+
 @dataclass
 class AccessibilityResult:
     """Results from accessibility computation for a single origin."""
+
     tract_geoid: str
     fips_code: str
     jobs_transit_45: int
@@ -166,6 +157,7 @@ class AccessibilityResult:
 @dataclass
 class GTFSFeedInfo:
     """Metadata about a downloaded GTFS feed."""
+
     name: str
     path: Path
     agency: str
@@ -179,6 +171,7 @@ class GTFSFeedInfo:
 # =============================================================================
 # DATA ACQUISITION
 # =============================================================================
+
 
 def download_maryland_osm() -> Path:
     """
@@ -204,7 +197,7 @@ def download_maryland_osm() -> Path:
         response = requests.get(url, stream=True, timeout=300)
         response.raise_for_status()
 
-        with open(osm_path, 'wb') as f:
+        with open(osm_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
@@ -227,8 +220,7 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
         List of GTFSFeedInfo objects
     """
     feeds_to_download = feed_names or [
-        name for name, info in GTFS_FEEDS.items()
-        if info.get('priority', 99) <= 2
+        name for name, info in GTFS_FEEDS.items() if info.get("priority", 99) <= 2
     ]
 
     downloaded = []
@@ -251,10 +243,10 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
         if needs_download:
             logger.info(f"Downloading GTFS feed: {feed_name}")
             try:
-                response = requests.get(feed_info['url'], timeout=120)
+                response = requests.get(feed_info["url"], timeout=120)
                 response.raise_for_status()
 
-                with open(feed_path, 'wb') as f:
+                with open(feed_path, "wb") as f:
                     f.write(response.content)
 
                 logger.info(f"✓ Downloaded {feed_name}")
@@ -264,21 +256,23 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
                 continue
 
         # Compute file hash and extract feed date
-        file_hash = hashlib.md5(open(feed_path, 'rb').read()).hexdigest()
+        file_hash = hashlib.md5(open(feed_path, "rb").read()).hexdigest()
 
         # Try to extract feed date from feed_info.txt
         feed_date = _extract_gtfs_date(feed_path)
 
-        downloaded.append(GTFSFeedInfo(
-            name=feed_name,
-            path=feed_path,
-            agency=feed_info['agency'],
-            feed_date=feed_date,
-            file_hash=file_hash,
-            source_url=feed_info['url'],
-            fetch_date=datetime.utcnow().date().isoformat(),
-            is_real=True
-        ))
+        downloaded.append(
+            GTFSFeedInfo(
+                name=feed_name,
+                path=feed_path,
+                agency=feed_info["agency"],
+                feed_date=feed_date,
+                file_hash=file_hash,
+                source_url=feed_info["url"],
+                fetch_date=datetime.utcnow().date().isoformat(),
+                is_real=True,
+            )
+        )
 
     return downloaded
 
@@ -286,22 +280,22 @@ def download_gtfs_feeds(feed_names: Optional[List[str]] = None) -> List[GTFSFeed
 def _extract_gtfs_date(gtfs_path: Path) -> date:
     """Extract feed start date from GTFS feed_info.txt or calendar.txt."""
     try:
-        with zipfile.ZipFile(gtfs_path, 'r') as zf:
+        with zipfile.ZipFile(gtfs_path, "r") as zf:
             # Try feed_info.txt first
-            if 'feed_info.txt' in zf.namelist():
-                with zf.open('feed_info.txt') as f:
+            if "feed_info.txt" in zf.namelist():
+                with zf.open("feed_info.txt") as f:
                     df = pd.read_csv(f, dtype=str)
-                    if 'feed_start_date' in df.columns:
-                        date_str = df['feed_start_date'].iloc[0]
-                        return datetime.strptime(date_str, '%Y%m%d').date()
+                    if "feed_start_date" in df.columns:
+                        date_str = df["feed_start_date"].iloc[0]
+                        return datetime.strptime(date_str, "%Y%m%d").date()
 
             # Fallback to calendar.txt
-            if 'calendar.txt' in zf.namelist():
-                with zf.open('calendar.txt') as f:
+            if "calendar.txt" in zf.namelist():
+                with zf.open("calendar.txt") as f:
                     df = pd.read_csv(f, dtype=str)
-                    if 'start_date' in df.columns:
-                        date_str = df['start_date'].min()
-                        return datetime.strptime(date_str, '%Y%m%d').date()
+                    if "start_date" in df.columns:
+                        date_str = df["start_date"].min()
+                        return datetime.strptime(date_str, "%Y%m%d").date()
 
     except Exception as e:
         logger.warning(f"Could not extract GTFS date: {e}")
@@ -329,7 +323,7 @@ def download_lodes_wac(year: int = settings.LODES_LATEST_YEAR) -> pd.DataFrame:
     # Check for existing cache
     if cache_path_csv.exists():
         logger.info(f"Using cached LODES WAC: {cache_path_csv}")
-        return pd.read_csv(cache_path_csv, dtype={'tract_geoid': str})
+        return pd.read_csv(cache_path_csv, dtype={"tract_geoid": str})
 
     if cache_path_parquet.exists():
         try:
@@ -344,22 +338,26 @@ def download_lodes_wac(year: int = settings.LODES_LATEST_YEAR) -> pd.DataFrame:
     logger.info(f"Downloading LODES WAC for {year}...")
 
     try:
-        df = pd.read_csv(url, compression='gzip', dtype={'w_geocode': str})
+        df = pd.read_csv(url, compression="gzip", dtype={"w_geocode": str})
 
         # Extract tract GEOID (first 11 digits of block GEOID)
-        df['tract_geoid'] = df['w_geocode'].str[:11]
+        df["tract_geoid"] = df["w_geocode"].str[:11]
 
         # Aggregate jobs to tract level
-        tract_jobs = df.groupby('tract_geoid').agg(
-            total_jobs=('C000', 'sum'),  # Total jobs
-            jobs_retail=('CNS07', 'sum'),  # Retail trade
-            jobs_healthcare=('CNS12', 'sum'),  # Healthcare
-            jobs_education=('CNS15', 'sum'),  # Education
-            jobs_construction=('CNS04', 'sum'),  # Construction
-        ).reset_index()
+        tract_jobs = (
+            df.groupby("tract_geoid")
+            .agg(
+                total_jobs=("C000", "sum"),  # Total jobs
+                jobs_retail=("CNS07", "sum"),  # Retail trade
+                jobs_healthcare=("CNS12", "sum"),  # Healthcare
+                jobs_education=("CNS15", "sum"),  # Education
+                jobs_construction=("CNS04", "sum"),  # Construction
+            )
+            .reset_index()
+        )
 
         # Filter to Maryland tracts (FIPS 24)
-        tract_jobs = tract_jobs[tract_jobs['tract_geoid'].str.startswith('24')]
+        tract_jobs = tract_jobs[tract_jobs["tract_geoid"].str.startswith("24")]
 
         # Cache result (try parquet, fall back to CSV)
         try:
@@ -368,7 +366,9 @@ def download_lodes_wac(year: int = settings.LODES_LATEST_YEAR) -> pd.DataFrame:
             tract_jobs.to_csv(cache_path_csv, index=False)
             logger.info("Cached as CSV (parquet not available)")
 
-        logger.info(f"✓ Loaded LODES WAC: {len(tract_jobs)} tracts, {tract_jobs['total_jobs'].sum():,} total jobs")
+        logger.info(
+            f"✓ Loaded LODES WAC: {len(tract_jobs)} tracts, {tract_jobs['total_jobs'].sum():,} total jobs"
+        )
         return tract_jobs
 
     except Exception as e:
@@ -409,58 +409,56 @@ def fetch_maryland_tracts(year: int = 2020) -> gpd.GeoDataFrame:
         tracts = tracts.to_crs("EPSG:4326")
 
         # Rename columns
-        tracts = tracts.rename(columns={
-            'GEOID': 'tract_geoid',
-            'STATEFP': 'state_fips',
-            'COUNTYFP': 'county_fips'
-        })
+        tracts = tracts.rename(
+            columns={"GEOID": "tract_geoid", "STATEFP": "state_fips", "COUNTYFP": "county_fips"}
+        )
 
         # Create full county FIPS
-        tracts['fips_code'] = tracts['state_fips'] + tracts['county_fips']
+        tracts["fips_code"] = tracts["state_fips"] + tracts["county_fips"]
 
         # Add centroids for routing
-        tracts['centroid_lon'] = tracts.geometry.centroid.x
-        tracts['centroid_lat'] = tracts.geometry.centroid.y
+        tracts["centroid_lon"] = tracts.geometry.centroid.x
+        tracts["centroid_lat"] = tracts.geometry.centroid.y
 
         # Get tract population from ACS
         try:
             from census import Census
+
             c = Census(settings.CENSUS_API_KEY)
 
             pop_data = c.acs5.state_county_tract(
-                ('B01003_001E',),  # Total population
-                state_fips='24',
-                county_fips='*',
-                tract='*',
-                year=year
+                ("B01003_001E",),  # Total population
+                state_fips="24",
+                county_fips="*",
+                tract="*",
+                year=year,
             )
 
             pop_df = pd.DataFrame(pop_data)
-            pop_df['tract_geoid'] = pop_df['state'] + pop_df['county'] + pop_df['tract']
-            pop_df = pop_df.rename(columns={'B01003_001E': 'population'})
+            pop_df["tract_geoid"] = pop_df["state"] + pop_df["county"] + pop_df["tract"]
+            pop_df = pop_df.rename(columns={"B01003_001E": "population"})
 
             tracts = tracts.merge(
-                pop_df[['tract_geoid', 'population']],
-                on='tract_geoid',
-                how='left'
+                pop_df[["tract_geoid", "population"]], on="tract_geoid", how="left"
             )
 
         except Exception as e:
             logger.warning(f"Could not fetch population data: {e}")
-            tracts['population'] = 0
+            tracts["population"] = 0
 
         # Filter to valid Maryland counties
-        tracts = tracts[tracts['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+        tracts = tracts[tracts["fips_code"].isin(MD_COUNTY_FIPS.keys())]
 
         # Keep essential columns
-        tracts = tracts[['tract_geoid', 'fips_code', 'centroid_lon', 'centroid_lat',
-                         'population', 'geometry']]
+        tracts = tracts[
+            ["tract_geoid", "fips_code", "centroid_lon", "centroid_lat", "population", "geometry"]
+        ]
 
         # Cache (try parquet, fall back to GeoJSON)
         try:
             tracts.to_parquet(cache_path_parquet)
         except (ImportError, Exception):
-            tracts.to_file(cache_path_geojson, driver='GeoJSON')
+            tracts.to_file(cache_path_geojson, driver="GeoJSON")
             logger.info("Cached as GeoJSON (parquet not available)")
 
         logger.info(f"✓ Loaded {len(tracts)} census tracts")
@@ -475,10 +473,12 @@ def fetch_maryland_tracts(year: int = 2020) -> gpd.GeoDataFrame:
 # R5 ACCESSIBILITY COMPUTATION
 # =============================================================================
 
+
 def check_r5py_available() -> bool:
     """Check if r5py is installed and functional."""
     try:
         import r5py
+
         return True
     except (ImportError, Exception) as e:
         # r5py may fail to import if Java is not available
@@ -492,7 +492,7 @@ def compute_accessibility_r5py(
     jobs: pd.DataFrame,
     osm_path: Path,
     gtfs_feeds: List[GTFSFeedInfo],
-    departure_time: datetime = None
+    departure_time: datetime = None,
 ) -> pd.DataFrame:
     """
     Compute accessibility using r5py routing engine.
@@ -522,24 +522,21 @@ def compute_accessibility_r5py(
     # Create transport network with all GTFS feeds
     gtfs_paths = [str(f.path) for f in gtfs_feeds]
 
-    transport_network = r5py.TransportNetwork(
-        osm_pbf=str(osm_path),
-        gtfs=gtfs_paths
-    )
+    transport_network = r5py.TransportNetwork(osm_pbf=str(osm_path), gtfs=gtfs_paths)
 
     # Prepare origin points (tract centroids)
     origins = gpd.GeoDataFrame(
-        tracts[['tract_geoid', 'fips_code']].copy(),
-        geometry=gpd.points_from_xy(tracts['centroid_lon'], tracts['centroid_lat']),
-        crs="EPSG:4326"
+        tracts[["tract_geoid", "fips_code"]].copy(),
+        geometry=gpd.points_from_xy(tracts["centroid_lon"], tracts["centroid_lat"]),
+        crs="EPSG:4326",
     )
-    origins = origins.rename(columns={'tract_geoid': 'id'})
+    origins = origins.rename(columns={"tract_geoid": "id"})
 
     # Prepare destination points (also tract centroids, weighted by jobs)
     destinations = origins.copy()
 
     # Merge job counts
-    jobs_lookup = jobs.set_index('tract_geoid')['total_jobs'].to_dict()
+    jobs_lookup = jobs.set_index("tract_geoid")["total_jobs"].to_dict()
 
     logger.info(f"Computing travel time matrices for {len(origins)} origins...")
 
@@ -555,7 +552,7 @@ def compute_accessibility_r5py(
         departure=departure_time,
         departure_time_window=timedelta(hours=1),
         transport_modes=[r5py.TransportMode.TRANSIT, r5py.TransportMode.WALK],
-        max_time=timedelta(minutes=60)
+        max_time=timedelta(minutes=60),
     ).compute_travel_times()
 
     # Walk-only accessibility (30 min)
@@ -567,7 +564,7 @@ def compute_accessibility_r5py(
         destinations=destinations,
         departure=departure_time,
         transport_modes=[r5py.TransportMode.WALK],
-        max_time=timedelta(minutes=45)
+        max_time=timedelta(minutes=45),
     ).compute_travel_times()
 
     # Bike accessibility (30 min)
@@ -579,7 +576,7 @@ def compute_accessibility_r5py(
         destinations=destinations,
         departure=departure_time,
         transport_modes=[r5py.TransportMode.BICYCLE],
-        max_time=timedelta(minutes=45)
+        max_time=timedelta(minutes=45),
     ).compute_travel_times()
 
     # Car accessibility (30 min, for comparison)
@@ -591,29 +588,29 @@ def compute_accessibility_r5py(
         destinations=destinations,
         departure=departure_time,
         transport_modes=[r5py.TransportMode.CAR],
-        max_time=timedelta(minutes=45)
+        max_time=timedelta(minutes=45),
     ).compute_travel_times()
 
     # Aggregate to accessibility metrics
     logger.info("Aggregating accessibility metrics...")
 
-    for tract_id in tracts['tract_geoid'].unique():
+    for tract_id in tracts["tract_geoid"].unique():
         # Get travel times from this origin
         transit_times = travel_time_matrix_transit[
-            travel_time_matrix_transit['from_id'] == tract_id
-        ][['to_id', 'travel_time']].set_index('to_id')['travel_time']
+            travel_time_matrix_transit["from_id"] == tract_id
+        ][["to_id", "travel_time"]].set_index("to_id")["travel_time"]
 
-        walk_times = travel_time_matrix_walk[
-            travel_time_matrix_walk['from_id'] == tract_id
-        ][['to_id', 'travel_time']].set_index('to_id')['travel_time']
+        walk_times = travel_time_matrix_walk[travel_time_matrix_walk["from_id"] == tract_id][
+            ["to_id", "travel_time"]
+        ].set_index("to_id")["travel_time"]
 
-        bike_times = travel_time_matrix_bike[
-            travel_time_matrix_bike['from_id'] == tract_id
-        ][['to_id', 'travel_time']].set_index('to_id')['travel_time']
+        bike_times = travel_time_matrix_bike[travel_time_matrix_bike["from_id"] == tract_id][
+            ["to_id", "travel_time"]
+        ].set_index("to_id")["travel_time"]
 
-        car_times = travel_time_matrix_car[
-            travel_time_matrix_car['from_id'] == tract_id
-        ][['to_id', 'travel_time']].set_index('to_id')['travel_time']
+        car_times = travel_time_matrix_car[travel_time_matrix_car["from_id"] == tract_id][
+            ["to_id", "travel_time"]
+        ].set_index("to_id")["travel_time"]
 
         # Count jobs reachable within thresholds
         jobs_transit_45 = sum(
@@ -646,26 +643,26 @@ def compute_accessibility_r5py(
             if pd.notna(time) and time <= 30
         )
 
-        tract_row = tracts[tracts['tract_geoid'] == tract_id].iloc[0]
+        tract_row = tracts[tracts["tract_geoid"] == tract_id].iloc[0]
 
-        results.append({
-            'tract_geoid': tract_id,
-            'fips_code': tract_row['fips_code'],
-            'jobs_transit_45': jobs_transit_45,
-            'jobs_transit_30': jobs_transit_30,
-            'jobs_walk_30': jobs_walk_30,
-            'jobs_bike_30': jobs_bike_30,
-            'jobs_car_30': jobs_car_30,
-            'tract_population': tract_row.get('population', 0)
-        })
+        results.append(
+            {
+                "tract_geoid": tract_id,
+                "fips_code": tract_row["fips_code"],
+                "jobs_transit_45": jobs_transit_45,
+                "jobs_transit_30": jobs_transit_30,
+                "jobs_walk_30": jobs_walk_30,
+                "jobs_bike_30": jobs_bike_30,
+                "jobs_car_30": jobs_car_30,
+                "tract_population": tract_row.get("population", 0),
+            }
+        )
 
     return pd.DataFrame(results)
 
 
 def compute_accessibility_fallback(
-    tracts: gpd.GeoDataFrame,
-    jobs: pd.DataFrame,
-    gtfs_feeds: List[GTFSFeedInfo]
+    tracts: gpd.GeoDataFrame, jobs: pd.DataFrame, gtfs_feeds: List[GTFSFeedInfo]
 ) -> pd.DataFrame:
     """
     Fallback accessibility computation when r5py is not available.
@@ -696,9 +693,9 @@ def compute_accessibility_fallback(
     all_stops = []
     for feed_info in gtfs_feeds:
         try:
-            feed = gk.read_feed(str(feed_info.path), dist_units='mi')
-            stops = feed.stops[['stop_id', 'stop_lat', 'stop_lon']].copy()
-            stops['feed'] = feed_info.name
+            feed = gk.read_feed(str(feed_info.path), dist_units="mi")
+            stops = feed.stops[["stop_id", "stop_lat", "stop_lon"]].copy()
+            stops["feed"] = feed_info.name
             all_stops.append(stops)
         except Exception as e:
             logger.warning(f"Could not read {feed_info.name}: {e}")
@@ -707,21 +704,23 @@ def compute_accessibility_fallback(
         stops_df = pd.concat(all_stops, ignore_index=True)
         stops_gdf = gpd.GeoDataFrame(
             stops_df,
-            geometry=gpd.points_from_xy(stops_df['stop_lon'], stops_df['stop_lat']),
-            crs="EPSG:4326"
+            geometry=gpd.points_from_xy(stops_df["stop_lon"], stops_df["stop_lat"]),
+            crs="EPSG:4326",
         ).to_crs("EPSG:3857")
     else:
-        stops_gdf = gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:3857")
+        stops_gdf = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:3857")
 
     # Prepare tracts
     tracts_proj = tracts.to_crs("EPSG:3857")
     tract_centroids = tracts_proj.copy()
-    tract_centroids['geometry'] = tract_centroids.geometry.centroid
+    tract_centroids["geometry"] = tract_centroids.geometry.centroid
 
     # Jobs vector aligned to tract order
-    jobs_lookup = jobs.set_index('tract_geoid')['total_jobs'].to_dict()
-    tract_ids = tract_centroids['tract_geoid'].astype(str).tolist()
-    destination_jobs = np.array([int(jobs_lookup.get(tract_id, 0)) for tract_id in tract_ids], dtype=np.int64)
+    jobs_lookup = jobs.set_index("tract_geoid")["total_jobs"].to_dict()
+    tract_ids = tract_centroids["tract_geoid"].astype(str).tolist()
+    destination_jobs = np.array(
+        [int(jobs_lookup.get(tract_id, 0)) for tract_id in tract_ids], dtype=np.int64
+    )
 
     # Compute nearby transit stop counts per tract using spatial index.
     if stops_gdf.empty:
@@ -730,7 +729,7 @@ def compute_accessibility_fallback(
         stop_index = stops_gdf.sindex
         stop_counts_list: List[int] = []
         for centroid in tract_centroids.geometry:
-            nearby_ids = stop_index.query(centroid.buffer(800), predicate='intersects')
+            nearby_ids = stop_index.query(centroid.buffer(800), predicate="intersects")
             stop_counts_list.append(len(nearby_ids))
         stop_counts = np.array(stop_counts_list, dtype=np.int64)
     has_transit = stop_counts > 0
@@ -756,17 +755,24 @@ def compute_accessibility_fallback(
     jobs_transit_30 = (transit_30_mask @ destination_jobs) * has_transit.astype(np.int64)
     jobs_transit_45 = (transit_45_mask @ destination_jobs) * has_transit.astype(np.int64)
 
-    results = pd.DataFrame({
-        'tract_geoid': tract_ids,
-        'fips_code': tract_centroids['fips_code'].astype(str).values,
-        'jobs_transit_45': jobs_transit_45.astype(np.int64),
-        'jobs_transit_30': jobs_transit_30.astype(np.int64),
-        'jobs_walk_30': jobs_walk_30.astype(np.int64),
-        'jobs_bike_30': jobs_bike_30.astype(np.int64),
-        'jobs_car_30': jobs_car_30.astype(np.int64),
-        'tract_population': tract_centroids.get('population', pd.Series([0] * len(tract_centroids))).fillna(0).astype(int).values,
-        'transit_stops_nearby': stop_counts.astype(np.int64),
-    })
+    results = pd.DataFrame(
+        {
+            "tract_geoid": tract_ids,
+            "fips_code": tract_centroids["fips_code"].astype(str).values,
+            "jobs_transit_45": jobs_transit_45.astype(np.int64),
+            "jobs_transit_30": jobs_transit_30.astype(np.int64),
+            "jobs_walk_30": jobs_walk_30.astype(np.int64),
+            "jobs_bike_30": jobs_bike_30.astype(np.int64),
+            "jobs_car_30": jobs_car_30.astype(np.int64),
+            "tract_population": tract_centroids.get(
+                "population", pd.Series([0] * len(tract_centroids))
+            )
+            .fillna(0)
+            .astype(int)
+            .values,
+            "transit_stops_nearby": stop_counts.astype(np.int64),
+        }
+    )
 
     return results
 
@@ -774,6 +780,7 @@ def compute_accessibility_fallback(
 # =============================================================================
 # SCORING AND NORMALIZATION
 # =============================================================================
+
 
 def normalize_accessibility_scores(df: pd.DataFrame, jobs: pd.DataFrame) -> pd.DataFrame:
     """
@@ -789,39 +796,41 @@ def normalize_accessibility_scores(df: pd.DataFrame, jobs: pd.DataFrame) -> pd.D
     Returns:
         DataFrame with added score columns
     """
-    total_regional_jobs = jobs['total_jobs'].sum()
+    total_regional_jobs = jobs["total_jobs"].sum()
 
     # Normalize each metric to 0-1 using percentile rank
-    for col in ['jobs_transit_45', 'jobs_transit_30', 'jobs_walk_30',
-                'jobs_bike_30', 'jobs_car_30']:
+    for col in [
+        "jobs_transit_45",
+        "jobs_transit_30",
+        "jobs_walk_30",
+        "jobs_bike_30",
+        "jobs_car_30",
+    ]:
         if col in df.columns:
-            score_col = col.replace('jobs_', '') + '_score'
+            score_col = col.replace("jobs_", "") + "_score"
             df[score_col] = df[col].rank(pct=True)
 
     # Compute percentage of regional jobs reachable
-    df['pct_regional_jobs_transit'] = (df['jobs_transit_45'] / total_regional_jobs).clip(0, 1)
+    df["pct_regional_jobs_transit"] = (df["jobs_transit_45"] / total_regional_jobs).clip(0, 1)
 
     # Transit competitiveness ratio
-    df['transit_car_ratio'] = np.where(
-        df['jobs_car_30'] > 0,
-        df['jobs_transit_45'] / df['jobs_car_30'],
-        0
+    df["transit_car_ratio"] = np.where(
+        df["jobs_car_30"] > 0, df["jobs_transit_45"] / df["jobs_car_30"], 0
     ).clip(0, 1)
 
     # Composite multimodal accessibility score
     # Weight: 60% transit, 25% walk, 15% bike
-    df['multimodal_accessibility_score'] = (
-        0.60 * df.get('transit_45_score', 0) +
-        0.25 * df.get('walk_30_score', 0) +
-        0.15 * df.get('bike_30_score', 0)
+    df["multimodal_accessibility_score"] = (
+        0.60 * df.get("transit_45_score", 0)
+        + 0.25 * df.get("walk_30_score", 0)
+        + 0.15 * df.get("bike_30_score", 0)
     ).clip(0, 1)
 
     return df
 
 
 def compute_transit_quality_metrics(
-    tracts: gpd.GeoDataFrame,
-    gtfs_feeds: List[GTFSFeedInfo]
+    tracts: gpd.GeoDataFrame, gtfs_feeds: List[GTFSFeedInfo]
 ) -> pd.DataFrame:
     """
     Compute transit service quality metrics by tract.
@@ -840,104 +849,111 @@ def compute_transit_quality_metrics(
 
     for feed_info in gtfs_feeds:
         try:
-            feed = gk.read_feed(str(feed_info.path), dist_units='mi')
+            feed = gk.read_feed(str(feed_info.path), dist_units="mi")
 
             # Get stop locations
-            stops = feed.stops[['stop_id', 'stop_lat', 'stop_lon']].copy()
+            stops = feed.stops[["stop_id", "stop_lat", "stop_lon"]].copy()
 
             # Compute headways from stop_times
-            if 'stop_times' in dir(feed) and feed.stop_times is not None:
+            if "stop_times" in dir(feed) and feed.stop_times is not None:
                 stop_times = feed.stop_times.copy()
 
                 # Group by stop and count trips per day
-                trips_per_stop = stop_times.groupby('stop_id').size().reset_index()
-                trips_per_stop.columns = ['stop_id', 'daily_trips']
+                trips_per_stop = stop_times.groupby("stop_id").size().reset_index()
+                trips_per_stop.columns = ["stop_id", "daily_trips"]
 
-                stops = stops.merge(trips_per_stop, on='stop_id', how='left')
-                stops['daily_trips'] = stops['daily_trips'].fillna(0)
+                stops = stops.merge(trips_per_stop, on="stop_id", how="left")
+                stops["daily_trips"] = stops["daily_trips"].fillna(0)
 
                 # Estimate headway (minutes between trips, assuming 16-hour service day)
-                stops['avg_headway'] = np.where(
-                    stops['daily_trips'] > 0,
-                    (16 * 60) / stops['daily_trips'],
-                    999  # No service
+                stops["avg_headway"] = np.where(
+                    stops["daily_trips"] > 0, (16 * 60) / stops["daily_trips"], 999  # No service
                 )
             else:
-                stops['daily_trips'] = 0
-                stops['avg_headway'] = 999
+                stops["daily_trips"] = 0
+                stops["avg_headway"] = 999
 
-            stops['feed'] = feed_info.name
+            stops["feed"] = feed_info.name
             all_stops.append(stops)
 
         except Exception as e:
             logger.warning(f"Could not process {feed_info.name}: {e}")
 
     if not all_stops:
-        return pd.DataFrame({
-            'tract_geoid': tracts['tract_geoid'],
-            'transit_stop_density': 0,
-            'frequent_transit_area_pct': 0,
-            'average_headway_minutes': 999
-        })
+        return pd.DataFrame(
+            {
+                "tract_geoid": tracts["tract_geoid"],
+                "transit_stop_density": 0,
+                "frequent_transit_area_pct": 0,
+                "average_headway_minutes": 999,
+            }
+        )
 
     stops_df = pd.concat(all_stops, ignore_index=True)
     stops_gdf = gpd.GeoDataFrame(
         stops_df,
-        geometry=gpd.points_from_xy(stops_df['stop_lon'], stops_df['stop_lat']),
-        crs="EPSG:4326"
+        geometry=gpd.points_from_xy(stops_df["stop_lon"], stops_df["stop_lat"]),
+        crs="EPSG:4326",
     )
 
     # Spatial join stops to tracts
     tracts_proj = tracts.to_crs("EPSG:3857")
     stops_proj = stops_gdf.to_crs("EPSG:3857")
 
-    joined = gpd.sjoin(stops_proj, tracts_proj[['tract_geoid', 'geometry']],
-                       how='left', predicate='within')
+    joined = gpd.sjoin(
+        stops_proj, tracts_proj[["tract_geoid", "geometry"]], how="left", predicate="within"
+    )
 
     # Aggregate by tract
-    tract_metrics = joined.groupby('tract_geoid').agg(
-        stop_count=('stop_id', 'count'),
-        avg_headway=('avg_headway', 'mean'),
-        frequent_stops=('avg_headway', lambda x: (x <= 15).sum())
-    ).reset_index()
+    tract_metrics = (
+        joined.groupby("tract_geoid")
+        .agg(
+            stop_count=("stop_id", "count"),
+            avg_headway=("avg_headway", "mean"),
+            frequent_stops=("avg_headway", lambda x: (x <= 15).sum()),
+        )
+        .reset_index()
+    )
 
     # Compute area for density
     tracts_area = tracts_proj.copy()
-    tracts_area['area_sq_mi'] = tracts_area.geometry.area / 2.59e6  # m² to sq mi
+    tracts_area["area_sq_mi"] = tracts_area.geometry.area / 2.59e6  # m² to sq mi
 
     tract_metrics = tract_metrics.merge(
-        tracts_area[['tract_geoid', 'area_sq_mi']],
-        on='tract_geoid',
-        how='left'
+        tracts_area[["tract_geoid", "area_sq_mi"]], on="tract_geoid", how="left"
     )
 
     # Calculate final metrics
-    tract_metrics['transit_stop_density'] = np.where(
-        tract_metrics['area_sq_mi'] > 0,
-        tract_metrics['stop_count'] / tract_metrics['area_sq_mi'],
-        0
+    tract_metrics["transit_stop_density"] = np.where(
+        tract_metrics["area_sq_mi"] > 0,
+        tract_metrics["stop_count"] / tract_metrics["area_sq_mi"],
+        0,
     )
 
-    tract_metrics['frequent_transit_area_pct'] = np.where(
-        tract_metrics['stop_count'] > 0,
-        tract_metrics['frequent_stops'] / tract_metrics['stop_count'],
-        0
+    tract_metrics["frequent_transit_area_pct"] = np.where(
+        tract_metrics["stop_count"] > 0,
+        tract_metrics["frequent_stops"] / tract_metrics["stop_count"],
+        0,
     )
 
-    tract_metrics['average_headway_minutes'] = tract_metrics['avg_headway'].fillna(999)
+    tract_metrics["average_headway_minutes"] = tract_metrics["avg_headway"].fillna(999)
 
-    return tract_metrics[['tract_geoid', 'transit_stop_density',
-                          'frequent_transit_area_pct', 'average_headway_minutes']]
+    return tract_metrics[
+        [
+            "tract_geoid",
+            "transit_stop_density",
+            "frequent_transit_area_pct",
+            "average_headway_minutes",
+        ]
+    ]
 
 
 # =============================================================================
 # AGGREGATION
 # =============================================================================
 
-def aggregate_to_county(
-    tract_df: pd.DataFrame,
-    tracts: gpd.GeoDataFrame
-) -> pd.DataFrame:
+
+def aggregate_to_county(tract_df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
     """
     Aggregate tract-level accessibility to county level.
 
@@ -952,78 +968,84 @@ def aggregate_to_county(
         DataFrame with county-level metrics
     """
     # Merge population
-    df = tract_df.merge(
-        tracts[['tract_geoid', 'population']],
-        on='tract_geoid',
-        how='left'
-    )
-    df['population'] = df['population'].fillna(0)
+    df = tract_df.merge(tracts[["tract_geoid", "population"]], on="tract_geoid", how="left")
+    df["population"] = df["population"].fillna(0)
 
     # Compute weighted scores
-    df['weighted_multimodal'] = df['multimodal_accessibility_score'] * df['population']
-    df['weighted_transit'] = df.get('transit_45_score', 0) * df['population']
-    df['weighted_walk'] = df.get('walk_30_score', 0) * df['population']
-    df['weighted_bike'] = df.get('bike_30_score', 0) * df['population']
+    df["weighted_multimodal"] = df["multimodal_accessibility_score"] * df["population"]
+    df["weighted_transit"] = df.get("transit_45_score", 0) * df["population"]
+    df["weighted_walk"] = df.get("walk_30_score", 0) * df["population"]
+    df["weighted_bike"] = df.get("bike_30_score", 0) * df["population"]
 
     # Aggregate
-    county_agg = df.groupby('fips_code').agg(
-        # Sum job counts
-        jobs_accessible_transit_45min=('jobs_transit_45', 'sum'),
-        jobs_accessible_transit_30min=('jobs_transit_30', 'sum'),
-        jobs_accessible_walk_30min=('jobs_walk_30', 'sum'),
-        jobs_accessible_bike_30min=('jobs_bike_30', 'sum'),
-        jobs_accessible_car_30min=('jobs_car_30', 'sum'),
-
-        # Population-weighted average scores
-        weighted_multimodal_sum=('weighted_multimodal', 'sum'),
-        weighted_transit_sum=('weighted_transit', 'sum'),
-        weighted_walk_sum=('weighted_walk', 'sum'),
-        weighted_bike_sum=('weighted_bike', 'sum'),
-        total_population=('population', 'sum'),
-
-        # Transit quality (simple average)
-        transit_stop_density=('transit_stop_density', 'mean'),
-        frequent_transit_area_pct=('frequent_transit_area_pct', 'mean'),
-        average_headway_minutes=('average_headway_minutes', 'mean'),
-
-        # Regional metrics (max as representative)
-        pct_regional_jobs_by_transit=('pct_regional_jobs_transit', 'max'),
-        transit_car_accessibility_ratio=('transit_car_ratio', 'max'),
-
-        # Tract count
-        tract_count=('tract_geoid', 'count')
-    ).reset_index()
+    county_agg = (
+        df.groupby("fips_code")
+        .agg(
+            # Sum job counts
+            jobs_accessible_transit_45min=("jobs_transit_45", "sum"),
+            jobs_accessible_transit_30min=("jobs_transit_30", "sum"),
+            jobs_accessible_walk_30min=("jobs_walk_30", "sum"),
+            jobs_accessible_bike_30min=("jobs_bike_30", "sum"),
+            jobs_accessible_car_30min=("jobs_car_30", "sum"),
+            # Population-weighted average scores
+            weighted_multimodal_sum=("weighted_multimodal", "sum"),
+            weighted_transit_sum=("weighted_transit", "sum"),
+            weighted_walk_sum=("weighted_walk", "sum"),
+            weighted_bike_sum=("weighted_bike", "sum"),
+            total_population=("population", "sum"),
+            # Transit quality (simple average)
+            transit_stop_density=("transit_stop_density", "mean"),
+            frequent_transit_area_pct=("frequent_transit_area_pct", "mean"),
+            average_headway_minutes=("average_headway_minutes", "mean"),
+            # Regional metrics (max as representative)
+            pct_regional_jobs_by_transit=("pct_regional_jobs_transit", "max"),
+            transit_car_accessibility_ratio=("transit_car_ratio", "max"),
+            # Tract count
+            tract_count=("tract_geoid", "count"),
+        )
+        .reset_index()
+    )
 
     # Compute population-weighted averages
-    county_agg['multimodal_accessibility_score'] = np.where(
-        county_agg['total_population'] > 0,
-        county_agg['weighted_multimodal_sum'] / county_agg['total_population'],
-        county_agg['multimodal_accessibility_score'] if 'multimodal_accessibility_score' in county_agg else 0
+    county_agg["multimodal_accessibility_score"] = np.where(
+        county_agg["total_population"] > 0,
+        county_agg["weighted_multimodal_sum"] / county_agg["total_population"],
+        (
+            county_agg["multimodal_accessibility_score"]
+            if "multimodal_accessibility_score" in county_agg
+            else 0
+        ),
     )
 
-    county_agg['transit_accessibility_score'] = np.where(
-        county_agg['total_population'] > 0,
-        county_agg['weighted_transit_sum'] / county_agg['total_population'],
-        0
+    county_agg["transit_accessibility_score"] = np.where(
+        county_agg["total_population"] > 0,
+        county_agg["weighted_transit_sum"] / county_agg["total_population"],
+        0,
     )
 
-    county_agg['walk_accessibility_score'] = np.where(
-        county_agg['total_population'] > 0,
-        county_agg['weighted_walk_sum'] / county_agg['total_population'],
-        0
+    county_agg["walk_accessibility_score"] = np.where(
+        county_agg["total_population"] > 0,
+        county_agg["weighted_walk_sum"] / county_agg["total_population"],
+        0,
     )
 
-    county_agg['bike_accessibility_score'] = np.where(
-        county_agg['total_population'] > 0,
-        county_agg['weighted_bike_sum'] / county_agg['total_population'],
-        0
+    county_agg["bike_accessibility_score"] = np.where(
+        county_agg["total_population"] > 0,
+        county_agg["weighted_bike_sum"] / county_agg["total_population"],
+        0,
     )
 
     # Drop intermediate columns
-    county_agg = county_agg.drop(columns=[
-        'weighted_multimodal_sum', 'weighted_transit_sum',
-        'weighted_walk_sum', 'weighted_bike_sum', 'total_population', 'tract_count'
-    ])
+    county_agg = county_agg.drop(
+        columns=[
+            "weighted_multimodal_sum",
+            "weighted_transit_sum",
+            "weighted_walk_sum",
+            "weighted_bike_sum",
+            "total_population",
+            "tract_count",
+        ]
+    )
 
     return county_agg
 
@@ -1032,8 +1054,10 @@ def aggregate_to_county(
 # DATABASE STORAGE
 # =============================================================================
 
-def store_tract_accessibility(df: pd.DataFrame, data_year: int,
-                               gtfs_date: date, osm_date: date, lodes_year: int):
+
+def store_tract_accessibility(
+    df: pd.DataFrame, data_year: int, gtfs_date: date, osm_date: date, lodes_year: int
+):
     """
     Store tract-level accessibility data in database.
 
@@ -1048,13 +1072,19 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
 
     with get_db() as db:
         # Clear existing data for this year
-        db.execute(text("""
+        db.execute(
+            text(
+                """
             DELETE FROM layer2_mobility_accessibility_tract
             WHERE data_year = :data_year
-        """), {"data_year": data_year})
+        """
+            ),
+            {"data_year": data_year},
+        )
 
         # Insert new records
-        insert_sql = text("""
+        insert_sql = text(
+            """
                 INSERT INTO layer2_mobility_accessibility_tract (
                     tract_geoid, fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
@@ -1077,33 +1107,38 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
                     :average_headway_minutes, :tract_population,
                     :gtfs_date, :osm_date, :lodes_year
                 )
-            """)
+            """
+        )
 
         rows = []
         for _, row in df.iterrows():
-            rows.append({
-                'tract_geoid': row['tract_geoid'],
-                'fips_code': row['fips_code'],
-                'data_year': data_year,
-                'jobs_transit_45': int(row.get('jobs_transit_45', 0)),
-                'jobs_transit_30': int(row.get('jobs_transit_30', 0)),
-                'jobs_walk_30': int(row.get('jobs_walk_30', 0)),
-                'jobs_bike_30': int(row.get('jobs_bike_30', 0)),
-                'jobs_car_30': int(row.get('jobs_car_30', 0)),
-                'transit_45_score': float(row.get('transit_45_score', 0)),
-                'walk_30_score': float(row.get('walk_30_score', 0)),
-                'bike_30_score': float(row.get('bike_30_score', 0)),
-                'multimodal_accessibility_score': float(row.get('multimodal_accessibility_score', 0)),
-                'pct_regional_jobs_transit': float(row.get('pct_regional_jobs_transit', 0)),
-                'transit_car_ratio': float(row.get('transit_car_ratio', 0)),
-                'transit_stop_density': float(row.get('transit_stop_density', 0)),
-                'frequent_transit_area_pct': float(row.get('frequent_transit_area_pct', 0)),
-                'average_headway_minutes': float(row.get('average_headway_minutes', 999)),
-                'tract_population': int(row.get('tract_population', 0)),
-                'gtfs_date': gtfs_date,
-                'osm_date': osm_date,
-                'lodes_year': lodes_year
-            })
+            rows.append(
+                {
+                    "tract_geoid": row["tract_geoid"],
+                    "fips_code": row["fips_code"],
+                    "data_year": data_year,
+                    "jobs_transit_45": int(row.get("jobs_transit_45", 0)),
+                    "jobs_transit_30": int(row.get("jobs_transit_30", 0)),
+                    "jobs_walk_30": int(row.get("jobs_walk_30", 0)),
+                    "jobs_bike_30": int(row.get("jobs_bike_30", 0)),
+                    "jobs_car_30": int(row.get("jobs_car_30", 0)),
+                    "transit_45_score": float(row.get("transit_45_score", 0)),
+                    "walk_30_score": float(row.get("walk_30_score", 0)),
+                    "bike_30_score": float(row.get("bike_30_score", 0)),
+                    "multimodal_accessibility_score": float(
+                        row.get("multimodal_accessibility_score", 0)
+                    ),
+                    "pct_regional_jobs_transit": float(row.get("pct_regional_jobs_transit", 0)),
+                    "transit_car_ratio": float(row.get("transit_car_ratio", 0)),
+                    "transit_stop_density": float(row.get("transit_stop_density", 0)),
+                    "frequent_transit_area_pct": float(row.get("frequent_transit_area_pct", 0)),
+                    "average_headway_minutes": float(row.get("average_headway_minutes", 999)),
+                    "tract_population": int(row.get("tract_population", 0)),
+                    "gtfs_date": gtfs_date,
+                    "osm_date": osm_date,
+                    "lodes_year": lodes_year,
+                }
+            )
 
         execute_batch(db, insert_sql, rows, chunk_size=1000)
 
@@ -1112,8 +1147,9 @@ def store_tract_accessibility(df: pd.DataFrame, data_year: int,
     logger.info("✓ Tract accessibility data stored")
 
 
-def store_county_accessibility(df: pd.DataFrame, data_year: int,
-                                gtfs_date: date, osm_date: date, lodes_year: int):
+def store_county_accessibility(
+    df: pd.DataFrame, data_year: int, gtfs_date: date, osm_date: date, lodes_year: int
+):
     """
     Store county-level accessibility data in the main Layer 2 table.
 
@@ -1131,7 +1167,8 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
     use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
-        insert_sql = text("""
+        insert_sql = text(
+            """
                 INSERT INTO layer2_mobility_optionality (
                     fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
@@ -1154,9 +1191,11 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
                     :gtfs_date, :osm_date, :lodes_year,
                     'v2-accessibility', :multimodal_score
                 )
-            """)
+            """
+        )
 
-        upsert_sql = text("""
+        upsert_sql = text(
+            """
                 INSERT INTO layer2_mobility_optionality (
                     fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
@@ -1201,31 +1240,34 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
                     accessibility_version = 'v2-accessibility',
                     mobility_optionality_index = EXCLUDED.mobility_optionality_index,
                     updated_at = CURRENT_TIMESTAMP
-            """)
+            """
+        )
 
         rows = []
         for _, row in df.iterrows():
-            rows.append({
-                'fips_code': row['fips_code'],
-                'data_year': data_year,
-                'jobs_transit_45': int(row.get('jobs_accessible_transit_45min', 0)),
-                'jobs_transit_30': int(row.get('jobs_accessible_transit_30min', 0)),
-                'jobs_walk_30': int(row.get('jobs_accessible_walk_30min', 0)),
-                'jobs_bike_30': int(row.get('jobs_accessible_bike_30min', 0)),
-                'jobs_car_30': int(row.get('jobs_accessible_car_30min', 0)),
-                'transit_score': float(row.get('transit_accessibility_score', 0)),
-                'walk_score': float(row.get('walk_accessibility_score', 0)),
-                'bike_score': float(row.get('bike_accessibility_score', 0)),
-                'multimodal_score': float(row.get('multimodal_accessibility_score', 0)),
-                'pct_regional': float(row.get('pct_regional_jobs_by_transit', 0)),
-                'transit_car_ratio': float(row.get('transit_car_accessibility_ratio', 0)),
-                'stop_density': float(row.get('transit_stop_density', 0)),
-                'frequent_pct': float(row.get('frequent_transit_area_pct', 0)),
-                'avg_headway': float(row.get('average_headway_minutes', 999)),
-                'gtfs_date': gtfs_date,
-                'osm_date': osm_date,
-                'lodes_year': lodes_year
-            })
+            rows.append(
+                {
+                    "fips_code": row["fips_code"],
+                    "data_year": data_year,
+                    "jobs_transit_45": int(row.get("jobs_accessible_transit_45min", 0)),
+                    "jobs_transit_30": int(row.get("jobs_accessible_transit_30min", 0)),
+                    "jobs_walk_30": int(row.get("jobs_accessible_walk_30min", 0)),
+                    "jobs_bike_30": int(row.get("jobs_accessible_bike_30min", 0)),
+                    "jobs_car_30": int(row.get("jobs_accessible_car_30min", 0)),
+                    "transit_score": float(row.get("transit_accessibility_score", 0)),
+                    "walk_score": float(row.get("walk_accessibility_score", 0)),
+                    "bike_score": float(row.get("bike_accessibility_score", 0)),
+                    "multimodal_score": float(row.get("multimodal_accessibility_score", 0)),
+                    "pct_regional": float(row.get("pct_regional_jobs_by_transit", 0)),
+                    "transit_car_ratio": float(row.get("transit_car_accessibility_ratio", 0)),
+                    "stop_density": float(row.get("transit_stop_density", 0)),
+                    "frequent_pct": float(row.get("frequent_transit_area_pct", 0)),
+                    "avg_headway": float(row.get("average_headway_minutes", 999)),
+                    "gtfs_date": gtfs_date,
+                    "osm_date": osm_date,
+                    "lodes_year": lodes_year,
+                }
+            )
 
         if use_databricks_backend:
             db.execute(
@@ -1250,10 +1292,9 @@ def store_county_accessibility(df: pd.DataFrame, data_year: int,
 # MAIN EXECUTION
 # =============================================================================
 
+
 def calculate_accessibility_indicators(
-    data_year: int = None,
-    use_r5: bool = True,
-    lodes_year: int = None
+    data_year: int = None, use_r5: bool = True, lodes_year: int = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Main function to calculate accessibility indicators.
@@ -1302,17 +1343,12 @@ def calculate_accessibility_indicators(
     if use_r5 and check_r5py_available():
         logger.info("Using R5 routing engine (r5py)")
         tract_accessibility = compute_accessibility_r5py(
-            tracts=tracts,
-            jobs=jobs,
-            osm_path=osm_path,
-            gtfs_feeds=gtfs_feeds
+            tracts=tracts, jobs=jobs, osm_path=osm_path, gtfs_feeds=gtfs_feeds
         )
     else:
         logger.info("Using fallback proximity-based accessibility")
         tract_accessibility = compute_accessibility_fallback(
-            tracts=tracts,
-            jobs=jobs,
-            gtfs_feeds=gtfs_feeds
+            tracts=tracts, jobs=jobs, gtfs_feeds=gtfs_feeds
         )
 
     # Step 5: Compute transit quality metrics
@@ -1320,9 +1356,7 @@ def calculate_accessibility_indicators(
     transit_quality = compute_transit_quality_metrics(tracts, gtfs_feeds)
 
     # Merge transit quality into tract results
-    tract_accessibility = tract_accessibility.merge(
-        transit_quality, on='tract_geoid', how='left'
-    )
+    tract_accessibility = tract_accessibility.merge(transit_quality, on="tract_geoid", how="left")
 
     # Step 6: Normalize scores
     logger.info("\n[6/6] Normalizing and aggregating...")
@@ -1337,8 +1371,12 @@ def calculate_accessibility_indicators(
     logger.info("=" * 60)
     logger.info(f"Tracts analyzed: {len(tract_accessibility)}")
     logger.info(f"Counties: {len(county_accessibility)}")
-    logger.info(f"Avg jobs accessible by transit (45min): {tract_accessibility['jobs_transit_45'].mean():,.0f}")
-    logger.info(f"Avg multimodal score: {tract_accessibility['multimodal_accessibility_score'].mean():.3f}")
+    logger.info(
+        f"Avg jobs accessible by transit (45min): {tract_accessibility['jobs_transit_45'].mean():,.0f}"
+    )
+    logger.info(
+        f"Avg multimodal score: {tract_accessibility['multimodal_accessibility_score'].mean():.3f}"
+    )
 
     return tract_accessibility, county_accessibility
 
@@ -1347,7 +1385,7 @@ def run_layer2_v2_ingestion(
     data_year: int = None,
     use_r5: bool = True,
     store_data: bool = True,
-    predict_to_year: Optional[int] = None
+    predict_to_year: Optional[int] = None,
 ):
     """
     Run complete Layer 2 v2 ingestion pipeline.
@@ -1363,28 +1401,24 @@ def run_layer2_v2_ingestion(
     try:
         # Calculate accessibility
         tract_df, county_df = calculate_accessibility_indicators(
-            data_year=data_year,
-            use_r5=use_r5,
-            lodes_year=lodes_year
+            data_year=data_year, use_r5=use_r5, lodes_year=lodes_year
         )
 
         if store_data:
             # Get dates for provenance
             osm_path = OSM_CACHE_DIR / "maryland-latest.osm.pbf"
-            osm_date = date.fromtimestamp(osm_path.stat().st_mtime) if osm_path.exists() else date.today()
+            osm_date = (
+                date.fromtimestamp(osm_path.stat().st_mtime) if osm_path.exists() else date.today()
+            )
 
             gtfs_feeds = download_gtfs_feeds()
             gtfs_date = max(f.feed_date for f in gtfs_feeds) if gtfs_feeds else date.today()
 
             # Store tract-level data
-            store_tract_accessibility(
-                tract_df, data_year, gtfs_date, osm_date, lodes_year
-            )
+            store_tract_accessibility(tract_df, data_year, gtfs_date, osm_date, lodes_year)
 
             # Store county-level data
-            store_county_accessibility(
-                county_df, data_year, gtfs_date, osm_date, lodes_year
-            )
+            store_county_accessibility(county_df, data_year, gtfs_date, osm_date, lodes_year)
 
             # Log refresh
             log_refresh(
@@ -1401,8 +1435,8 @@ def run_layer2_v2_ingestion(
                     "version": "v2-accessibility",
                     "tracts": len(tract_df),
                     "counties": len(county_df),
-                    "used_r5": use_r5 and check_r5py_available()
-                }
+                    "used_r5": use_r5 and check_r5py_available(),
+                },
             )
 
         if store_data:
@@ -1411,7 +1445,7 @@ def run_layer2_v2_ingestion(
                 table="layer2_mobility_optionality",
                 metric_col="mobility_optionality_index",
                 target_year=target_year,
-                clip=(0.0, 1.0)
+                clip=(0.0, 1.0),
             )
 
         logger.info("✓ Layer 2 v2 ingestion complete")
@@ -1423,7 +1457,7 @@ def run_layer2_v2_ingestion(
             layer_name="layer2_mobility_optionality",
             data_source="OSM+GTFS+LODES (v2 accessibility)",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
         raise
 
@@ -1433,23 +1467,21 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Layer 2 v2: Accessibility-based Mobility Analysis'
+        description="Layer 2 v2: Accessibility-based Mobility Analysis"
     )
     parser.add_argument(
-        '--year', type=int, default=current_year(),
-        help='Data year (default: current year/policy cap)'
+        "--year",
+        type=int,
+        default=current_year(),
+        help="Data year (default: current year/policy cap)",
     )
+    parser.add_argument("--no-r5", action="store_true", help="Use fallback instead of r5py")
+    parser.add_argument("--dry-run", action="store_true", help="Calculate but do not store results")
     parser.add_argument(
-        '--no-r5', action='store_true',
-        help='Use fallback instead of r5py'
-    )
-    parser.add_argument(
-        '--dry-run', action='store_true',
-        help='Calculate but do not store results'
-    )
-    parser.add_argument(
-        '--predict-to-year', type=int, default=None,
-        help='Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)'
+        "--predict-to-year",
+        type=int,
+        default=None,
+        help="Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)",
     )
 
     args = parser.parse_args()
@@ -1458,7 +1490,7 @@ def main():
         data_year=args.year,
         use_r5=not args.no_r5,
         store_data=not args.dry_run,
-        predict_to_year=args.predict_to_year
+        predict_to_year=args.predict_to_year,
     )
 
 

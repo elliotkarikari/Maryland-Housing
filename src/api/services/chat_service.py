@@ -19,9 +19,9 @@ class ChatService:
         message: str,
         context: Optional[Dict[str, Any]] = None,
         history: Optional[List[Dict[str, Any]]] = None,
-        previous_response_id: Optional[str] = None
+        previous_response_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        prompt = (message or '').strip()
+        prompt = (message or "").strip()
         if not prompt:
             raise ValueError("Message cannot be empty")
 
@@ -34,7 +34,7 @@ class ChatService:
                 instructions=instructions,
                 conversation_text=conversation,
                 previous_response_id=previous_response_id,
-                model="gpt-5.1-mini"
+                model="gpt-5.1-mini",
             )
         except AIProviderError:
             raise
@@ -43,13 +43,13 @@ class ChatService:
         valid_turns: List[Dict[str, str]] = []
 
         for turn in history:
-            role = str(turn.get('role', '')).strip().lower()
-            content = str(turn.get('content', '')).strip()
-            if role not in {'user', 'assistant'}:
+            role = str(turn.get("role", "")).strip().lower()
+            content = str(turn.get("content", "")).strip()
+            if role not in {"user", "assistant"}:
                 continue
             if not content:
                 continue
-            valid_turns.append({'role': role, 'content': content})
+            valid_turns.append({"role": role, "content": content})
 
         return valid_turns[-max_turns:]
 
@@ -64,15 +64,15 @@ class ChatService:
         if not context:
             return base
 
-        county_name = context.get('county_name')
-        data_year = context.get('data_year')
-        directional_class = context.get('directional_class')
-        signal_label = context.get('signal_label')
-        composite_score = context.get('composite_score')
-        layer_scores = context.get('layer_scores') or {}
-        strengths = context.get('primary_strengths') or []
-        weaknesses = context.get('primary_weaknesses') or []
-        trends = context.get('key_trends') or []
+        county_name = context.get("county_name")
+        data_year = context.get("data_year")
+        directional_class = context.get("directional_class")
+        signal_label = context.get("signal_label")
+        composite_score = context.get("composite_score")
+        layer_scores = context.get("layer_scores") or {}
+        strengths = context.get("primary_strengths") or []
+        weaknesses = context.get("primary_weaknesses") or []
+        trends = context.get("key_trends") or []
 
         lines = [base, "", "County context:"]
 
@@ -109,7 +109,7 @@ class ChatService:
     def _build_conversation(self, history: List[Dict[str, str]], message: str) -> str:
         lines: List[str] = []
         for turn in history:
-            prefix = "User" if turn['role'] == 'user' else "Atlas"
+            prefix = "User" if turn["role"] == "user" else "Atlas"
             lines.append(f"{prefix}: {turn['content']}")
 
         lines.append(f"User: {message}")

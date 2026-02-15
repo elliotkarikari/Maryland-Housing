@@ -3,12 +3,12 @@ import pandas as pd
 import pytest
 
 from src.processing.multiyear_scoring import (
-    percentile_normalize,
-    calculate_missingness_penalty,
-    normalize_layer_features,
-    compute_composite_scores,
     WEIGHTS_FULL,
     WEIGHTS_NO_MOMENTUM,
+    calculate_missingness_penalty,
+    compute_composite_scores,
+    normalize_layer_features,
+    percentile_normalize,
 )
 
 

@@ -16,18 +16,19 @@ This module:
 5. Links evidence to counties for policy persistence scoring
 """
 
-import requests
 import hashlib
-import os
-from datetime import datetime, date
-from typing import Optional, Dict, List
-from sqlalchemy import text
 import io
+import os
+from datetime import date, datetime
+from typing import Dict, List, Optional
+
+import requests
+from sqlalchemy import text
 
 from config.database import get_db, log_refresh
-from config.settings import get_settings, MD_COUNTY_FIPS
-from src.ai.providers.openai_provider import get_openai_provider
+from config.settings import MD_COUNTY_FIPS, get_settings
 from src.ai.providers.base import AIProviderError
+from src.ai.providers.openai_provider import get_openai_provider
 from src.ai.schemas.cip_extraction import CIPExtraction, CIPExtractionResponse
 from src.utils.logging import get_logger
 
@@ -41,7 +42,7 @@ CIP_SOURCES = {
         "name": "Montgomery County",
         "url": "https://www.montgomerycountymd.gov/OMB/Resources/Files/omb/pdfs/FY25-30/pdffiles/CIP_FY25-30_FINAL_WEB.pdf",
         "title": "Montgomery County FY25-30 CIP",
-        "published_date": date(2024, 5, 16)
+        "published_date": date(2024, 5, 16),
     },
     # Additional counties can be added as URLs are verified
     # "24027": {  # Howard County
@@ -87,8 +88,8 @@ def fetch_pdf_content(url: str, timeout: int = 120) -> bytes:
         response.raise_for_status()
 
         # Verify it's actually a PDF
-        content_type = response.headers.get('content-type', '')
-        if 'pdf' not in content_type.lower() and not url.endswith('.pdf'):
+        content_type = response.headers.get("content-type", "")
+        if "pdf" not in content_type.lower() and not url.endswith(".pdf"):
             logger.warning(f"Content type is {content_type}, may not be PDF")
 
         logger.info(f"Downloaded {len(response.content)} bytes")
@@ -137,9 +138,7 @@ def extract_text_from_pdf(pdf_content: bytes) -> str:
         return full_text
 
     except ImportError:
-        raise Exception(
-            "PyPDF2 not installed. Run: pip install PyPDF2"
-        )
+        raise Exception("PyPDF2 not installed. Run: pip install PyPDF2")
     except Exception as e:
         logger.error(f"PDF text extraction failed: {e}")
         raise
@@ -152,7 +151,7 @@ def store_document_metadata(
     published_date: Optional[date],
     sha256: str,
     pdf_content: bytes,
-    local_path: Optional[str] = None
+    local_path: Optional[str] = None,
 ) -> int:
     """
     Store document metadata in ai_document table.
@@ -181,7 +180,8 @@ def store_document_metadata(
             return existing[0]
 
         # Insert new document
-        insert_sql = text("""
+        insert_sql = text(
+            """
             INSERT INTO ai_document (
                 source_url, title, publisher, published_date,
                 sha256, local_path, file_size_bytes, mime_type, fetched_at
@@ -190,19 +190,23 @@ def store_document_metadata(
                 :sha256, :local_path, :file_size_bytes, :mime_type, :fetched_at
             )
             RETURNING id
-        """)
+        """
+        )
 
-        result = db.execute(insert_sql, {
-            "source_url": source_url,
-            "title": title,
-            "publisher": publisher,
-            "published_date": published_date,
-            "sha256": sha256,
-            "local_path": local_path,
-            "file_size_bytes": len(pdf_content),
-            "mime_type": "application/pdf",
-            "fetched_at": datetime.utcnow()
-        })
+        result = db.execute(
+            insert_sql,
+            {
+                "source_url": source_url,
+                "title": title,
+                "publisher": publisher,
+                "published_date": published_date,
+                "sha256": sha256,
+                "local_path": local_path,
+                "file_size_bytes": len(pdf_content),
+                "mime_type": "application/pdf",
+                "fetched_at": datetime.utcnow(),
+            },
+        )
 
         doc_id = result.fetchone()[0]
         db.commit()
@@ -213,10 +217,7 @@ def store_document_metadata(
 
 
 def store_extraction_result(
-    doc_id: int,
-    task_name: str,
-    extraction_response: Dict,
-    prompt_version: str
+    doc_id: int, task_name: str, extraction_response: Dict, prompt_version: str
 ) -> int:
     """
     Store AI extraction result in ai_extraction table.
@@ -234,30 +235,31 @@ def store_extraction_result(
 
     with get_db() as db:
         # Check for existing extraction
-        check_sql = text("""
+        check_sql = text(
+            """
             SELECT id FROM ai_extraction
             WHERE doc_id = :doc_id AND task_name = :task_name AND prompt_version = :prompt_version
-        """)
+        """
+        )
 
-        existing = db.execute(check_sql, {
-            "doc_id": doc_id,
-            "task_name": task_name,
-            "prompt_version": prompt_version
-        }).fetchone()
+        existing = db.execute(
+            check_sql, {"doc_id": doc_id, "task_name": task_name, "prompt_version": prompt_version}
+        ).fetchone()
 
         if existing:
             logger.info(f"Extraction already exists with ID {existing[0]}")
             return existing[0]
 
         # Convert extracted_facts to dict for JSONB storage
-        extracted_facts = extraction_response.get('extracted_facts')
-        if extracted_facts and hasattr(extracted_facts, 'model_dump'):
+        extracted_facts = extraction_response.get("extracted_facts")
+        if extracted_facts and hasattr(extracted_facts, "model_dump"):
             extracted_facts_json = extracted_facts.model_dump()
         else:
             extracted_facts_json = None
 
         # Insert extraction
-        insert_sql = text("""
+        insert_sql = text(
+            """
             INSERT INTO ai_extraction (
                 doc_id, task_name, model, prompt_version,
                 output_json, extracted_facts_json, confidence,
@@ -270,22 +272,26 @@ def store_extraction_result(
                 :validation_status, :error_message
             )
             RETURNING id
-        """)
+        """
+        )
 
-        result = db.execute(insert_sql, {
-            "doc_id": doc_id,
-            "task_name": task_name,
-            "model": extraction_response['model'],
-            "prompt_version": prompt_version,
-            "output_json": extraction_response.get('raw_output'),
-            "extracted_facts_json": extracted_facts_json,
-            "confidence": extraction_response.get('confidence'),
-            "tokens_input": extraction_response['tokens_input'],
-            "tokens_output": extraction_response['tokens_output'],
-            "cost_estimate": extraction_response['cost_estimate'],
-            "validation_status": extraction_response['validation_status'],
-            "error_message": extraction_response.get('error_message')
-        })
+        result = db.execute(
+            insert_sql,
+            {
+                "doc_id": doc_id,
+                "task_name": task_name,
+                "model": extraction_response["model"],
+                "prompt_version": prompt_version,
+                "output_json": extraction_response.get("raw_output"),
+                "extracted_facts_json": extracted_facts_json,
+                "confidence": extraction_response.get("confidence"),
+                "tokens_input": extraction_response["tokens_input"],
+                "tokens_output": extraction_response["tokens_output"],
+                "cost_estimate": extraction_response["cost_estimate"],
+                "validation_status": extraction_response["validation_status"],
+                "error_message": extraction_response.get("error_message"),
+            },
+        )
 
         extraction_id = result.fetchone()[0]
         db.commit()
@@ -296,10 +302,7 @@ def store_extraction_result(
 
 
 def link_evidence_to_county(
-    fips_code: str,
-    doc_id: int,
-    extraction_id: int,
-    extraction: CIPExtraction
+    fips_code: str, doc_id: int, extraction_id: int, extraction: CIPExtraction
 ):
     """
     Create evidence links from extraction to county.
@@ -321,7 +324,8 @@ def link_evidence_to_county(
 
     with get_db() as db:
         for claim in claims:
-            insert_sql = text("""
+            insert_sql = text(
+                """
                 INSERT INTO ai_evidence_link (
                     geoid, doc_id, extraction_id,
                     claim_type, claim_value, claim_value_unit,
@@ -332,28 +336,29 @@ def link_evidence_to_county(
                     :claim_date, :weight
                 )
                 ON CONFLICT DO NOTHING
-            """)
+            """
+            )
 
-            db.execute(insert_sql, {
-                "geoid": fips_code,
-                "doc_id": doc_id,
-                "extraction_id": extraction_id,
-                "claim_type": claim['claim_type'],
-                "claim_value": claim['claim_value'],
-                "claim_value_unit": claim['claim_value_unit'],
-                "claim_date": claim.get('claim_date'),
-                "weight": claim.get('weight', 1.0)
-            })
+            db.execute(
+                insert_sql,
+                {
+                    "geoid": fips_code,
+                    "doc_id": doc_id,
+                    "extraction_id": extraction_id,
+                    "claim_type": claim["claim_type"],
+                    "claim_value": claim["claim_value"],
+                    "claim_value_unit": claim["claim_value_unit"],
+                    "claim_date": claim.get("claim_date"),
+                    "weight": claim.get("weight", 1.0),
+                },
+            )
 
         db.commit()
 
     logger.info(f"Linked {len(claims)} evidence claims")
 
 
-def extract_cip_for_county(
-    fips_code: str,
-    force_refresh: bool = False
-) -> Optional[Dict]:
+def extract_cip_for_county(fips_code: str, force_refresh: bool = False) -> Optional[Dict]:
     """
     Extract CIP data for a single county.
 
@@ -377,7 +382,7 @@ def extract_cip_for_county(
 
     try:
         # Fetch PDF
-        pdf_content = fetch_pdf_content(source['url'])
+        pdf_content = fetch_pdf_content(source["url"])
 
         # Calculate hash
         sha256 = calculate_sha256(pdf_content)
@@ -385,7 +390,8 @@ def extract_cip_for_county(
         # Check cache (unless force refresh)
         if not force_refresh:
             with get_db() as db:
-                cache_check = text("""
+                cache_check = text(
+                    """
                     SELECT ae.id, ae.extracted_facts_json
                     FROM ai_document ad
                     JOIN ai_extraction ae ON ad.id = ae.doc_id
@@ -394,7 +400,8 @@ def extract_cip_for_county(
                         AND ae.validation_status = 'valid'
                     ORDER BY ae.created_at DESC
                     LIMIT 1
-                """)
+                """
+                )
 
                 cached = db.execute(cache_check, {"sha256": sha256}).fetchone()
 
@@ -404,17 +411,17 @@ def extract_cip_for_county(
                         "fips_code": fips_code,
                         "extraction_id": cached[0],
                         "cached": True,
-                        "extraction": cached[1]
+                        "extraction": cached[1],
                     }
 
         # Store document metadata
         doc_id = store_document_metadata(
-            source_url=source['url'],
-            title=source['title'],
-            publisher=source['name'],
-            published_date=source.get('published_date'),
+            source_url=source["url"],
+            title=source["title"],
+            publisher=source["name"],
+            published_date=source.get("published_date"),
             sha256=sha256,
-            pdf_content=pdf_content
+            pdf_content=pdf_content,
         )
 
         # Extract text
@@ -430,7 +437,7 @@ def extract_cip_for_county(
             document_text=text,
             task_name="cip_capital_commitment",
             schema=CIPExtraction,
-            prompt_version=prompt_version
+            prompt_version=prompt_version,
         )
 
         # Store extraction
@@ -438,12 +445,12 @@ def extract_cip_for_county(
             doc_id=doc_id,
             task_name="cip_capital_commitment",
             extraction_response=extraction_response,
-            prompt_version=prompt_version
+            prompt_version=prompt_version,
         )
 
         # Link evidence if extraction was valid
-        if extraction_response['validation_status'] == 'valid':
-            extraction = extraction_response['extracted_facts']
+        if extraction_response["validation_status"] == "valid":
+            extraction = extraction_response["extracted_facts"]
             link_evidence_to_county(fips_code, doc_id, extraction_id, extraction)
 
         logger.info(
@@ -457,9 +464,9 @@ def extract_cip_for_county(
             "doc_id": doc_id,
             "extraction_id": extraction_id,
             "cached": False,
-            "validation_status": extraction_response['validation_status'],
-            "cost": extraction_response['cost_estimate'],
-            "extraction": extraction_response.get('extracted_facts')
+            "validation_status": extraction_response["validation_status"],
+            "cost": extraction_response["cost_estimate"],
+            "extraction": extraction_response.get("extracted_facts"),
         }
 
     except Exception as e:
@@ -470,16 +477,13 @@ def extract_cip_for_county(
             layer_name="ai_cip_extraction",
             data_source=f"CIP - {source['name']}",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
 
         return None
 
 
-def run_cip_extraction_all(
-    force_refresh: bool = False,
-    cost_limit: float = 5.0
-) -> Dict:
+def run_cip_extraction_all(force_refresh: bool = False, cost_limit: float = 5.0) -> Dict:
     """
     Run CIP extraction for all available counties.
 
@@ -506,11 +510,11 @@ def run_cip_extraction_all(
         if result:
             results.append(result)
 
-            if not result.get('cached'):
-                total_cost += result.get('cost', 0.0)
+            if not result.get("cached"):
+                total_cost += result.get("cost", 0.0)
 
     # Log summary
-    success_count = len([r for r in results if r.get('validation_status') == 'valid'])
+    success_count = len([r for r in results if r.get("validation_status") == "valid"])
 
     log_refresh(
         layer_name="ai_cip_extraction",
@@ -520,9 +524,9 @@ def run_cip_extraction_all(
         records_inserted=success_count,
         metadata={
             "total_cost_usd": total_cost,
-            "cached_count": len([r for r in results if r.get('cached')]),
-            "force_refresh": force_refresh
-        }
+            "cached_count": len([r for r in results if r.get("cached")]),
+            "force_refresh": force_refresh,
+        },
     )
 
     logger.info(
@@ -535,37 +539,27 @@ def run_cip_extraction_all(
         "processed": len(results),
         "valid": success_count,
         "total_cost": total_cost,
-        "results": results
+        "results": results,
     }
 
 
 if __name__ == "__main__":
     import argparse
+
     from src.utils.logging import setup_logging
 
     setup_logging("cip_extractor")
 
     parser = argparse.ArgumentParser(description="Extract CIP data from Maryland counties")
     parser.add_argument(
-        "--county-fips",
-        type=str,
-        help="Extract for specific county FIPS code (e.g., 24031)"
+        "--county-fips", type=str, help="Extract for specific county FIPS code (e.g., 24031)"
+    )
+    parser.add_argument("--all", action="store_true", help="Extract for all available counties")
+    parser.add_argument(
+        "--force-refresh", action="store_true", help="Force re-extraction even if cached"
     )
     parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Extract for all available counties"
-    )
-    parser.add_argument(
-        "--force-refresh",
-        action="store_true",
-        help="Force re-extraction even if cached"
-    )
-    parser.add_argument(
-        "--cost-limit",
-        type=float,
-        default=5.0,
-        help="Maximum total cost in USD (default: 5.0)"
+        "--cost-limit", type=float, default=5.0, help="Maximum total cost in USD (default: 5.0)"
     )
 
     args = parser.parse_args()
@@ -576,8 +570,7 @@ if __name__ == "__main__":
 
     elif args.all:
         summary = run_cip_extraction_all(
-            force_refresh=args.force_refresh,
-            cost_limit=args.cost_limit
+            force_refresh=args.force_refresh, cost_limit=args.cost_limit
         )
         print(f"\nSummary: {summary}")
 

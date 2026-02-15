@@ -3,17 +3,18 @@ Maryland Viability Atlas - FastAPI Application
 Read-only API for serving map data and metadata
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+import os
+from typing import Optional
+
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
-from typing import Optional
-import os
 
-from config.settings import get_settings
 from config.database import get_db_session, test_connection
-from src.api.routes import router
+from config.settings import get_settings
 from src.api.chat_routes import router as chat_router
+from src.api.routes import router
 from src.utils.logging import setup_logging
 
 settings = get_settings()
@@ -24,13 +25,14 @@ def _parse_cors_allow_origins(raw: str) -> list[str]:
     origins = [origin.strip() for origin in (raw or "").split(",") if origin.strip()]
     return origins or ["http://localhost:3000", "http://127.0.0.1:3000"]
 
+
 # Initialize FastAPI app
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     description=settings.API_DESCRIPTION,
     docs_url="/docs" if settings.DEBUG else None,  # Disable in production
-    redoc_url="/redoc" if settings.DEBUG else None
+    redoc_url="/redoc" if settings.DEBUG else None,
 )
 
 # CORS configuration
@@ -82,8 +84,8 @@ async def root():
             "chat": "/api/v1/chat",
             "data_sources": "/api/v1/metadata/sources",
             "capabilities": "/api/v1/metadata/capabilities",
-            "latest_refresh": "/api/v1/metadata/refresh"
-        }
+            "latest_refresh": "/api/v1/metadata/refresh",
+        },
     }
 
 
@@ -105,7 +107,7 @@ async def health_check():
             "status": status,
             "database": "connected" if db_healthy else "disconnected",
             "geojson_export": "available" if geojson_exists else "missing",
-            "environment": settings.ENVIRONMENT
+            "environment": settings.ENVIRONMENT,
         }
 
     except Exception as e:
@@ -121,5 +123,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=settings.DEBUG,
-        log_level=settings.LOG_LEVEL.lower()
+        log_level=settings.LOG_LEVEL.lower(),
     )

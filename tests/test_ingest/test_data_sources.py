@@ -7,16 +7,17 @@ These tests verify that:
 3. Rate limiters are properly applied
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pandas as pd
+import pytest
 import requests
 
 
 class TestBLSQCEWTimeout:
     """Test that BLS QCEW fetch has proper timeout handling."""
 
-    @patch('src.utils.data_sources.requests.get')
+    @patch("src.utils.data_sources.requests.get")
     def test_bls_qcew_uses_requests_with_timeout(self, mock_get):
         """BLS QCEW fetch should use requests.get with timeout."""
         from src.utils.data_sources import fetch_bls_qcew
@@ -33,10 +34,10 @@ class TestBLSQCEWTimeout:
         # Verify requests.get was called with timeout
         mock_get.assert_called()
         call_kwargs = mock_get.call_args[1]
-        assert 'timeout' in call_kwargs, "requests.get should be called with timeout"
-        assert call_kwargs['timeout'] == 60, "timeout should be 60 seconds"
+        assert "timeout" in call_kwargs, "requests.get should be called with timeout"
+        assert call_kwargs["timeout"] == 60, "timeout should be 60 seconds"
 
-    @patch('src.utils.data_sources.requests.get')
+    @patch("src.utils.data_sources.requests.get")
     def test_bls_qcew_handles_timeout_gracefully(self, mock_get):
         """BLS QCEW fetch should handle timeout without crashing."""
         from src.utils.data_sources import fetch_bls_qcew
@@ -50,7 +51,7 @@ class TestBLSQCEWTimeout:
         assert isinstance(result, pd.DataFrame)
         assert result.empty, "Should return empty DataFrame on timeout"
 
-    @patch('src.utils.data_sources.requests.get')
+    @patch("src.utils.data_sources.requests.get")
     def test_bls_qcew_handles_connection_error(self, mock_get):
         """BLS QCEW fetch should handle connection errors gracefully."""
         from src.utils.data_sources import fetch_bls_qcew
@@ -73,7 +74,7 @@ class TestRateLimiterConfiguration:
         from src.utils.data_sources import census_limiter
 
         assert census_limiter is not None
-        assert hasattr(census_limiter, 'calls_per_minute')
+        assert hasattr(census_limiter, "calls_per_minute")
         assert census_limiter.calls_per_minute > 0
 
     def test_bls_rate_limiter_exists(self):
@@ -81,7 +82,7 @@ class TestRateLimiterConfiguration:
         from src.utils.data_sources import bls_limiter
 
         assert bls_limiter is not None
-        assert hasattr(bls_limiter, 'calls_per_minute')
+        assert hasattr(bls_limiter, "calls_per_minute")
         assert bls_limiter.calls_per_minute > 0
 
     def test_usaspending_rate_limiter_exists(self):
@@ -89,7 +90,7 @@ class TestRateLimiterConfiguration:
         from src.utils.data_sources import usaspending_limiter
 
         assert usaspending_limiter is not None
-        assert hasattr(usaspending_limiter, 'calls_per_minute')
+        assert hasattr(usaspending_limiter, "calls_per_minute")
         assert usaspending_limiter.calls_per_minute > 0
 
 
@@ -98,12 +99,13 @@ class TestDataSourceImports:
 
     def test_io_module_available(self):
         """io module should be imported for StringIO usage."""
-        import src.utils.data_sources as ds
-
         # Verify io is used in the module (by checking for StringIO usage pattern)
         import inspect
+
+        import src.utils.data_sources as ds
+
         source = inspect.getsource(ds.fetch_bls_qcew)
 
-        assert 'StringIO' in source or 'io.StringIO' in source, (
-            "fetch_bls_qcew should use io.StringIO for parsing CSV response"
-        )
+        assert (
+            "StringIO" in source or "io.StringIO" in source
+        ), "fetch_bls_qcew should use io.StringIO for parsing CSV response"

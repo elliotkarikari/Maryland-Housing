@@ -15,30 +15,30 @@ Key metrics:
 Composite: housing_opportunity_index = 0.4×elasticity + 0.6×affordability
 """
 
-import sys
-from pathlib import Path
-from datetime import datetime
-from typing import Tuple, Optional, Dict, List
-import warnings
-
-import pandas as pd
-import numpy as np
-from sqlalchemy import text
-import zipfile
 import io
+import sys
+import warnings
+import zipfile
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 import requests
+from sqlalchemy import text
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
-from src.utils.logging import get_logger
-from src.utils.db_bulk import execute_batch
-from src.utils.prediction_utils import apply_predictions_to_table
+from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
+from src.utils.db_bulk import execute_batch
+from src.utils.logging import get_logger
+from src.utils.prediction_utils import apply_predictions_to_table
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -58,16 +58,16 @@ CHAS_CACHE_DIR = CACHE_DIR / "chas"
 CHAS_CACHE_DIR.mkdir(exist_ok=True)
 
 # HUD CHAS cost burden thresholds
-COST_BURDEN_THRESHOLD = 0.30   # >30% of income on housing
+COST_BURDEN_THRESHOLD = 0.30  # >30% of income on housing
 SEVERE_BURDEN_THRESHOLD = 0.50  # >50% of income on housing
 
 # AMI (Area Median Income) brackets from HUD
 AMI_BRACKETS = {
-    '0_30': 'Extremely Low Income',
-    '30_50': 'Very Low Income',
-    '50_80': 'Low Income',
-    '80_100': 'Moderate Income',
-    '100_plus': 'Above Moderate'
+    "0_30": "Extremely Low Income",
+    "30_50": "Very Low Income",
+    "50_80": "Low Income",
+    "80_100": "Moderate Income",
+    "100_plus": "Above Moderate",
 }
 
 # Composite score weights
@@ -76,9 +76,9 @@ ELASTICITY_WEIGHT = 0.4
 AFFORDABILITY_WEIGHT = 0.6
 
 # Within affordability score
-BURDEN_WEIGHT = 0.50      # 1 - cost_burdened_pct
-STOCK_WEIGHT = 0.30       # affordable units as % of housing stock
-QUALITY_WEIGHT = 0.20     # housing quality indicators
+BURDEN_WEIGHT = 0.50  # 1 - cost_burdened_pct
+STOCK_WEIGHT = 0.30  # affordable units as % of housing stock
+QUALITY_WEIGHT = 0.20  # housing quality indicators
 
 # H+T (Housing + Transportation) estimates
 # Based on CNT H+T Index methodology
@@ -97,6 +97,7 @@ EXTERNAL_AFFORDABILITY_BLEND_WEIGHT = 0.15
 # DATA ACQUISITION
 # =============================================================================
 
+
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip().lower() for c in df.columns]
@@ -114,7 +115,9 @@ def _find_col(columns: List[str], candidates: List[str]) -> Optional[str]:
     return None
 
 
-def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str) -> Optional[Path]:
+def _resolve_data_path(
+    local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str
+) -> Optional[Path]:
     if local_path:
         path = Path(local_path)
         if path.exists():
@@ -168,10 +171,10 @@ def _fetch_hud_fmr_api(data_year: int) -> pd.DataFrame:
             if df.empty:
                 continue
             df = _normalize_columns(df)
-            df['hud_fmr_year'] = year
+            df["hud_fmr_year"] = year
             # Normalize fips_code to county FIPS (first 5 digits)
-            if 'fips_code' in df.columns:
-                df['fips_code'] = df['fips_code'].astype(str).str.zfill(10).str[:5]
+            if "fips_code" in df.columns:
+                df["fips_code"] = df["fips_code"].astype(str).str.zfill(10).str[:5]
             return df
         except Exception:
             continue
@@ -182,31 +185,33 @@ def _fetch_hud_fmr_api(data_year: int) -> pd.DataFrame:
 
 def _read_census_crosswalk(path: Path) -> pd.DataFrame:
     try:
-        df = pd.read_csv(path, sep='|', dtype=str, encoding='utf-8-sig', low_memory=False)
+        df = pd.read_csv(path, sep="|", dtype=str, encoding="utf-8-sig", low_memory=False)
     except Exception as e:
         logger.warning(f"Failed to read Census crosswalk {path}: {e}")
         return pd.DataFrame()
 
     df = _normalize_columns(df)
-    if 'geoid_zcta5_20' not in df.columns or 'geoid_county_20' not in df.columns:
+    if "geoid_zcta5_20" not in df.columns or "geoid_county_20" not in df.columns:
         logger.warning("Census crosswalk missing expected GEOID columns")
         return pd.DataFrame()
 
-    df = df[['geoid_zcta5_20', 'geoid_county_20', 'arealand_part']].copy()
-    df = df.rename(columns={
-        'geoid_zcta5_20': 'zip',
-        'geoid_county_20': 'county_fips',
-        'arealand_part': 'weight'
-    })
-    df['zip'] = df['zip'].astype(str).str.zfill(5)
-    df['county_fips'] = df['county_fips'].astype(str).str.zfill(5)
-    df['weight'] = pd.to_numeric(df['weight'], errors='coerce').fillna(0)
+    df = df[["geoid_zcta5_20", "geoid_county_20", "arealand_part"]].copy()
+    df = df.rename(
+        columns={
+            "geoid_zcta5_20": "zip",
+            "geoid_county_20": "county_fips",
+            "arealand_part": "weight",
+        }
+    )
+    df["zip"] = df["zip"].astype(str).str.zfill(5)
+    df["county_fips"] = df["county_fips"].astype(str).str.zfill(5)
+    df["weight"] = pd.to_numeric(df["weight"], errors="coerce").fillna(0)
 
     # Normalize weights per ZIP
-    total = df.groupby('zip')['weight'].transform('sum')
-    df['res_ratio'] = df['weight'] / total.replace({0: pd.NA})
-    df['res_ratio'] = df['res_ratio'].fillna(0)
-    return df[['zip', 'county_fips', 'res_ratio']]
+    total = df.groupby("zip")["weight"].transform("sum")
+    df["res_ratio"] = df["weight"] / total.replace({0: pd.NA})
+    df["res_ratio"] = df["res_ratio"].fillna(0)
+    return df[["zip", "county_fips", "res_ratio"]]
 
 
 def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
@@ -214,11 +219,13 @@ def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
         try:
             path = Path(settings.USPS_ZIP_COUNTY_CROSSWALK_PATH)
             if path.exists():
-                if path.suffix.lower() in {'.txt', '.dat'}:
+                if path.suffix.lower() in {".txt", ".dat"}:
                     return _read_census_crosswalk(path)
                 return pd.read_csv(path, dtype=str, low_memory=False)
         except Exception as e:
-            logger.warning(f"Failed to read ZIP crosswalk {settings.USPS_ZIP_COUNTY_CROSSWALK_PATH}: {e}")
+            logger.warning(
+                f"Failed to read ZIP crosswalk {settings.USPS_ZIP_COUNTY_CROSSWALK_PATH}: {e}"
+            )
             return pd.DataFrame()
 
     if settings.CENSUS_ZIP_COUNTY_CROSSWALK_URL:
@@ -238,12 +245,16 @@ def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
         headers = {"Authorization": f"Bearer {settings.HUD_USER_API_TOKEN}"}
         rows = []
         if len(zip_codes) > 50:
-            logger.warning("ZIP crosswalk API requested for large ZIP set; provide a local crosswalk file instead")
+            logger.warning(
+                "ZIP crosswalk API requested for large ZIP set; provide a local crosswalk file instead"
+            )
             return pd.DataFrame()
         for zip_code in zip_codes:
             params = {"type": 3, "query": zip_code}
             try:
-                resp = requests.get(f"{base_url}/crosswalk", headers=headers, params=params, timeout=30)
+                resp = requests.get(
+                    f"{base_url}/crosswalk", headers=headers, params=params, timeout=30
+                )
                 if resp.status_code != 200:
                     continue
                 payload = resp.json()
@@ -280,7 +291,7 @@ def fetch_hud_fmr_by_county(data_year: int) -> pd.DataFrame:
             settings.HUD_FMR_DATA_PATH,
             settings.HUD_FMR_DATA_URL,
             CACHE_DIR,
-            f"hud_fmr_{data_year}.csv"
+            f"hud_fmr_{data_year}.csv",
         )
 
         if source_path is None:
@@ -288,7 +299,7 @@ def fetch_hud_fmr_by_county(data_year: int) -> pd.DataFrame:
             return pd.DataFrame()
 
         try:
-            df = pd.read_csv(source_path, dtype=str, compression='infer', low_memory=False)
+            df = pd.read_csv(source_path, dtype=str, compression="infer", low_memory=False)
         except Exception as e:
             logger.warning(f"Failed to read HUD FMR data {source_path}: {e}")
             return pd.DataFrame()
@@ -299,7 +310,7 @@ def fetch_hud_fmr_by_county(data_year: int) -> pd.DataFrame:
     year_col = _find_col(columns, ["year", "fmr_year", "fy", "fiscal_year"])
     fmr_year = data_year
     if year_col:
-        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        df[year_col] = pd.to_numeric(df[year_col], errors="coerce")
         if (df[year_col] == data_year).any():
             fmr_year = data_year
             df = df[df[year_col] == data_year]
@@ -307,40 +318,44 @@ def fetch_hud_fmr_by_county(data_year: int) -> pd.DataFrame:
             fmr_year = int(df[year_col].max())
             df = df[df[year_col] == fmr_year]
 
-    fips_col = _find_col(columns, ["fips", "fips_code", "county_fips", "geoid", "fips2020", "fips2010"])
+    fips_col = _find_col(
+        columns, ["fips", "fips_code", "county_fips", "geoid", "fips2020", "fips2010"]
+    )
     if fips_col:
-        df['fips_code'] = df[fips_col].astype(str).str.zfill(5).str[:5]
+        df["fips_code"] = df[fips_col].astype(str).str.zfill(5).str[:5]
     else:
         state_col = _find_col(columns, ["st2020", "state_fips", "state"])
         county_col = _find_col(columns, ["cnty2020", "county_fips", "county"])
         if state_col and county_col:
-            df['fips_code'] = (
-                df[state_col].astype(str).str.zfill(2) +
-                df[county_col].astype(str).str.zfill(3)
-            )
+            df["fips_code"] = df[state_col].astype(str).str.zfill(2) + df[county_col].astype(
+                str
+            ).str.zfill(3)
         else:
             name_col = _find_col(columns, ["countyname", "county_name", "county"])
             if name_col:
-                df['fips_code'] = _map_county_name_to_fips(df[name_col])
+                df["fips_code"] = _map_county_name_to_fips(df[name_col])
 
-    if 'fips_code' not in df.columns:
+    if "fips_code" not in df.columns:
         logger.warning("HUD FMR data missing FIPS columns; skipping FMR enrichment")
         return pd.DataFrame()
 
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
     if df.empty:
         logger.warning("HUD FMR data contains no Maryland counties after filtering")
         return pd.DataFrame()
 
-    fmr_col = _find_col(columns, ["fmr_2br", "fmr2", "fmr_2", "fmr_2br_rent", "fmr2br", "two-bedroom", "two_bedroom"])
+    fmr_col = _find_col(
+        columns,
+        ["fmr_2br", "fmr2", "fmr_2", "fmr_2br_rent", "fmr2br", "two-bedroom", "two_bedroom"],
+    )
     if not fmr_col:
         logger.warning("HUD FMR data missing 2-bedroom FMR column; skipping FMR enrichment")
         return pd.DataFrame()
 
-    df[fmr_col] = pd.to_numeric(df[fmr_col], errors='coerce')
-    df = df[['fips_code', fmr_col]].copy()
-    df = df.rename(columns={fmr_col: 'fmr_2br'})
-    df['hud_fmr_year'] = fmr_year
+    df[fmr_col] = pd.to_numeric(df[fmr_col], errors="coerce")
+    df = df[["fips_code", fmr_col]].copy()
+    df = df.rename(columns={fmr_col: "fmr_2br"})
+    df["hud_fmr_year"] = fmr_year
     return df
 
 
@@ -351,12 +366,13 @@ def fetch_lihtc_by_county(data_year: int) -> pd.DataFrame:
     Supports either a local CSV (settings.HUD_LIHTC_DATA_PATH) or a URL
     (settings.HUD_LIHTC_DATA_URL).
     """
-    default_name = "hud_lihtc.zip" if (settings.HUD_LIHTC_DATA_URL or "").lower().endswith(".zip") else "hud_lihtc.csv"
+    default_name = (
+        "hud_lihtc.zip"
+        if (settings.HUD_LIHTC_DATA_URL or "").lower().endswith(".zip")
+        else "hud_lihtc.csv"
+    )
     source_path = _resolve_data_path(
-        settings.HUD_LIHTC_DATA_PATH,
-        settings.HUD_LIHTC_DATA_URL,
-        CACHE_DIR,
-        default_name
+        settings.HUD_LIHTC_DATA_PATH, settings.HUD_LIHTC_DATA_URL, CACHE_DIR, default_name
     )
 
     if source_path is None:
@@ -381,7 +397,7 @@ def fetch_lihtc_by_county(data_year: int) -> pd.DataFrame:
                 with zf.open(preferred) as fh:
                     df = pd.read_csv(fh, dtype=str, low_memory=False)
         else:
-            df = pd.read_csv(source_path, dtype=str, compression='infer', low_memory=False)
+            df = pd.read_csv(source_path, dtype=str, compression="infer", low_memory=False)
     except Exception as e:
         logger.warning(f"Failed to read HUD LIHTC data {source_path}: {e}")
         return pd.DataFrame()
@@ -389,32 +405,35 @@ def fetch_lihtc_by_county(data_year: int) -> pd.DataFrame:
     df = _normalize_columns(df)
     columns = list(df.columns)
 
-    fips_col = _find_col(columns, ["fips", "fips_code", "county_fips", "geoid", "fips2020", "fips2010"])
+    fips_col = _find_col(
+        columns, ["fips", "fips_code", "county_fips", "geoid", "fips2020", "fips2010"]
+    )
     if fips_col:
-        df['fips_code'] = df[fips_col].astype(str).str.zfill(5).str[:5]
+        df["fips_code"] = df[fips_col].astype(str).str.zfill(5).str[:5]
     else:
         state_col = _find_col(columns, ["st2020", "state_fips", "state"])
         county_col = _find_col(columns, ["cnty2020", "county_fips", "county"])
         if state_col and county_col:
-            df['fips_code'] = (
-                df[state_col].astype(str).str.zfill(2) +
-                df[county_col].astype(str).str.zfill(3)
-            )
+            df["fips_code"] = df[state_col].astype(str).str.zfill(2) + df[county_col].astype(
+                str
+            ).str.zfill(3)
         else:
             name_col = _find_col(columns, ["countyname", "county_name", "county"])
             if name_col:
-                df['fips_code'] = _map_county_name_to_fips(df[name_col])
+                df["fips_code"] = _map_county_name_to_fips(df[name_col])
 
-    if 'fips_code' in df.columns:
-        df['fips_code'] = df['fips_code'].where(df['fips_code'].str.match(r'^\\d{5}$'), pd.NA)
+    if "fips_code" in df.columns:
+        df["fips_code"] = df["fips_code"].where(df["fips_code"].str.match(r"^\\d{5}$"), pd.NA)
 
-    units_col = _find_col(columns, ["lihtc_units", "low_income_units", "li_units", "n_units", "total_units", "units"])
+    units_col = _find_col(
+        columns, ["lihtc_units", "low_income_units", "li_units", "n_units", "total_units", "units"]
+    )
     if not units_col:
         logger.warning("HUD LIHTC data missing unit counts; skipping LIHTC enrichment")
         return pd.DataFrame()
 
     # If FIPS are missing/masked, attempt ZIP -> county crosswalk
-    if 'fips_code' not in df.columns or df['fips_code'].isin(MD_COUNTY_FIPS.keys()).sum() < 3:
+    if "fips_code" not in df.columns or df["fips_code"].isin(MD_COUNTY_FIPS.keys()).sum() < 3:
         zip_col = _find_col(columns, ["proj_zip", "zip", "zipcode", "zip5"])
         if zip_col:
             crosswalk = _load_zip_crosswalk(df[zip_col].astype(str).str.zfill(5).unique().tolist())
@@ -432,40 +451,46 @@ def fetch_lihtc_by_county(data_year: int) -> pd.DataFrame:
                         crosswalk[[cw_zip, cw_fips] + ([ratio_col] if ratio_col else [])],
                         left_on=zip_col,
                         right_on=cw_zip,
-                        how='left'
+                        how="left",
                     )
-                    df['fips_code'] = df[cw_fips]
-                    df['zip_weight'] = pd.to_numeric(df[ratio_col], errors='coerce') if ratio_col else 1.0
-                    df['zip_weight'] = df['zip_weight'].fillna(1.0)
+                    df["fips_code"] = df[cw_fips]
+                    df["zip_weight"] = (
+                        pd.to_numeric(df[ratio_col], errors="coerce") if ratio_col else 1.0
+                    )
+                    df["zip_weight"] = df["zip_weight"].fillna(1.0)
                 else:
                     logger.warning("LIHTC crosswalk missing ZIP or FIPS columns")
         else:
-            logger.warning("LIHTC data missing ZIP column and valid FIPS; skipping LIHTC enrichment")
+            logger.warning(
+                "LIHTC data missing ZIP column and valid FIPS; skipping LIHTC enrichment"
+            )
             return pd.DataFrame()
 
-    if 'fips_code' not in df.columns:
+    if "fips_code" not in df.columns:
         logger.warning("HUD LIHTC data missing FIPS columns; skipping LIHTC enrichment")
         return pd.DataFrame()
 
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
     if df.empty:
         logger.warning("HUD LIHTC data contains no Maryland counties after filtering")
         return pd.DataFrame()
 
-    year_col = _find_col(columns, ["placed_in_service_year", "pis_year", "year", "placed_in_service"])
+    year_col = _find_col(
+        columns, ["placed_in_service_year", "pis_year", "year", "placed_in_service"]
+    )
     if year_col:
-        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        df[year_col] = pd.to_numeric(df[year_col], errors="coerce")
         df = df[df[year_col].notna() & (df[year_col] <= data_year)]
         lihtc_year = int(df[year_col].max()) if df[year_col].notna().any() else data_year
     else:
         lihtc_year = data_year
 
-    df[units_col] = pd.to_numeric(df[units_col], errors='coerce')
-    if 'zip_weight' in df.columns:
-        df[units_col] = df[units_col] * df['zip_weight']
-    agg = df.groupby('fips_code', as_index=False)[units_col].sum(min_count=1)
-    agg = agg.rename(columns={units_col: 'lihtc_units'})
-    agg['lihtc_year'] = lihtc_year
+    df[units_col] = pd.to_numeric(df[units_col], errors="coerce")
+    if "zip_weight" in df.columns:
+        df[units_col] = df[units_col] * df["zip_weight"]
+    agg = df.groupby("fips_code", as_index=False)[units_col].sum(min_count=1)
+    agg = agg.rename(columns={units_col: "lihtc_units"})
+    agg["lihtc_year"] = lihtc_year
     return agg
 
 
@@ -477,48 +502,52 @@ def enrich_county_with_external_sources(county_df: pd.DataFrame, data_year: int)
 
     fmr_df = fetch_hud_fmr_by_county(data_year)
     if not fmr_df.empty:
-        df = df.merge(fmr_df, on='fips_code', how='left')
-        df['fmr_2br_to_income'] = np.where(
-            df['median_household_income'].fillna(0) > 0,
-            (df['fmr_2br'] * 12) / df['median_household_income'],
-            pd.NA
+        df = df.merge(fmr_df, on="fips_code", how="left")
+        df["fmr_2br_to_income"] = np.where(
+            df["median_household_income"].fillna(0) > 0,
+            (df["fmr_2br"] * 12) / df["median_household_income"],
+            pd.NA,
         )
 
     lihtc_df = fetch_lihtc_by_county(data_year)
     if not lihtc_df.empty:
-        df = df.merge(lihtc_df, on='fips_code', how='left')
-        df['lihtc_units_per_1000_households'] = np.where(
-            df['total_households'].fillna(0) > 0,
-            (df['lihtc_units'] / df['total_households']) * 1000,
-            pd.NA
+        df = df.merge(lihtc_df, on="fips_code", how="left")
+        df["lihtc_units_per_1000_households"] = np.where(
+            df["total_households"].fillna(0) > 0,
+            (df["lihtc_units"] / df["total_households"]) * 1000,
+            pd.NA,
         )
 
     extra_scores = []
-    if 'fmr_2br_to_income' in df.columns and df['fmr_2br_to_income'].notna().sum() >= 3:
-        fmr_score = 1 - df['fmr_2br_to_income'].rank(pct=True)
-        df['fmr_affordability_score'] = fmr_score
+    if "fmr_2br_to_income" in df.columns and df["fmr_2br_to_income"].notna().sum() >= 3:
+        fmr_score = 1 - df["fmr_2br_to_income"].rank(pct=True)
+        df["fmr_affordability_score"] = fmr_score
         extra_scores.append(fmr_score)
 
-    if 'lihtc_units_per_1000_households' in df.columns and df['lihtc_units_per_1000_households'].notna().sum() >= 3:
-        lihtc_score = df['lihtc_units_per_1000_households'].rank(pct=True)
-        df['lihtc_supply_score'] = lihtc_score
+    if (
+        "lihtc_units_per_1000_households" in df.columns
+        and df["lihtc_units_per_1000_households"].notna().sum() >= 3
+    ):
+        lihtc_score = df["lihtc_units_per_1000_households"].rank(pct=True)
+        df["lihtc_supply_score"] = lihtc_score
         extra_scores.append(lihtc_score)
 
     if extra_scores:
         blended_extra = pd.concat(extra_scores, axis=1).mean(axis=1)
-        base_score = df['housing_affordability_score']
-        df['housing_affordability_score'] = np.where(
+        base_score = df["housing_affordability_score"]
+        df["housing_affordability_score"] = np.where(
             base_score.notna(),
-            (1 - EXTERNAL_AFFORDABILITY_BLEND_WEIGHT) * base_score +
-            EXTERNAL_AFFORDABILITY_BLEND_WEIGHT * blended_extra,
-            blended_extra
+            (1 - EXTERNAL_AFFORDABILITY_BLEND_WEIGHT) * base_score
+            + EXTERNAL_AFFORDABILITY_BLEND_WEIGHT * blended_extra,
+            blended_extra,
         )
-        df['housing_affordability_score'] = df['housing_affordability_score'].clip(0, 1)
-        df['affordability_version'] = 'v2-affordability+hud'
+        df["housing_affordability_score"] = df["housing_affordability_score"].clip(0, 1)
+        df["affordability_version"] = "v2-affordability+hud"
     else:
-        df['affordability_version'] = 'v2-affordability'
+        df["affordability_version"] = "v2-affordability"
 
     return df
+
 
 def download_acs_housing_data(year: int) -> pd.DataFrame:
     """
@@ -541,16 +570,16 @@ def download_acs_housing_data(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached ACS housing data: {cache_path}")
-        df = pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        df = pd.read_csv(cache_path, dtype={"tract_geoid": str, "fips_code": str})
         median_cols = [
-            'median_gross_rent',
-            'median_home_value',
-            'median_household_income',
-            'housing_age_median_year'
+            "median_gross_rent",
+            "median_home_value",
+            "median_household_income",
+            "housing_age_median_year",
         ]
         for col in median_cols:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = pd.to_numeric(df[col], errors="coerce")
                 df[col] = df[col].replace(list(ACS_MISSING_SENTINELS), np.nan)
                 df.loc[df[col] < 0, col] = np.nan
         return df
@@ -575,128 +604,133 @@ def download_acs_housing_data(year: int) -> pd.DataFrame:
         # B19013: Median household income
 
         variables = [
-            'NAME',
+            "NAME",
             # Housing units
-            'B25001_001E',  # Total housing units
+            "B25001_001E",  # Total housing units
             # Occupancy
-            'B25002_001E',  # Total
-            'B25002_002E',  # Occupied
-            'B25002_003E',  # Vacant
+            "B25002_001E",  # Total
+            "B25002_002E",  # Occupied
+            "B25002_003E",  # Vacant
             # Tenure
-            'B25003_001E',  # Total occupied
-            'B25003_002E',  # Owner occupied
-            'B25003_003E',  # Renter occupied
+            "B25003_001E",  # Total occupied
+            "B25003_002E",  # Owner occupied
+            "B25003_003E",  # Renter occupied
             # Values and rents
-            'B25064_001E',  # Median gross rent
-            'B25077_001E',  # Median home value
-            'B19013_001E',  # Median household income
+            "B25064_001E",  # Median gross rent
+            "B25077_001E",  # Median home value
+            "B19013_001E",  # Median household income
             # Rent burden distribution
-            'B25070_001E',  # Gross rent as % income - Total
-            'B25070_007E',  # 30.0 to 34.9 percent
-            'B25070_008E',  # 35.0 to 39.9 percent
-            'B25070_009E',  # 40.0 to 49.9 percent
-            'B25070_010E',  # 50.0 percent or more
+            "B25070_001E",  # Gross rent as % income - Total
+            "B25070_007E",  # 30.0 to 34.9 percent
+            "B25070_008E",  # 35.0 to 39.9 percent
+            "B25070_009E",  # 40.0 to 49.9 percent
+            "B25070_010E",  # 50.0 percent or more
             # Owner cost burden (with mortgage)
-            'B25091_001E',  # Total with mortgage
-            'B25091_008E',  # 30.0 to 34.9 percent
-            'B25091_009E',  # 35.0 to 39.9 percent
-            'B25091_010E',  # 40.0 to 49.9 percent
-            'B25091_011E',  # 50.0 percent or more
+            "B25091_001E",  # Total with mortgage
+            "B25091_008E",  # 30.0 to 34.9 percent
+            "B25091_009E",  # 35.0 to 39.9 percent
+            "B25091_010E",  # 40.0 to 49.9 percent
+            "B25091_011E",  # 50.0 percent or more
             # Housing age
-            'B25035_001E',  # Median year built
-            'B25034_001E',  # Year built total
-            'B25034_010E',  # Built 1940 to 1949
-            'B25034_011E',  # Built 1939 or earlier
+            "B25035_001E",  # Median year built
+            "B25034_001E",  # Year built total
+            "B25034_010E",  # Built 1940 to 1949
+            "B25034_011E",  # Built 1939 or earlier
             # Commute time
-            'B08303_001E',  # Total workers
-            'B08303_012E',  # 45 to 59 minutes
-            'B08303_013E',  # 60 or more minutes
+            "B08303_001E",  # Total workers
+            "B08303_012E",  # 45 to 59 minutes
+            "B08303_013E",  # 60 or more minutes
             # Crowding
-            'B25014_001E',  # Occupants per room - Total
-            'B25014_005E',  # 1.01 to 1.50
-            'B25014_006E',  # 1.51 to 2.00
-            'B25014_007E',  # 2.01 or more
-            'B25014_011E',  # Renter: 1.01 to 1.50
-            'B25014_012E',  # Renter: 1.51 to 2.00
-            'B25014_013E',  # Renter: 2.01 or more
+            "B25014_001E",  # Occupants per room - Total
+            "B25014_005E",  # 1.01 to 1.50
+            "B25014_006E",  # 1.51 to 2.00
+            "B25014_007E",  # 2.01 or more
+            "B25014_011E",  # Renter: 1.01 to 1.50
+            "B25014_012E",  # Renter: 1.51 to 2.00
+            "B25014_013E",  # Renter: 2.01 or more
             # Kitchen/plumbing
-            'B25052_001E',  # Kitchen facilities total
-            'B25052_003E',  # Lacking complete kitchen
-            'B25047_001E',  # Plumbing facilities total
-            'B25047_003E',  # Lacking complete plumbing
+            "B25052_001E",  # Kitchen facilities total
+            "B25052_003E",  # Lacking complete kitchen
+            "B25047_001E",  # Plumbing facilities total
+            "B25047_003E",  # Lacking complete plumbing
         ]
 
         # Download tract-level data for Maryland
         data = c.acs5.state_county_tract(
-            fields=variables,
-            state_fips='24',
-            county_fips='*',
-            tract='*',
-            year=year
+            fields=variables, state_fips="24", county_fips="*", tract="*", year=year
         )
 
         df = pd.DataFrame(data)
 
         # Create tract GEOID
-        df['tract_geoid'] = (
-            df['state'].astype(str).str.zfill(2) +
-            df['county'].astype(str).str.zfill(3) +
-            df['tract'].astype(str).str.zfill(6)
+        df["tract_geoid"] = (
+            df["state"].astype(str).str.zfill(2)
+            + df["county"].astype(str).str.zfill(3)
+            + df["tract"].astype(str).str.zfill(6)
         )
-        df['fips_code'] = df['state'].astype(str).str.zfill(2) + df['county'].astype(str).str.zfill(3)
+        df["fips_code"] = df["state"].astype(str).str.zfill(2) + df["county"].astype(str).str.zfill(
+            3
+        )
 
         # Filter to valid Maryland counties
-        df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+        df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
 
         # Rename columns for clarity
-        df = df.rename(columns={
-            'B25001_001E': 'total_housing_units',
-            'B25002_002E': 'occupied_units',
-            'B25002_003E': 'vacant_units',
-            'B25003_002E': 'owner_occupied_units',
-            'B25003_003E': 'renter_occupied_units',
-            'B25064_001E': 'median_gross_rent',
-            'B25077_001E': 'median_home_value',
-            'B19013_001E': 'median_household_income',
-            'B25035_001E': 'housing_age_median_year',
-            'B25070_001E': 'renter_total',
-            'B25070_007E': 'renter_burden_30_35',
-            'B25070_008E': 'renter_burden_35_40',
-            'B25070_009E': 'renter_burden_40_50',
-            'B25070_010E': 'renter_burden_50_plus',
-            'B25091_001E': 'owner_with_mortgage_total',
-            'B25091_008E': 'owner_burden_30_35',
-            'B25091_009E': 'owner_burden_35_40',
-            'B25091_010E': 'owner_burden_40_50',
-            'B25091_011E': 'owner_burden_50_plus',
-            'B25034_010E': 'built_1940_1949',
-            'B25034_011E': 'built_pre_1940',
-            'B08303_001E': 'total_workers',
-            'B08303_012E': 'commute_45_59_min',
-            'B08303_013E': 'commute_60_plus_min',
-            'B25014_001E': 'occupants_per_room_total',
-            'B25014_005E': 'crowded_1_to_1_5',
-            'B25014_006E': 'crowded_1_5_to_2',
-            'B25014_007E': 'crowded_2_plus',
-            'B25052_003E': 'lacking_kitchen',
-            'B25047_003E': 'lacking_plumbing',
-        })
+        df = df.rename(
+            columns={
+                "B25001_001E": "total_housing_units",
+                "B25002_002E": "occupied_units",
+                "B25002_003E": "vacant_units",
+                "B25003_002E": "owner_occupied_units",
+                "B25003_003E": "renter_occupied_units",
+                "B25064_001E": "median_gross_rent",
+                "B25077_001E": "median_home_value",
+                "B19013_001E": "median_household_income",
+                "B25035_001E": "housing_age_median_year",
+                "B25070_001E": "renter_total",
+                "B25070_007E": "renter_burden_30_35",
+                "B25070_008E": "renter_burden_35_40",
+                "B25070_009E": "renter_burden_40_50",
+                "B25070_010E": "renter_burden_50_plus",
+                "B25091_001E": "owner_with_mortgage_total",
+                "B25091_008E": "owner_burden_30_35",
+                "B25091_009E": "owner_burden_35_40",
+                "B25091_010E": "owner_burden_40_50",
+                "B25091_011E": "owner_burden_50_plus",
+                "B25034_010E": "built_1940_1949",
+                "B25034_011E": "built_pre_1940",
+                "B08303_001E": "total_workers",
+                "B08303_012E": "commute_45_59_min",
+                "B08303_013E": "commute_60_plus_min",
+                "B25014_001E": "occupants_per_room_total",
+                "B25014_005E": "crowded_1_to_1_5",
+                "B25014_006E": "crowded_1_5_to_2",
+                "B25014_007E": "crowded_2_plus",
+                "B25052_003E": "lacking_kitchen",
+                "B25047_003E": "lacking_plumbing",
+            }
+        )
 
         # Keep relevant columns
-        keep_cols = ['tract_geoid', 'fips_code', 'NAME'] + [c for c in df.columns if c not in ['NAME', 'state', 'county', 'tract', 'tract_geoid', 'fips_code'] and not c.startswith('B')]
+        keep_cols = ["tract_geoid", "fips_code", "NAME"] + [
+            c
+            for c in df.columns
+            if c not in ["NAME", "state", "county", "tract", "tract_geoid", "fips_code"]
+            and not c.startswith("B")
+        ]
         df = df[[c for c in keep_cols if c in df.columns]].copy()
 
         # Convert numeric columns
         for col in df.columns:
-            if col not in ['tract_geoid', 'fips_code', 'NAME']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+            if col not in ["tract_geoid", "fips_code", "NAME"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
         # Clean ACS sentinel values in key median fields
         median_cols = [
-            'median_gross_rent',
-            'median_home_value',
-            'median_household_income',
-            'housing_age_median_year'
+            "median_gross_rent",
+            "median_home_value",
+            "median_household_income",
+            "housing_age_median_year",
         ]
         for col in median_cols:
             if col in df.columns:
@@ -731,7 +765,7 @@ def download_chas_data(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info(f"Using cached CHAS data: {cache_path}")
-        return pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        return pd.read_csv(cache_path, dtype={"tract_geoid": str, "fips_code": str})
 
     logger.info(f"Downloading HUD CHAS data for {year}...")
 
@@ -762,7 +796,7 @@ def fetch_tract_geometries(year: int = 2020) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info("Using cached tract geometries")
-        return pd.read_csv(cache_path, dtype={'tract_geoid': str, 'fips_code': str})
+        return pd.read_csv(cache_path, dtype={"tract_geoid": str, "fips_code": str})
 
     logger.info("Fetching tract geometries...")
 
@@ -774,21 +808,25 @@ def fetch_tract_geometries(year: int = 2020) -> pd.DataFrame:
 
         # Compute areas
         tracts_proj = tracts.to_crs("EPSG:3857")
-        tracts['land_area_sq_mi'] = tracts_proj.geometry.area / 2.59e6
+        tracts["land_area_sq_mi"] = tracts_proj.geometry.area / 2.59e6
 
         # Extract centroids
-        tracts['centroid_lon'] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").x
-        tracts['centroid_lat'] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").y
+        tracts["centroid_lon"] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").x
+        tracts["centroid_lat"] = tracts_proj.geometry.centroid.to_crs("EPSG:4326").y
 
         # Create identifiers
-        tracts['tract_geoid'] = tracts['GEOID'].astype(str).str.zfill(11)
-        tracts['fips_code'] = (tracts['STATEFP'].astype(str) + tracts['COUNTYFP'].astype(str)).str.zfill(5)
+        tracts["tract_geoid"] = tracts["GEOID"].astype(str).str.zfill(11)
+        tracts["fips_code"] = (
+            tracts["STATEFP"].astype(str) + tracts["COUNTYFP"].astype(str)
+        ).str.zfill(5)
 
         # Filter to valid counties
-        tracts = tracts[tracts['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+        tracts = tracts[tracts["fips_code"].isin(MD_COUNTY_FIPS.keys())]
 
         # Keep essential columns
-        result = tracts[['tract_geoid', 'fips_code', 'land_area_sq_mi', 'centroid_lon', 'centroid_lat']].copy()
+        result = tracts[
+            ["tract_geoid", "fips_code", "land_area_sq_mi", "centroid_lon", "centroid_lat"]
+        ].copy()
 
         # Cache
         result.to_csv(cache_path, index=False)
@@ -815,7 +853,7 @@ def fetch_tract_population(year: int) -> pd.DataFrame:
 
     if cache_path.exists():
         logger.info("Using cached tract population")
-        return pd.read_csv(cache_path, dtype={'tract_geoid': str})
+        return pd.read_csv(cache_path, dtype={"tract_geoid": str})
 
     logger.info("Fetching tract population...")
 
@@ -825,22 +863,22 @@ def fetch_tract_population(year: int) -> pd.DataFrame:
         c = Census(settings.CENSUS_API_KEY)
 
         data = c.acs5.state_county_tract(
-            fields=['B01003_001E'],  # Total population
-            state_fips='24',
-            county_fips='*',
-            tract='*',
-            year=year
+            fields=["B01003_001E"],  # Total population
+            state_fips="24",
+            county_fips="*",
+            tract="*",
+            year=year,
         )
 
         df = pd.DataFrame(data)
-        df['tract_geoid'] = (
-            df['state'].astype(str).str.zfill(2) +
-            df['county'].astype(str).str.zfill(3) +
-            df['tract'].astype(str).str.zfill(6)
+        df["tract_geoid"] = (
+            df["state"].astype(str).str.zfill(2)
+            + df["county"].astype(str).str.zfill(3)
+            + df["tract"].astype(str).str.zfill(6)
         )
-        df['population'] = pd.to_numeric(df['B01003_001E'], errors='coerce').fillna(0).astype(int)
+        df["population"] = pd.to_numeric(df["B01003_001E"], errors="coerce").fillna(0).astype(int)
 
-        result = df[['tract_geoid', 'population']].copy()
+        result = df[["tract_geoid", "population"]].copy()
         result.to_csv(cache_path, index=False)
 
         logger.info(f"✓ Loaded population for {len(result)} tracts")
@@ -854,6 +892,7 @@ def fetch_tract_population(year: int) -> pd.DataFrame:
 # =============================================================================
 # COST BURDEN COMPUTATION
 # =============================================================================
+
 
 def compute_cost_burden_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -871,65 +910,59 @@ def compute_cost_burden_metrics(df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Computing cost burden metrics...")
 
     # Renter cost burden (from B25070)
-    df['renter_cost_burdened'] = (
-        df['renter_burden_30_35'].fillna(0) +
-        df['renter_burden_35_40'].fillna(0) +
-        df['renter_burden_40_50'].fillna(0) +
-        df['renter_burden_50_plus'].fillna(0)
+    df["renter_cost_burdened"] = (
+        df["renter_burden_30_35"].fillna(0)
+        + df["renter_burden_35_40"].fillna(0)
+        + df["renter_burden_40_50"].fillna(0)
+        + df["renter_burden_50_plus"].fillna(0)
     )
 
-    df['renter_severely_burdened'] = df['renter_burden_50_plus'].fillna(0)
+    df["renter_severely_burdened"] = df["renter_burden_50_plus"].fillna(0)
 
-    df['renter_cost_burdened_pct'] = np.where(
-        df['renter_total'] > 0,
-        df['renter_cost_burdened'] / df['renter_total'],
-        0
+    df["renter_cost_burdened_pct"] = np.where(
+        df["renter_total"] > 0, df["renter_cost_burdened"] / df["renter_total"], 0
     )
 
     # Owner cost burden (from B25091 - with mortgage)
-    df['owner_cost_burdened'] = (
-        df['owner_burden_30_35'].fillna(0) +
-        df['owner_burden_35_40'].fillna(0) +
-        df['owner_burden_40_50'].fillna(0) +
-        df['owner_burden_50_plus'].fillna(0)
+    df["owner_cost_burdened"] = (
+        df["owner_burden_30_35"].fillna(0)
+        + df["owner_burden_35_40"].fillna(0)
+        + df["owner_burden_40_50"].fillna(0)
+        + df["owner_burden_50_plus"].fillna(0)
     )
 
-    df['owner_severely_burdened'] = df['owner_burden_50_plus'].fillna(0)
+    df["owner_severely_burdened"] = df["owner_burden_50_plus"].fillna(0)
 
-    df['owner_cost_burdened_pct'] = np.where(
-        df['owner_with_mortgage_total'] > 0,
-        df['owner_cost_burdened'] / df['owner_with_mortgage_total'],
-        0
+    df["owner_cost_burdened_pct"] = np.where(
+        df["owner_with_mortgage_total"] > 0,
+        df["owner_cost_burdened"] / df["owner_with_mortgage_total"],
+        0,
     )
 
     # Combined cost burden (weighted by tenure)
-    df['total_households'] = df['occupied_units'].fillna(0)
+    df["total_households"] = df["occupied_units"].fillna(0)
 
-    df['cost_burdened_households'] = (
-        df['renter_cost_burdened'] + df['owner_cost_burdened']
+    df["cost_burdened_households"] = df["renter_cost_burdened"] + df["owner_cost_burdened"]
+
+    df["severely_cost_burdened_households"] = (
+        df["renter_severely_burdened"] + df["owner_severely_burdened"]
     )
 
-    df['severely_cost_burdened_households'] = (
-        df['renter_severely_burdened'] + df['owner_severely_burdened']
+    df["cost_burdened_pct"] = np.where(
+        df["total_households"] > 0, df["cost_burdened_households"] / df["total_households"], 0
     )
 
-    df['cost_burdened_pct'] = np.where(
-        df['total_households'] > 0,
-        df['cost_burdened_households'] / df['total_households'],
-        0
-    )
-
-    df['severely_cost_burdened_pct'] = np.where(
-        df['total_households'] > 0,
-        df['severely_cost_burdened_households'] / df['total_households'],
-        0
+    df["severely_cost_burdened_pct"] = np.where(
+        df["total_households"] > 0,
+        df["severely_cost_burdened_households"] / df["total_households"],
+        0,
     )
 
     # Clamp to valid range
-    df['cost_burdened_pct'] = df['cost_burdened_pct'].clip(0, 1)
-    df['severely_cost_burdened_pct'] = df['severely_cost_burdened_pct'].clip(0, 1)
-    df['renter_cost_burdened_pct'] = df['renter_cost_burdened_pct'].clip(0, 1)
-    df['owner_cost_burdened_pct'] = df['owner_cost_burdened_pct'].clip(0, 1)
+    df["cost_burdened_pct"] = df["cost_burdened_pct"].clip(0, 1)
+    df["severely_cost_burdened_pct"] = df["severely_cost_burdened_pct"].clip(0, 1)
+    df["renter_cost_burdened_pct"] = df["renter_cost_burdened_pct"].clip(0, 1)
+    df["owner_cost_burdened_pct"] = df["owner_cost_burdened_pct"].clip(0, 1)
 
     logger.info("✓ Computed cost burden metrics")
     return df
@@ -948,44 +981,36 @@ def compute_housing_quality_metrics(df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Computing housing quality metrics...")
 
     # Pre-1950 housing stock
-    df['pre_1950_housing'] = (
-        df['built_1940_1949'].fillna(0) + df['built_pre_1940'].fillna(0)
-    )
-    df['pre_1950_housing_pct'] = np.where(
-        df['total_housing_units'] > 0,
-        df['pre_1950_housing'] / df['total_housing_units'],
-        0
+    df["pre_1950_housing"] = df["built_1940_1949"].fillna(0) + df["built_pre_1940"].fillna(0)
+    df["pre_1950_housing_pct"] = np.where(
+        df["total_housing_units"] > 0, df["pre_1950_housing"] / df["total_housing_units"], 0
     )
 
     # Crowding (>1 person per room)
-    df['crowded_units'] = (
-        df['crowded_1_to_1_5'].fillna(0) +
-        df['crowded_1_5_to_2'].fillna(0) +
-        df['crowded_2_plus'].fillna(0)
+    df["crowded_units"] = (
+        df["crowded_1_to_1_5"].fillna(0)
+        + df["crowded_1_5_to_2"].fillna(0)
+        + df["crowded_2_plus"].fillna(0)
     )
-    df['crowded_units_pct'] = np.where(
-        df['occupants_per_room_total'] > 0,
-        df['crowded_units'] / df['occupants_per_room_total'],
-        0
+    df["crowded_units_pct"] = np.where(
+        df["occupants_per_room_total"] > 0, df["crowded_units"] / df["occupants_per_room_total"], 0
     )
 
     # Lacking facilities
-    df['lacking_complete_kitchen_pct'] = np.where(
-        df['total_housing_units'] > 0,
-        df['lacking_kitchen'].fillna(0) / df['total_housing_units'],
-        0
+    df["lacking_complete_kitchen_pct"] = np.where(
+        df["total_housing_units"] > 0,
+        df["lacking_kitchen"].fillna(0) / df["total_housing_units"],
+        0,
     )
-    df['lacking_complete_plumbing_pct'] = np.where(
-        df['total_housing_units'] > 0,
-        df['lacking_plumbing'].fillna(0) / df['total_housing_units'],
-        0
+    df["lacking_complete_plumbing_pct"] = np.where(
+        df["total_housing_units"] > 0,
+        df["lacking_plumbing"].fillna(0) / df["total_housing_units"],
+        0,
     )
 
     # Vacancy rate
-    df['vacancy_rate'] = np.where(
-        df['total_housing_units'] > 0,
-        df['vacant_units'].fillna(0) / df['total_housing_units'],
-        0
+    df["vacancy_rate"] = np.where(
+        df["total_housing_units"] > 0, df["vacant_units"].fillna(0) / df["total_housing_units"], 0
     )
 
     logger.info("✓ Computed housing quality metrics")
@@ -1008,62 +1033,65 @@ def compute_ht_burden(df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Computing Housing + Transportation burden estimates...")
 
     # Estimate average commute time (weighted by long commutes)
-    df['long_commuters'] = (
-        df['commute_45_59_min'].fillna(0) + df['commute_60_plus_min'].fillna(0)
-    )
-    df['long_commute_pct'] = np.where(
-        df['total_workers'] > 0,
-        df['long_commuters'] / df['total_workers'],
-        0
+    df["long_commuters"] = df["commute_45_59_min"].fillna(0) + df["commute_60_plus_min"].fillna(0)
+    df["long_commute_pct"] = np.where(
+        df["total_workers"] > 0, df["long_commuters"] / df["total_workers"], 0
     )
 
     # Estimate average commute time in minutes
     # Average for 45-59 = 52, for 60+ = 75
-    df['avg_commute_time_minutes'] = np.where(
-        df['total_workers'] > 0,
-        (df['commute_45_59_min'].fillna(0) * 52 +
-         df['commute_60_plus_min'].fillna(0) * 75 +
-         (df['total_workers'] - df['long_commuters']).clip(lower=0) * 25) / df['total_workers'],
-        25  # Default 25 minutes
+    df["avg_commute_time_minutes"] = np.where(
+        df["total_workers"] > 0,
+        (
+            df["commute_45_59_min"].fillna(0) * 52
+            + df["commute_60_plus_min"].fillna(0) * 75
+            + (df["total_workers"] - df["long_commuters"]).clip(lower=0) * 25
+        )
+        / df["total_workers"],
+        25,  # Default 25 minutes
     )
 
     # Estimate monthly commute cost
     # Assume 25 mph average speed for commute
     avg_speed_mph = 25
-    df['commute_distance_miles'] = df['avg_commute_time_minutes'] / 60 * avg_speed_mph
-    df['estimated_commute_cost_monthly'] = (
-        df['commute_distance_miles'] * 2 * DAYS_WORKED_PER_YEAR / 12 * AVG_ANNUAL_COMMUTE_COST_PER_MILE
+    df["commute_distance_miles"] = df["avg_commute_time_minutes"] / 60 * avg_speed_mph
+    df["estimated_commute_cost_monthly"] = (
+        df["commute_distance_miles"]
+        * 2
+        * DAYS_WORKED_PER_YEAR
+        / 12
+        * AVG_ANNUAL_COMMUTE_COST_PER_MILE
     ).astype(int)
 
     # Combined H+T burden
     # Housing cost = median rent or imputed owner cost
-    df['monthly_housing_cost'] = df['median_gross_rent'].fillna(
-        df['median_home_value'] * 0.006  # Rough owner cost estimate
+    df["monthly_housing_cost"] = df["median_gross_rent"].fillna(
+        df["median_home_value"] * 0.006  # Rough owner cost estimate
     )
 
-    df['monthly_income'] = df['median_household_income'].fillna(0) / 12
+    df["monthly_income"] = df["median_household_income"].fillna(0) / 12
 
-    df['housing_plus_transport_pct'] = np.where(
-        df['monthly_income'] > 0,
-        (df['monthly_housing_cost'] + df['estimated_commute_cost_monthly']) / df['monthly_income'],
-        0
+    df["housing_plus_transport_pct"] = np.where(
+        df["monthly_income"] > 0,
+        (df["monthly_housing_cost"] + df["estimated_commute_cost_monthly"]) / df["monthly_income"],
+        0,
     )
 
     # Clamp to reasonable range
-    df['housing_plus_transport_pct'] = df['housing_plus_transport_pct'].clip(0, 1)
+    df["housing_plus_transport_pct"] = df["housing_plus_transport_pct"].clip(0, 1)
 
     # Rent-to-income ratio
-    df['rent_to_income_ratio'] = np.where(
-        (df['monthly_income'] > 0) & df['median_gross_rent'].notna(),
-        df['median_gross_rent'] / df['monthly_income'],
-        np.nan
+    df["rent_to_income_ratio"] = np.where(
+        (df["monthly_income"] > 0) & df["median_gross_rent"].notna(),
+        df["median_gross_rent"] / df["monthly_income"],
+        np.nan,
     ).clip(0, 1)
 
     # Price-to-income ratio
-    df['price_to_income_ratio'] = np.where(
-        (df['median_household_income'] > 0) & df['median_home_value'].notna(),
-        df['median_home_value'] / df['median_household_income'],
-        np.nan
+    df["price_to_income_ratio"] = np.where(
+        (df["median_household_income"] > 0) & df["median_home_value"].notna(),
+        df["median_home_value"] / df["median_household_income"],
+        np.nan,
     )
 
     logger.info("✓ Computed H+T burden estimates")
@@ -1073,6 +1101,7 @@ def compute_ht_burden(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # SCORE NORMALIZATION
 # =============================================================================
+
 
 def normalize_affordability_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1089,35 +1118,33 @@ def normalize_affordability_scores(df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Normalizing affordability scores...")
 
     # Affordability burden score: 1 - cost_burdened_pct (higher = better)
-    df['affordability_burden_score'] = 1 - df['cost_burdened_pct'].clip(0, 1)
+    df["affordability_burden_score"] = 1 - df["cost_burdened_pct"].clip(0, 1)
 
     # Affordable stock score: percentile rank within Maryland
     # For now, use inverse of rent-to-income ratio as proxy
     # In full implementation, this would use CHAS affordable unit counts
-    df['affordable_stock_score'] = 1 - df['rent_to_income_ratio'].rank(pct=True)
+    df["affordable_stock_score"] = 1 - df["rent_to_income_ratio"].rank(pct=True)
 
     # Housing quality score: composite of quality indicators
     # Lower old housing %, lower crowding %, complete facilities = higher score
     quality_penalty = (
-        df['pre_1950_housing_pct'] * 0.3 +
-        df['crowded_units_pct'] * 0.4 +
-        df['lacking_complete_kitchen_pct'] * 0.15 +
-        df['lacking_complete_plumbing_pct'] * 0.15
+        df["pre_1950_housing_pct"] * 0.3
+        + df["crowded_units_pct"] * 0.4
+        + df["lacking_complete_kitchen_pct"] * 0.15
+        + df["lacking_complete_plumbing_pct"] * 0.15
     )
-    df['housing_quality_score'] = (1 - quality_penalty).clip(0, 1)
+    df["housing_quality_score"] = (1 - quality_penalty).clip(0, 1)
 
     # Composite housing affordability score
-    df['housing_affordability_score'] = (
-        BURDEN_WEIGHT * df['affordability_burden_score'] +
-        STOCK_WEIGHT * df['affordable_stock_score'] +
-        QUALITY_WEIGHT * df['housing_quality_score']
+    df["housing_affordability_score"] = (
+        BURDEN_WEIGHT * df["affordability_burden_score"]
+        + STOCK_WEIGHT * df["affordable_stock_score"]
+        + QUALITY_WEIGHT * df["housing_quality_score"]
     ).clip(0, 1)
 
     # Housing density
-    df['housing_density_per_sq_mi'] = np.where(
-        df['land_area_sq_mi'] > 0,
-        df['total_housing_units'] / df['land_area_sq_mi'],
-        0
+    df["housing_density_per_sq_mi"] = np.where(
+        df["land_area_sq_mi"] > 0, df["total_housing_units"] / df["land_area_sq_mi"], 0
     )
 
     logger.info("✓ Normalized affordability scores")
@@ -1127,6 +1154,7 @@ def normalize_affordability_scores(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # AGGREGATION
 # =============================================================================
+
 
 def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1143,52 +1171,57 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Aggregating to county level...")
 
     # Prepare population weights
-    tract_df['population'] = tract_df['population'].fillna(0)
-    tract_df['pop_weight'] = tract_df.groupby('fips_code')['population'].transform(
+    tract_df["population"] = tract_df["population"].fillna(0)
+    tract_df["pop_weight"] = tract_df.groupby("fips_code")["population"].transform(
         lambda x: x / x.sum() if x.sum() > 0 else 1 / len(x)
     )
 
     # Weighted average columns
     score_cols = [
-        'cost_burdened_pct', 'severely_cost_burdened_pct',
-        'owner_cost_burdened_pct', 'renter_cost_burdened_pct',
-        'vacancy_rate', 'rent_to_income_ratio', 'price_to_income_ratio',
-        'pre_1950_housing_pct', 'crowded_units_pct',
-        'housing_plus_transport_pct', 'avg_commute_time_minutes',
-        'affordability_burden_score', 'affordable_stock_score',
-        'housing_quality_score', 'housing_affordability_score'
+        "cost_burdened_pct",
+        "severely_cost_burdened_pct",
+        "owner_cost_burdened_pct",
+        "renter_cost_burdened_pct",
+        "vacancy_rate",
+        "rent_to_income_ratio",
+        "price_to_income_ratio",
+        "pre_1950_housing_pct",
+        "crowded_units_pct",
+        "housing_plus_transport_pct",
+        "avg_commute_time_minutes",
+        "affordability_burden_score",
+        "affordable_stock_score",
+        "housing_quality_score",
+        "housing_affordability_score",
     ]
 
     weighted_cols = {}
     for col in score_cols:
         if col in tract_df.columns:
-            tract_df[f'{col}_weighted'] = tract_df[col] * tract_df['pop_weight']
-            weighted_cols[f'{col}_weighted'] = (f'{col}_weighted', 'sum')
+            tract_df[f"{col}_weighted"] = tract_df[col] * tract_df["pop_weight"]
+            weighted_cols[f"{col}_weighted"] = (f"{col}_weighted", "sum")
 
     # Aggregation spec
     agg_spec = {
         # Sum counts
-        'total_housing_units': ('total_housing_units', 'sum'),
-        'occupied_units': ('occupied_units', 'sum'),
-        'vacant_units': ('vacant_units', 'sum'),
-        'owner_occupied_units': ('owner_occupied_units', 'sum'),
-        'renter_occupied_units': ('renter_occupied_units', 'sum'),
-        'total_households': ('total_households', 'sum'),
-        'cost_burdened_households': ('cost_burdened_households', 'sum'),
-        'severely_cost_burdened_households': ('severely_cost_burdened_households', 'sum'),
-
+        "total_housing_units": ("total_housing_units", "sum"),
+        "occupied_units": ("occupied_units", "sum"),
+        "vacant_units": ("vacant_units", "sum"),
+        "owner_occupied_units": ("owner_occupied_units", "sum"),
+        "renter_occupied_units": ("renter_occupied_units", "sum"),
+        "total_households": ("total_households", "sum"),
+        "cost_burdened_households": ("cost_burdened_households", "sum"),
+        "severely_cost_burdened_households": ("severely_cost_burdened_households", "sum"),
         # Sum population and area
-        'population': ('population', 'sum'),
-        'land_area_sq_mi': ('land_area_sq_mi', 'sum'),
-
+        "population": ("population", "sum"),
+        "land_area_sq_mi": ("land_area_sq_mi", "sum"),
         # Count tracts
-        'tract_count': ('tract_geoid', 'count'),
-
+        "tract_count": ("tract_geoid", "count"),
         # Median values (use weighted median approximation)
-        'median_gross_rent': ('median_gross_rent', 'median'),
-        'median_home_value': ('median_home_value', 'median'),
-        'median_household_income': ('median_household_income', 'median'),
-        'housing_age_median_year': ('housing_age_median_year', 'median'),
+        "median_gross_rent": ("median_gross_rent", "median"),
+        "median_home_value": ("median_home_value", "median"),
+        "median_household_income": ("median_household_income", "median"),
+        "housing_age_median_year": ("housing_age_median_year", "median"),
     }
 
     # Add weighted columns to spec
@@ -1196,26 +1229,26 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
         if src_col in tract_df.columns:
             agg_spec[new_col] = (src_col, func)
 
-    county_agg = tract_df.groupby('fips_code').agg(**agg_spec).reset_index()
+    county_agg = tract_df.groupby("fips_code").agg(**agg_spec).reset_index()
 
     # Rename weighted columns back
     for col in score_cols:
-        weighted_name = f'{col}_weighted'
+        weighted_name = f"{col}_weighted"
         if weighted_name in county_agg.columns:
             county_agg[col] = county_agg[weighted_name]
             county_agg = county_agg.drop(columns=[weighted_name])
 
     # Compute county-level derived metrics
-    county_agg['vacancy_rate'] = np.where(
-        county_agg['total_housing_units'] > 0,
-        county_agg['vacant_units'] / county_agg['total_housing_units'],
-        0
+    county_agg["vacancy_rate"] = np.where(
+        county_agg["total_housing_units"] > 0,
+        county_agg["vacant_units"] / county_agg["total_housing_units"],
+        0,
     )
 
-    county_agg['housing_density_per_sq_mi'] = np.where(
-        county_agg['land_area_sq_mi'] > 0,
-        county_agg['total_housing_units'] / county_agg['land_area_sq_mi'],
-        0
+    county_agg["housing_density_per_sq_mi"] = np.where(
+        county_agg["land_area_sq_mi"] > 0,
+        county_agg["total_housing_units"] / county_agg["land_area_sq_mi"],
+        0,
     )
 
     logger.info(f"✓ Aggregated to {len(county_agg)} counties")
@@ -1225,6 +1258,7 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # DATABASE STORAGE
 # =============================================================================
+
 
 def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year: int):
     """
@@ -1238,6 +1272,7 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
     logger.info(f"Storing {len(df)} tract housing affordability records...")
 
     with get_db() as db:
+
         def safe_float(value, min_value: float = None, max_value: float = None):
             if value is None or pd.isna(value):
                 return None
@@ -1249,13 +1284,19 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
             return val
 
         # Clear existing data for this year
-        db.execute(text("""
+        db.execute(
+            text(
+                """
             DELETE FROM layer4_housing_affordability_tract
             WHERE data_year = :data_year
-        """), {"data_year": data_year})
+        """
+            ),
+            {"data_year": data_year},
+        )
 
         # Insert new records
-        insert_sql = text("""
+        insert_sql = text(
+            """
                 INSERT INTO layer4_housing_affordability_tract (
                     tract_geoid, fips_code, data_year,
                     total_housing_units, occupied_units, owner_occupied_units, renter_occupied_units,
@@ -1289,49 +1330,75 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
                     :area, :density, :population,
                     :acs_year
                 )
-            """)
+            """
+        )
 
         rows = []
         for _, row in df.iterrows():
-            rows.append({
-                'tract_geoid': row['tract_geoid'],
-                'fips_code': row['fips_code'],
-                'data_year': data_year,
-                'total_units': int(row.get('total_housing_units', 0)),
-                'occupied': int(row.get('occupied_units', 0)),
-                'owner': int(row.get('owner_occupied_units', 0)),
-                'renter': int(row.get('renter_occupied_units', 0)),
-                'vacant': int(row.get('vacant_units', 0)),
-                'vacancy_rate': float(row.get('vacancy_rate', 0)),
-                'households': int(row.get('total_households', 0)),
-                'burdened': int(row.get('cost_burdened_households', 0)),
-                'severely_burdened': int(row.get('severely_cost_burdened_households', 0)),
-                'burden_pct': float(row.get('cost_burdened_pct', 0)),
-                'severe_pct': float(row.get('severely_cost_burdened_pct', 0)),
-                'owner_burden': float(row.get('owner_cost_burdened_pct', 0)),
-                'renter_burden': float(row.get('renter_cost_burdened_pct', 0)),
-                'rent': int(row.get('median_gross_rent')) if pd.notna(row.get('median_gross_rent')) and row.get('median_gross_rent') > 0 else None,
-                'home_value': int(row.get('median_home_value')) if pd.notna(row.get('median_home_value')) and row.get('median_home_value') > 0 else None,
-                'income': int(row.get('median_household_income')) if pd.notna(row.get('median_household_income')) and row.get('median_household_income') > 0 else None,
-                'pti': safe_float(row.get('price_to_income_ratio'), min_value=0, max_value=9999.99),
-                'rti': safe_float(row.get('rent_to_income_ratio'), min_value=0, max_value=1),
-                'commute_time': float(row.get('avg_commute_time_minutes', 0)),
-                'commute_cost': int(row.get('estimated_commute_cost_monthly', 0)),
-                'ht_pct': safe_float(row.get('housing_plus_transport_pct'), min_value=0, max_value=1),
-                'year_built': int(row.get('housing_age_median_year', 0)) if pd.notna(row.get('housing_age_median_year')) else None,
-                'pre_1950': float(row.get('pre_1950_housing_pct', 0)),
-                'crowded': float(row.get('crowded_units_pct', 0)),
-                'no_plumbing': float(row.get('lacking_complete_plumbing_pct', 0)),
-                'no_kitchen': float(row.get('lacking_complete_kitchen_pct', 0)),
-                'burden_score': float(row.get('affordability_burden_score', 0)),
-                'stock_score': float(row.get('affordable_stock_score', 0)),
-                'quality_score': float(row.get('housing_quality_score', 0)),
-                'affordability_score': float(row.get('housing_affordability_score', 0)),
-                'area': float(row.get('land_area_sq_mi', 0)),
-                'density': float(row.get('housing_density_per_sq_mi', 0)),
-                'population': int(row.get('population', 0)),
-                'acs_year': acs_year
-            })
+            rows.append(
+                {
+                    "tract_geoid": row["tract_geoid"],
+                    "fips_code": row["fips_code"],
+                    "data_year": data_year,
+                    "total_units": int(row.get("total_housing_units", 0)),
+                    "occupied": int(row.get("occupied_units", 0)),
+                    "owner": int(row.get("owner_occupied_units", 0)),
+                    "renter": int(row.get("renter_occupied_units", 0)),
+                    "vacant": int(row.get("vacant_units", 0)),
+                    "vacancy_rate": float(row.get("vacancy_rate", 0)),
+                    "households": int(row.get("total_households", 0)),
+                    "burdened": int(row.get("cost_burdened_households", 0)),
+                    "severely_burdened": int(row.get("severely_cost_burdened_households", 0)),
+                    "burden_pct": float(row.get("cost_burdened_pct", 0)),
+                    "severe_pct": float(row.get("severely_cost_burdened_pct", 0)),
+                    "owner_burden": float(row.get("owner_cost_burdened_pct", 0)),
+                    "renter_burden": float(row.get("renter_cost_burdened_pct", 0)),
+                    "rent": (
+                        int(row.get("median_gross_rent"))
+                        if pd.notna(row.get("median_gross_rent"))
+                        and row.get("median_gross_rent") > 0
+                        else None
+                    ),
+                    "home_value": (
+                        int(row.get("median_home_value"))
+                        if pd.notna(row.get("median_home_value"))
+                        and row.get("median_home_value") > 0
+                        else None
+                    ),
+                    "income": (
+                        int(row.get("median_household_income"))
+                        if pd.notna(row.get("median_household_income"))
+                        and row.get("median_household_income") > 0
+                        else None
+                    ),
+                    "pti": safe_float(
+                        row.get("price_to_income_ratio"), min_value=0, max_value=9999.99
+                    ),
+                    "rti": safe_float(row.get("rent_to_income_ratio"), min_value=0, max_value=1),
+                    "commute_time": float(row.get("avg_commute_time_minutes", 0)),
+                    "commute_cost": int(row.get("estimated_commute_cost_monthly", 0)),
+                    "ht_pct": safe_float(
+                        row.get("housing_plus_transport_pct"), min_value=0, max_value=1
+                    ),
+                    "year_built": (
+                        int(row.get("housing_age_median_year", 0))
+                        if pd.notna(row.get("housing_age_median_year"))
+                        else None
+                    ),
+                    "pre_1950": float(row.get("pre_1950_housing_pct", 0)),
+                    "crowded": float(row.get("crowded_units_pct", 0)),
+                    "no_plumbing": float(row.get("lacking_complete_plumbing_pct", 0)),
+                    "no_kitchen": float(row.get("lacking_complete_kitchen_pct", 0)),
+                    "burden_score": float(row.get("affordability_burden_score", 0)),
+                    "stock_score": float(row.get("affordable_stock_score", 0)),
+                    "quality_score": float(row.get("housing_quality_score", 0)),
+                    "affordability_score": float(row.get("housing_affordability_score", 0)),
+                    "area": float(row.get("land_area_sq_mi", 0)),
+                    "density": float(row.get("housing_density_per_sq_mi", 0)),
+                    "population": int(row.get("population", 0)),
+                    "acs_year": acs_year,
+                }
+            )
 
         execute_batch(db, insert_sql, rows, chunk_size=1000)
 
@@ -1355,6 +1422,7 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
     logger.info(f"Updating {len(df)} county housing affordability records...")
 
     with get_db() as db:
+
         def safe_float(value, min_value: float = None, max_value: float = None):
             if value is None or pd.isna(value):
                 return None
@@ -1367,18 +1435,24 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
 
         # Get existing v1 elasticity scores
         elasticity_scores = {}
-        result = db.execute(text("""
+        result = db.execute(
+            text(
+                """
             SELECT fips_code, housing_elasticity_index
             FROM layer4_housing_elasticity
             WHERE data_year = :data_year
-        """), {"data_year": data_year})
+        """
+            ),
+            {"data_year": data_year},
+        )
 
         for row in result.fetchall():
             fips_code, v1_score = row
             if v1_score is not None:
                 elasticity_scores[fips_code] = float(v1_score)
 
-        update_sql = text("""
+        update_sql = text(
+            """
                 UPDATE layer4_housing_elasticity
                 SET
                     total_households = :households,
@@ -1409,14 +1483,15 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
                     affordability_version = :affordability_version,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE fips_code = :fips_code AND data_year = :data_year
-            """)
+            """
+        )
 
         rows = []
         # Update each county
         for _, row in df.iterrows():
-            fips_code = row['fips_code']
+            fips_code = row["fips_code"]
             elasticity = elasticity_scores.get(fips_code)
-            affordability = row.get('housing_affordability_score')
+            affordability = row.get("housing_affordability_score")
 
             # Compute composite index
             if elasticity is None and affordability is None:
@@ -1427,40 +1502,57 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
                 opportunity_index = elasticity
             else:
                 opportunity_index = (
-                    ELASTICITY_WEIGHT * elasticity +
-                    AFFORDABILITY_WEIGHT * affordability
+                    ELASTICITY_WEIGHT * elasticity + AFFORDABILITY_WEIGHT * affordability
                 )
 
-            rows.append({
-                'fips_code': fips_code,
-                'data_year': data_year,
-                'households': int(row.get('total_households', 0)),
-                'burdened': int(row.get('cost_burdened_households', 0)),
-                'severely_burdened': int(row.get('severely_cost_burdened_households', 0)),
-                'burden_pct': float(row.get('cost_burdened_pct', 0)),
-                'severe_pct': float(row.get('severely_cost_burdened_pct', 0)),
-                'owner_burden': float(row.get('owner_cost_burdened_pct', 0)),
-                'renter_burden': float(row.get('renter_cost_burdened_pct', 0)),
-                'rti': safe_float(row.get('rent_to_income_ratio'), min_value=0, max_value=1),
-                'commute_time': float(row.get('avg_commute_time_minutes', 0)),
-                'ht_pct': safe_float(row.get('housing_plus_transport_pct'), min_value=0, max_value=1),
-                'year_built': int(row.get('housing_age_median_year', 0)) if pd.notna(row.get('housing_age_median_year')) else None,
-                'pre_1950': float(row.get('pre_1950_housing_pct', 0)),
-                'crowded': float(row.get('crowded_units_pct', 0)),
-                'quality_score': float(row.get('housing_quality_score', 0)),
-                'burden_score': float(row.get('affordability_burden_score', 0)),
-                'stock_score': float(row.get('affordable_stock_score', 0)),
-                'affordability_score': float(row.get('housing_affordability_score', 0)),
-                'fmr_2br': int(row.get('fmr_2br')) if pd.notna(row.get('fmr_2br')) else None,
-                'fmr_2br_to_income': safe_float(row.get('fmr_2br_to_income'), min_value=0, max_value=10),
-                'hud_fmr_year': int(row.get('hud_fmr_year')) if pd.notna(row.get('hud_fmr_year')) else None,
-                'lihtc_units': int(row.get('lihtc_units')) if pd.notna(row.get('lihtc_units')) else None,
-                'lihtc_units_per_1000_households': safe_float(row.get('lihtc_units_per_1000_households'), min_value=0, max_value=1000),
-                'lihtc_year': int(row.get('lihtc_year')) if pd.notna(row.get('lihtc_year')) else None,
-                'opportunity_index': opportunity_index,
-                'acs_year': acs_year,
-                'affordability_version': row.get('affordability_version', 'v2-affordability')
-            })
+            rows.append(
+                {
+                    "fips_code": fips_code,
+                    "data_year": data_year,
+                    "households": int(row.get("total_households", 0)),
+                    "burdened": int(row.get("cost_burdened_households", 0)),
+                    "severely_burdened": int(row.get("severely_cost_burdened_households", 0)),
+                    "burden_pct": float(row.get("cost_burdened_pct", 0)),
+                    "severe_pct": float(row.get("severely_cost_burdened_pct", 0)),
+                    "owner_burden": float(row.get("owner_cost_burdened_pct", 0)),
+                    "renter_burden": float(row.get("renter_cost_burdened_pct", 0)),
+                    "rti": safe_float(row.get("rent_to_income_ratio"), min_value=0, max_value=1),
+                    "commute_time": float(row.get("avg_commute_time_minutes", 0)),
+                    "ht_pct": safe_float(
+                        row.get("housing_plus_transport_pct"), min_value=0, max_value=1
+                    ),
+                    "year_built": (
+                        int(row.get("housing_age_median_year", 0))
+                        if pd.notna(row.get("housing_age_median_year"))
+                        else None
+                    ),
+                    "pre_1950": float(row.get("pre_1950_housing_pct", 0)),
+                    "crowded": float(row.get("crowded_units_pct", 0)),
+                    "quality_score": float(row.get("housing_quality_score", 0)),
+                    "burden_score": float(row.get("affordability_burden_score", 0)),
+                    "stock_score": float(row.get("affordable_stock_score", 0)),
+                    "affordability_score": float(row.get("housing_affordability_score", 0)),
+                    "fmr_2br": int(row.get("fmr_2br")) if pd.notna(row.get("fmr_2br")) else None,
+                    "fmr_2br_to_income": safe_float(
+                        row.get("fmr_2br_to_income"), min_value=0, max_value=10
+                    ),
+                    "hud_fmr_year": (
+                        int(row.get("hud_fmr_year")) if pd.notna(row.get("hud_fmr_year")) else None
+                    ),
+                    "lihtc_units": (
+                        int(row.get("lihtc_units")) if pd.notna(row.get("lihtc_units")) else None
+                    ),
+                    "lihtc_units_per_1000_households": safe_float(
+                        row.get("lihtc_units_per_1000_households"), min_value=0, max_value=1000
+                    ),
+                    "lihtc_year": (
+                        int(row.get("lihtc_year")) if pd.notna(row.get("lihtc_year")) else None
+                    ),
+                    "opportunity_index": opportunity_index,
+                    "acs_year": acs_year,
+                    "affordability_version": row.get("affordability_version", "v2-affordability"),
+                }
+            )
 
         execute_batch(db, update_sql, rows, chunk_size=1000)
 
@@ -1473,9 +1565,9 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
 # MAIN PIPELINE
 # =============================================================================
 
+
 def calculate_housing_affordability_indicators(
-    data_year: int = None,
-    acs_year: int = None
+    data_year: int = None, acs_year: int = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Calculate housing affordability indicators for all Maryland tracts.
@@ -1506,9 +1598,9 @@ def calculate_housing_affordability_indicators(
     population = fetch_tract_population(acs_year)
 
     # Merge
-    tract_df = housing_df.merge(geometries, on=['tract_geoid', 'fips_code'], how='left')
-    tract_df = tract_df.merge(population, on='tract_geoid', how='left')
-    tract_df['population'] = tract_df['population'].fillna(0).astype(int)
+    tract_df = housing_df.merge(geometries, on=["tract_geoid", "fips_code"], how="left")
+    tract_df = tract_df.merge(population, on="tract_geoid", how="left")
+    tract_df["population"] = tract_df["population"].fillna(0).astype(int)
 
     # Step 3: Compute cost burden
     logger.info("\n[3/6] Computing cost burden metrics...")
@@ -1549,7 +1641,7 @@ def run_layer4_v2_ingestion(
     multi_year: bool = True,
     store_data: bool = True,
     window_years: int = DEFAULT_WINDOW_YEARS,
-    predict_to_year: Optional[int] = None
+    predict_to_year: Optional[int] = None,
 ):
     """
     Run complete Layer 4 v2 ingestion pipeline.
@@ -1604,8 +1696,7 @@ def run_layer4_v2_ingestion(
 
             try:
                 tract_df, county_df = calculate_housing_affordability_indicators(
-                    data_year=year,
-                    acs_year=acs_year
+                    data_year=year, acs_year=acs_year
                 )
 
                 if store_data and not tract_df.empty:
@@ -1624,9 +1715,11 @@ def run_layer4_v2_ingestion(
                             "version": "v2-affordability",
                             "tracts": len(tract_df),
                             "counties": len(county_df),
-                            "avg_cost_burden": float(tract_df['cost_burdened_pct'].mean()),
-                            "avg_affordability_score": float(tract_df['housing_affordability_score'].mean())
-                        }
+                            "avg_cost_burden": float(tract_df["cost_burdened_pct"].mean()),
+                            "avg_affordability_score": float(
+                                tract_df["housing_affordability_score"].mean()
+                            ),
+                        },
                     )
 
                 total_records += len(tract_df)
@@ -1645,7 +1738,9 @@ def run_layer4_v2_ingestion(
                 f"({len(years_to_fetch)} years)"
             )
             logger.info(f"  Years successful: {len(years_to_fetch) - len(failed_years)}")
-            logger.info(f"  Years failed: {len(failed_years)} {failed_years if failed_years else ''}")
+            logger.info(
+                f"  Years failed: {len(failed_years)} {failed_years if failed_years else ''}"
+            )
             logger.info(f"  Total tract records stored: {total_records}")
         else:
             logger.info(f"Single-year ingestion {'succeeded' if not failed_years else 'failed'}")
@@ -1659,7 +1754,7 @@ def run_layer4_v2_ingestion(
                 table="layer4_housing_elasticity",
                 metric_col="housing_opportunity_index",
                 target_year=target_year,
-                clip=(0.0, 1.0)
+                clip=(0.0, 1.0),
             )
 
         logger.info("✓ Layer 4 v2 ingestion complete")
@@ -1670,7 +1765,7 @@ def run_layer4_v2_ingestion(
             layer_name="layer4_housing_elasticity",
             data_source="ACS (v2 affordability)",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
         raise
 
@@ -1679,24 +1774,24 @@ def main():
     """CLI entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description='Layer 4 v2: Housing Affordability Analysis'
+    parser = argparse.ArgumentParser(description="Layer 4 v2: Housing Affordability Analysis")
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=None,
+        help="End year for window (default: latest available county year)",
     )
     parser.add_argument(
-        '--year', type=int, default=None,
-        help='End year for window (default: latest available county year)'
+        "--single-year",
+        action="store_true",
+        help="Fetch only single year (default: multi-year window)",
     )
+    parser.add_argument("--dry-run", action="store_true", help="Calculate but do not store results")
     parser.add_argument(
-        '--single-year', action='store_true',
-        help='Fetch only single year (default: multi-year window)'
-    )
-    parser.add_argument(
-        '--dry-run', action='store_true',
-        help='Calculate but do not store results'
-    )
-    parser.add_argument(
-        '--predict-to-year', type=int, default=None,
-        help='Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)'
+        "--predict-to-year",
+        type=int,
+        default=None,
+        help="Predict missing years up to target year (default: settings.PREDICT_TO_YEAR)",
     )
 
     args = parser.parse_args()
@@ -1705,7 +1800,7 @@ def main():
         data_year=args.year,
         multi_year=not args.single_year,
         store_data=not args.dry_run,
-        predict_to_year=args.predict_to_year
+        predict_to_year=args.predict_to_year,
     )
 
 
