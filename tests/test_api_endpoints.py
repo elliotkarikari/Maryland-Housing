@@ -1,3 +1,4 @@
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from types import SimpleNamespace
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 import src.api.main as api_main
+import src.api.routes as api_routes
 from src.api.routes import get_db_session
 
 
@@ -48,6 +50,27 @@ class AttrDict(SimpleNamespace):
 def _client_with_db(results):
     api_main.app.dependency_overrides[get_db_session] = lambda: DummySession(results)
     return TestClient(api_main.app)
+
+
+def test_layer1_latest_snapshot_uses_effective_index_column():
+    assert (
+        api_routes.LAYER_LATEST_SNAPSHOT_CONFIG["employment_gravity"]["column"]
+        == "economic_opportunity_index_effective"
+    )
+
+
+def test_layer1_county_feed_query_uses_effective_observed_pred_chain():
+    query = api_routes._counties_geojson_query()
+    assert re.search(
+        r"COALESCE\(\s*economic_opportunity_index_effective,\s*economic_opportunity_index,\s*economic_opportunity_index_pred\s*\)\s+AS l1_score",
+        query,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
+def test_layer1_detail_primary_factor_uses_effective_index():
+    first_factor = api_routes.LAYER_CONFIGS["employment_gravity"]["factors"][0]
+    assert first_factor["col"] == "economic_opportunity_index_effective"
 
 
 def test_root_endpoint():
@@ -242,6 +265,7 @@ def test_layer_detail_endpoint():
     layer_result = AttrDict(
         data_year=2025,
         economic_opportunity_index=0.7,
+        economic_opportunity_index_effective=0.7,
         economic_accessibility_score=0.6,
         employment_diversification_score=0.5,
         high_wage_jobs_accessible_45min=1000,

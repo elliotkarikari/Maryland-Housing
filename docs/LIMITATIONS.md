@@ -2,7 +2,7 @@
 
 **Maryland Growth & Family Viability Atlas - V1.1**
 
-**Last Updated:** 2026-02-15
+**Last Updated:** 2026-02-16
 
 ---
 
@@ -450,10 +450,12 @@ Some counties have systematically missing data:
 **Status:**
 - Map and county detail endpoints are Databricks live-feed based.
 - API prefers `final_synthesis_current`, but falls back to latest available layer-table rows when synthesis is missing.
+- Layer 1 fallback reads `economic_opportunity_index_effective` (with explicit fallback to observed/predicted source columns), so latest-year maps can be complete even when observed Layer 1 is not yet available.
 
 **Impact:**
 - During partial ingest windows, map/detail values are deterministic but may differ from fully synthesized outputs.
 - County-level classifications can shift after running full multi-year scoring/classification.
+- Latest-year Layer 1 values on maps can be modeled continuity values, not newly observed annual values.
 
 **Current mitigation:**
 - API metadata and logs expose when synthesis coverage is incomplete.
@@ -502,8 +504,8 @@ Some counties have systematically missing data:
    - Thresholds configurable in code
 
 3. **No Fabrication:**
-   - If data unavailable → documented as "missing"
-   - Never filled with synthetic/imputed values
+   - If data unavailable → documented as "missing" or explicitly flagged as modeled continuity
+   - No hidden imputation: modeled values are carried in explicit columns/flags and are auditable
 
 4. **Versioning:**
    - All exports include version ID + timestamp

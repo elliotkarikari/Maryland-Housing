@@ -49,6 +49,7 @@ Optional source toggles (keep deterministic defaults):
 - Confirm `CORS_ALLOW_ORIGINS` includes expected frontend origins.
 - Validate runtime flags with `GET /api/v1/metadata/capabilities` before frontend verification.
 - Validate live county feed with `GET /api/v1/layers/counties/latest` (expect 24 features).
+- Validate Layer 1 live-feed coverage with `GET /api/v1/layers/counties/latest` by checking `employment_gravity_score` is non-null for all counties when Layer 1 county rows are present.
 - Validate county detail fallback with `GET /api/v1/areas/24031` (should return 200 even if `final_synthesis_current` is sparse).
 
 ## Layer2-5 v2 ingestion defaults (recurring)
@@ -59,6 +60,7 @@ Optional source toggles (keep deterministic defaults):
 ## Layer1 economic accessibility resume (recurring)
 - For partial-year retries, use `INGEST_WRITE_MODE=append` so only missing tract rows are inserted.
 - Databricks retries: prefer `DATABRICKS_RETRY_STOP_AFTER_ATTEMPTS_DURATION=900` and `DATABRICKS_SOCKET_TIMEOUT_SECONDS=120`.
+- API/map read path should use `economic_opportunity_index_effective` for Layer 1 serving continuity (not observed-only `economic_opportunity_index`).
 - Example resume command:
   `DATA_BACKEND=databricks INGEST_WRITE_MODE=append DATABRICKS_RETRY_STOP_AFTER_ATTEMPTS_DURATION=900 DATABRICKS_SOCKET_TIMEOUT_SECONDS=120 .venv/bin/python -m src.ingest.layer1_economic_accessibility --year 2022`
 

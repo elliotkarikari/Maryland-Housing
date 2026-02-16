@@ -3,7 +3,7 @@
 **Maryland Growth & Family Viability Atlas**
 
 **Version:** 1.1
-**Last Updated:** 2026-02-15
+**Last Updated:** 2026-02-16
 
 ---
 
@@ -306,10 +306,18 @@ Example:
   - `layer4_housing_elasticity`
   - `layer5_demographic_momentum`
   - `layer6_risk_drag`
+- Layer 1 fallback score selection uses a deterministic serving hierarchy:
+  - `COALESCE(economic_opportunity_index_effective, economic_opportunity_index, economic_opportunity_index_pred)`
+  - This ensures map continuity when the latest as-of year has modeled-only Layer 1 rows.
 - Derived values include:
   - `composite_score` (mean of available non-risk layers)
   - `directional_class`, `confidence_class`, and `synthesis_grouping` (deterministic fallback rules)
 - Result: the map improves progressively as each ingest completes, rather than blocking on full synthesis refresh.
+
+**Why this serving hierarchy is methodologically sound:**
+- It follows standard evidence ordering used in official statistics pipelines: prefer observed estimates when present, then use explicitly flagged modeled continuity values for as-of-year completeness.
+- Modeled continuity for Layer 1 is generated with robust trend estimation (Theil-Sen), which is resistant to outliers and appropriate for short county time series.
+- The model path is explicit (`*_pred`, `*_predicted`, `*_effective`) and auditable; no hidden imputation is applied at API read time.
 
 ### Stage 4: Classification
 
@@ -470,6 +478,11 @@ Scenario rules:
 
 ## Version History
 
+### V1.1.1 (2026-02-16)
+- API Layer 1 map/detail fallback now reads `economic_opportunity_index_effective` as the primary score path.
+- County feed Layer 1 fallback explicitly coalesces effective, observed, then predicted columns for deterministic continuity.
+- Layer 1 detail explainability now reports the effective index as the primary factor.
+
 ### V1.1 (2026-02-15)
 - Layer ingestion for 1-6 is implemented and wired into default workflows.
 - Multi-year scoring and classification are the canonical production path.
@@ -494,6 +507,8 @@ Scenario rules:
 - Saiz, A. (2010). "The geographic determinants of housing supply." *Quarterly Journal of Economics*, 125(3), 1253-1296.
 
 - Shannon, C. E. (1948). "A mathematical theory of communication." *Bell System Technical Journal*, 27(3), 379-423.
+
+- Sen, P. K. (1968). "Estimates of the regression coefficient based on Kendall's tau." *Journal of the American Statistical Association*, 63(324), 1379-1389.
 
 ---
 

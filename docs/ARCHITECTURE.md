@@ -3,7 +3,7 @@
 **Maryland Growth & Family Viability Atlas**
 
 **Version:** 2.0
-**Last Updated:** 2026-02-15
+**Last Updated:** 2026-02-16
 
 ---
 
@@ -276,6 +276,7 @@ Each analytical layer has a dedicated ingestion module:
 
 Map runtime note:
 - Map/feed endpoints remain available during partial ingest by deriving county properties from latest layer tables when `final_synthesis_current` is sparse.
+- Layer 1 fallback reads `economic_opportunity_index_effective` first, with explicit fallback ordering to observed then predicted fields to avoid null propagation in latest-year modeled windows.
 
 ---
 
@@ -419,6 +420,9 @@ CREATE TABLE layer1_employment_gravity (
     fips_code VARCHAR(5),
     data_year INTEGER,
     economic_opportunity_index FLOAT,
+    economic_opportunity_index_pred FLOAT,
+    economic_opportunity_index_effective FLOAT,
+    economic_opportunity_index_predicted BOOLEAN,
     employment_diversification_score FLOAT,
     sector_diversity_entropy FLOAT,
     federal_awards_volatility FLOAT,
@@ -692,7 +696,7 @@ app.add_middleware(
 
 | Endpoint | Response Model | Purpose |
 |----------|---------------|---------|
-| `GET /layers/counties/latest` | GeoJSON | Live county data from Databricks tables (`final_synthesis_current` preferred; latest-layer fallback) |
+| `GET /layers/counties/latest` | GeoJSON | Live county data from Databricks tables (`final_synthesis_current` preferred; latest-layer fallback with Layer 1 effective-score precedence) |
 | `GET /layers/counties/{version}` | GeoJSON | Versioned snapshot |
 | `GET /areas/{fips}` | AreaDetail | County detail (live + progressive fallback) |
 | `GET /areas/{fips}/layers/{layer}` | LayerDetail | Layer breakdown |

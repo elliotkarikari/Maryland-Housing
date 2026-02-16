@@ -122,6 +122,71 @@ def check_live_county_feed_tables() -> CheckResult:
     )
 
 
+def check_layer1_effective_coverage() -> CheckResult:
+    try:
+        with get_db() as db:
+            latest_year = db.execute(
+                text("SELECT MAX(data_year) FROM layer1_employment_gravity")
+            ).scalar()
+            if latest_year is None:
+                return CheckResult(
+                    name="layer1_effective_coverage",
+                    ok=False,
+                    detail="layer1_employment_gravity has no rows",
+                )
+
+            row = db.execute(
+                text(
+                    """
+                    SELECT
+                        COUNT(*) AS counties,
+                        SUM(CASE WHEN economic_opportunity_index IS NOT NULL THEN 1 ELSE 0 END) AS observed_non_null,
+                        SUM(CASE WHEN economic_opportunity_index_pred IS NOT NULL THEN 1 ELSE 0 END) AS pred_non_null,
+                        SUM(CASE WHEN economic_opportunity_index_effective IS NOT NULL THEN 1 ELSE 0 END) AS effective_non_null
+                    FROM layer1_employment_gravity
+                    WHERE data_year = :year
+                    """
+                ),
+                {"year": latest_year},
+            ).fetchone()
+    except Exception as exc:
+        return CheckResult(
+            name="layer1_effective_coverage",
+            ok=False,
+            detail=f"Failed to query Layer 1 effective coverage: {exc}",
+        )
+
+    counties = int(getattr(row, "counties", 0) or 0)
+    observed_non_null = int(getattr(row, "observed_non_null", 0) or 0)
+    pred_non_null = int(getattr(row, "pred_non_null", 0) or 0)
+    effective_non_null = int(getattr(row, "effective_non_null", 0) or 0)
+
+    if counties <= 0:
+        return CheckResult(
+            name="layer1_effective_coverage",
+            ok=False,
+            detail=f"No Layer 1 rows found for latest year {latest_year}",
+        )
+    if effective_non_null != counties:
+        return CheckResult(
+            name="layer1_effective_coverage",
+            ok=False,
+            detail=(
+                f"Latest year {latest_year} has incomplete effective coverage: "
+                f"effective_non_null={effective_non_null}, counties={counties}"
+            ),
+        )
+
+    return CheckResult(
+        name="layer1_effective_coverage",
+        ok=True,
+        detail=(
+            f"latest_year={latest_year}, counties={counties}, observed_non_null={observed_non_null}, "
+            f"pred_non_null={pred_non_null}, effective_non_null={effective_non_null}"
+        ),
+    )
+
+
 def check_census_api_key() -> CheckResult:
     settings = get_settings()
     url = f"{settings.CENSUS_API_BASE_URL}/2023/acs/acs5"
@@ -183,6 +248,7 @@ def run_checks() -> list[CheckResult]:
     checks: list[Callable[[], CheckResult]] = [
         check_database_connection,
         check_live_county_feed_tables,
+        check_layer1_effective_coverage,
         check_census_api_key,
         check_mapbox_token,
     ]

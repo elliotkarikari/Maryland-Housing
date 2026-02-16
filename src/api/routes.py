@@ -31,7 +31,7 @@ _counties_geojson_cache: Optional[Dict[str, Any]] = None
 LAYER_LATEST_SNAPSHOT_CONFIG: Dict[str, Dict[str, str]] = {
     "employment_gravity": {
         "table": "layer1_employment_gravity",
-        "column": "economic_opportunity_index",
+        "column": "economic_opportunity_index_effective",
     },
     "mobility_optionality": {
         "table": "layer2_mobility_optionality",
@@ -371,12 +371,21 @@ def _counties_geojson_query() -> str:
 
     return f"""
         WITH l1_latest AS (
-            SELECT fips_code, data_year AS l1_data_year, economic_opportunity_index AS l1_score
+            SELECT
+                fips_code,
+                data_year AS l1_data_year,
+                COALESCE(
+                    economic_opportunity_index_effective,
+                    economic_opportunity_index,
+                    economic_opportunity_index_pred
+                ) AS l1_score
             FROM (
                 SELECT
                     fips_code,
                     data_year,
                     economic_opportunity_index,
+                    economic_opportunity_index_effective,
+                    economic_opportunity_index_pred,
                     ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
                 FROM layer1_employment_gravity
             ) t
@@ -868,9 +877,9 @@ LAYER_CONFIGS: Dict[str, LayerConfig] = {
         "formula": "0.40 × diversification + 0.60 × accessibility",
         "factors": [
             {
-                "col": "economic_opportunity_index",
-                "name": "Economic Opportunity Index",
-                "desc": "Combined v1+v2 composite score",
+                "col": "economic_opportunity_index_effective",
+                "name": "Economic Opportunity Index (Effective)",
+                "desc": "Observed index when available, predicted fallback otherwise",
                 "weight": 1.0,
             },
             {

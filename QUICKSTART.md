@@ -318,6 +318,9 @@ curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | lengt
 # Check Databricks/Postgres layer coverage through SQLAlchemy (works for both backends)
 .venv/bin/python -c "from config.database import engine; from sqlalchemy import text; c=engine.connect(); print('l1_count=', c.execute(text('SELECT COUNT(*) FROM layer1_employment_gravity')).scalar()); print('final_synthesis_current=', c.execute(text('SELECT COUNT(*) FROM final_synthesis_current')).scalar()); c.close()"
 
+# Check Layer 1 observed vs modeled continuity coverage by year
+.venv/bin/python -c "from config.database import engine; from sqlalchemy import text; c=engine.connect(); rows=c.execute(text(\"SELECT data_year, COUNT(*) AS counties, SUM(CASE WHEN economic_opportunity_index IS NOT NULL THEN 1 ELSE 0 END) AS observed_non_null, SUM(CASE WHEN economic_opportunity_index_pred IS NOT NULL THEN 1 ELSE 0 END) AS pred_non_null, SUM(CASE WHEN economic_opportunity_index_effective IS NOT NULL THEN 1 ELSE 0 END) AS effective_non_null FROM layer1_employment_gravity GROUP BY data_year ORDER BY data_year DESC\")).fetchall(); [print(dict(r._mapping)) for r in rows]; c.close()"
+
 # Check a sample county detail (should return 200 for valid FIPS even before full synthesis)
 curl -i http://localhost:8000/api/v1/areas/24031 | head -n 20
 ```
@@ -334,6 +337,10 @@ curl http://localhost:8000/api/v1/areas/24031 | jq
 # Get latest GeoJSON
 curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | length'
 # Expected: 24
+
+# Verify Layer 1 map score coverage from live feed (effective-score fallback path)
+curl http://localhost:8000/api/v1/layers/counties/latest | jq '[.features[].properties.employment_gravity_score | select(. != null)] | length'
+# Expected: 24 once Layer 1 rows exist for all counties, even if final_synthesis_current is empty
 
 # Check runtime capabilities and year policy
 curl http://localhost:8000/api/v1/metadata/capabilities | jq
