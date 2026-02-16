@@ -4,6 +4,8 @@ import pytest
 from src.ingest.layer1_economic_accessibility import (
     aggregate_to_county,
     compute_economic_accessibility,
+    compute_sector_diversity,
+    fetch_lodes_od_county_flows,
 )
 
 
@@ -96,3 +98,71 @@ def test_compute_economic_accessibility_proxy_threshold_override():
     assert out.loc["24001000100", "high_wage_jobs_accessible_45min"] == 150
     assert out.loc["24001000200", "high_wage_jobs_accessible_45min"] == 150
     assert out.loc["24001000100", "accessibility_method"] == "haversine_proxy"
+
+
+def test_compute_sector_diversity_adds_stable_sector_share():
+    tract_jobs = pd.DataFrame(
+        {
+            "total_jobs": [100],
+            "CNS09": [65],
+            "CNS15": [20],
+            "CNS16": [10],
+            "CNS20": [5],
+        }
+    )
+    out = compute_sector_diversity(tract_jobs)
+    assert out.loc[0, "stable_sector_jobs"] == 35
+    assert out.loc[0, "stable_sector_share"] == pytest.approx(0.35)
+
+
+def test_fetch_lodes_od_county_flows_derives_working_age_and_capture_metrics(
+    tmp_path, monkeypatch
+):
+    od_csv = tmp_path / "od.csv"
+    od_csv.write_text(
+        "\n".join(
+            [
+                "w_geocode,h_geocode,year,S000,SA01,SA02,SA03,SE01,SE02,SE03,SI01,SI02,SI03",
+                # 24001 resident + same-county worker
+                "240010001001001,240010001001000,2022,10,2,6,2,2,4,4,3,4,3",
+                # 24001 resident commuting to 24003
+                "240030001001001,240010001001000,2022,5,1,3,1,1,2,2,2,1,2",
+                # 24003 resident commuting to 24001
+                "240010001001001,240030001001000,2022,7,1,4,2,1,3,3,2,3,2",
+                # Non-target year should be ignored
+                "240010001001001,240010001001000,2021,9,2,4,3,2,3,4,3,3,3",
+            ]
+        )
+        + "\n"
+    )
+
+    monkeypatch.setattr(
+        "src.ingest.layer1_economic_accessibility.settings.LODES_OD_DATA_PATH", str(od_csv)
+    )
+    monkeypatch.setattr("src.ingest.layer1_economic_accessibility.settings.LODES_OD_DATA_URL", None)
+    monkeypatch.setattr("src.ingest.layer1_economic_accessibility.settings.LODES_OD_CHUNK_SIZE", 2)
+
+    out = fetch_lodes_od_county_flows(2022).set_index("fips_code")
+
+    row_24001 = out.loc["24001"]
+    assert row_24001["od_resident_workers"] == 15
+    assert row_24001["od_live_work_same_county"] == 10
+    assert row_24001["od_outbound_workers"] == 5
+    assert row_24001["od_inbound_workers"] == 7
+    assert row_24001["od_net_commuter_flow"] == 2
+    assert row_24001["od_working_age_resident_workers"] == 12
+    assert row_24001["od_working_age_live_work_same_county"] == 8
+    assert row_24001["od_working_age_share"] == pytest.approx(12 / 15)
+    assert row_24001["od_local_capture_rate"] == pytest.approx(10 / 15)
+    assert row_24001["od_working_age_local_capture_rate"] == pytest.approx(8 / 12)
+    assert row_24001["od_high_wage_resident_workers"] == 6
+    assert row_24001["od_high_wage_live_work_same_county"] == 4
+    assert row_24001["od_high_wage_share"] == pytest.approx(6 / 15)
+    assert row_24001["od_high_wage_local_capture_rate"] == pytest.approx(4 / 6)
+
+    row_24003 = out.loc["24003"]
+    assert row_24003["od_resident_workers"] == 7
+    assert row_24003["od_live_work_same_county"] == 0
+    assert row_24003["od_outbound_workers"] == 7
+    assert row_24003["od_inbound_workers"] == 5
+    assert row_24003["od_net_commuter_flow"] == -2

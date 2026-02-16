@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     CENSUS_QWI_DATA_URL: Optional[str] = None
     CENSUS_QWI_DATA_PATH: Optional[str] = None
     CENSUS_QWI_DATASET: str = "timeseries/qwi/sa"
+    LODES_OD_DATA_URL: Optional[str] = None
+    LODES_OD_DATA_PATH: Optional[str] = None
+    LODES_OD_CHUNK_SIZE: int = 500000
+    LODES_OD_TABLE: str = "layer1_lodes_od_raw"
 
     # Maryland state FIPS code
     MD_STATE_FIPS: str = "24"

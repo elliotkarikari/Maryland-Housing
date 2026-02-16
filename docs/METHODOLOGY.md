@@ -89,10 +89,22 @@ The table mixes observed inputs, derived metrics, and predicted continuity field
 | `pct_regional_high_wage_accessible` | Derived | County share of Maryland high-wage jobs | `high_wage_jobs / statewide_high_wage_jobs` | No (diagnostic context) |
 | `pct_regional_jobs_accessible` | Derived | County share of Maryland jobs | `total_jobs / statewide_total_jobs` | No (diagnostic context) |
 | `high_wage_sector_concentration` | Derived | Concentration in high-wage sectors (risk of concentration) | Herfindahl-Hirschman Index on selected sectors | No (diagnostic context) |
+| `sector_diversity_entropy` | Derived | County employment mix diversity | Population-weighted tract Shannon entropy | Indirectly (via local strength) |
+| `stable_sector_share` | Derived | County share of jobs in education, health care, and public administration | `stable_sector_jobs / total_jobs` | Indirectly (via local strength) |
 | `qwi_hire_rate` | Derived | Hiring intensity from QWI | hires / employment (or provided rate) | Indirectly (through `qwi_net_job_growth_score`) |
 | `qwi_separation_rate` | Derived | Separation intensity from QWI | separations / employment (or provided rate) | Indirectly (through `qwi_net_job_growth_score`) |
 | `qwi_turnover_rate` | Derived | Labor churn | `qwi_hire_rate + qwi_separation_rate` (or provided) | No (supporting metric) |
 | `qwi_net_job_growth_rate` | Derived | Net job dynamics | `qwi_hire_rate - qwi_separation_rate` (or `(hires-separations)/employment`) | Indirectly (ranked to `qwi_net_job_growth_score`) |
+| `od_resident_workers` | Observed (LODES OD) | Resident workers by home county | `Σ S000 where h_county = county` | No (context + diagnostics) |
+| `od_live_work_same_county` | Observed (LODES OD) | Residents who also work in same county | `Σ S000 where h_county = w_county = county` | No (context + diagnostics) |
+| `od_local_capture_rate` | Derived | Resident jobs retained in-county | `od_live_work_same_county / od_resident_workers` | No (context + diagnostics) |
+| `od_inbound_workers` | Observed (LODES OD) | Workers commuting into county from other MD counties | `Σ S000 where w_county = county and h_county != county` | No (context + diagnostics) |
+| `od_outbound_workers` | Observed (LODES OD) | Residents commuting out to other MD counties | `Σ S000 where h_county = county and w_county != county` | No (context + diagnostics) |
+| `od_net_commuter_flow` | Derived | Net commuter balance | `od_inbound_workers - od_outbound_workers` | No (context + diagnostics) |
+| `od_working_age_share` | Derived | Share of resident commuters in working-age bands | `(SA02 + SA03) / S000` | No (context + diagnostics) |
+| `od_working_age_local_capture_rate` | Derived | Local capture among working-age commuters | `same_county_(SA02+SA03) / resident_(SA02+SA03)` | No (context + diagnostics) |
+| `od_high_wage_share` | Derived | Share of resident commuters in high-earnings band | `SE03 / S000` | No (context + diagnostics) |
+| `od_high_wage_local_capture_rate` | Derived | Local capture among high-earning commuters | `same_county_SE03 / resident_SE03` | No (context + diagnostics) |
 | `employment_diversification_score` | Derived/fallback | Legacy local strength reused when available | from prior v1 fields; optional fallback | Yes (if available) |
 | `economic_opportunity_index` | Derived | Final observed county Layer 1 index | `base_index = 0.4 * local_strength + 0.6 * economic_accessibility_score`; if QWI score exists then `0.85 * base_index + 0.15 * qwi_net_job_growth_score` | Yes (final Layer 1 county metric) |
 | `economic_opportunity_index_pred` | Predicted | Trend-based continuation of final index for future years | Theil-Sen trend fit per county, clipped to [0,1] | Used only for modeled years |
@@ -100,8 +112,9 @@ The table mixes observed inputs, derived metrics, and predicted continuity field
 
 **Observed Input/Provenance Fields written to the county table:**
 - LODES-derived observed counts: `high_wage_jobs`, `mid_wage_jobs`, `low_wage_jobs`
+- LODES OD observed commute counts: `od_resident_workers`, `od_live_work_same_county`, `od_inbound_workers`, `od_outbound_workers`
 - QWI observed counts: `qwi_emp_total`, `qwi_hires`, `qwi_separations`
-- Source-year lineage: `lodes_year`, `acs_year`, `qwi_year`
+- Source-year lineage: `lodes_year`, `acs_year`, `qwi_year`, `od_year`
 - Versioning: `accessibility_version='v2-accessibility'` for observed v2 rows
 - Method/provenance fields: `accessibility_method`, threshold minute fields, and proxy-distance fields
 
@@ -121,7 +134,24 @@ The table mixes observed inputs, derived metrics, and predicted continuity field
   - Final county accessibility score is based on weighted-mean accessibility counts, not county max frontier counts.
   - County max-access fields (`*_accessible_45min`, `*_accessible_30min`) are diagnostic only.
 - Commute-data calibration status:
-  - Threshold calibration using observed commute matrices is deferred because no stable statewide tract OD commute dataset is currently integrated into ingest.
+  - Threshold calibration from observed commute-time matrices remains deferred (no statewide tract-level observed travel-time matrix in ingest).
+  - We now integrate observed LODES OD flow counts for county commute structure context, but OD does not include door-to-door travel time.
+
+**LODES OD County Commute Method (new):**
+
+- Source table: LODES OD JT00 with `h_geocode` (home), `w_geocode` (work), `S000`, age segments (`SA01/SA02/SA03`), and earnings segments (`SE01/SE02/SE03`).
+- Execution path: when a Databricks raw OD landing table is available (`LODES_OD_TABLE`), county OD metrics are computed from that table first; CSV chunked aggregation remains the fallback path.
+- Definitions source: Census LODES Technical Documentation (OnTheMap OD fields): https://lehd.ces.census.gov/doc/help/onthemap/LODESTechDoc.pdf
+- County mapping:
+  - `h_county = first 5 digits of h_geocode`
+  - `w_county = first 5 digits of w_geocode`
+- Working-age rule used in this project: `working_age = SA02 + SA03` (ages 30-54 and 55+).
+- Derived county logic:
+  - resident commuters: `Σ S000` by `h_county`
+  - same-county commuters: `Σ S000` where `h_county == w_county`
+  - outbound commuters: `Σ S000` where `h_county != w_county` grouped by `h_county`
+  - inbound commuters: `Σ S000` where `h_county != w_county` grouped by `w_county`
+  - local capture and share metrics computed from these aggregates.
 
 **Metrics Calculated:**
 - **Sector Diversity Entropy**: Shannon entropy across 20 NAICS sectors

@@ -172,6 +172,44 @@ payload = {
 
 ---
 
+### 1.5 LODES OD Commute Flows (Optional, Layer 1 v2+)
+**Source:** LEHD/LODES OnTheMap OD extract (JT00)
+**Agency:** US Census Bureau
+**Reference definitions:** LODES Technical Documentation (OD segment definitions)  
+https://lehd.ces.census.gov/doc/help/onthemap/LODESTechDoc.pdf
+**Typical file:** `od_JT00_*.csv`
+**Key Fields:**
+- `h_geocode` - home block geocode (origin)
+- `w_geocode` - work block geocode (destination)
+- `S000` - all jobs
+- `SA01`,`SA02`,`SA03` - age segments
+- `SE01`,`SE02`,`SE03` - earnings segments
+
+**Use in Layer 1:**
+- Adds county commute-flow context metrics:
+  - resident workers, inbound/outbound commuters, same-county retention
+  - working-age share (`SA02+SA03`) and local capture
+  - high-earnings share (`SE03`) and local capture
+- OD metrics are contextual diagnostics and do not replace travel-time accessibility impedance.
+
+**Configuration:**
+- `LODES_OD_DATA_PATH` (preferred local file path), or
+- `LODES_OD_DATA_URL` (optional remote fetch),
+- `LODES_OD_CHUNK_SIZE` for large-file chunked aggregation.
+- `LODES_OD_TABLE` for Databricks raw landing table (default: `layer1_lodes_od_raw`).
+
+**Operational note:**
+- For full-row lineage loads, use `scripts/load_lodes_od_to_databricks.py` to land the OD CSV
+  into the raw Databricks table, then run Layer 1 ingestion so county OD derivations read
+  from the raw table first and fall back to CSV only when needed.
+
+**Limitations:**
+- OD counts are flows, not travel-time impedance.
+- County metrics are Maryland-to-Maryland flows when both county FIPS map to Maryland.
+- Still subject to LODES release lag.
+
+---
+
 ## Layer 2: Mobility Optionality
 
 ### 2.1 OpenStreetMap

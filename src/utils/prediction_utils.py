@@ -100,6 +100,7 @@ def apply_predictions_to_table(
     pred_years_col = f"{metric_col}_pred_years"
     source_col = f"{metric_col}_source"
     effective_col = f"{metric_col}_effective"
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
         result = db.execute(
@@ -138,40 +139,73 @@ def apply_predictions_to_table(
             )
 
             for pred_year, pred_value, pred_years in predictions:
-                db.execute(
-                    text(
-                        f"""
-                    INSERT INTO {table} (
-                        {fips_col}, {year_col},
-                        {pred_col}, {pred_flag_col},
-                        {pred_method_col}, {pred_years_col},
-                        {source_col}{',' + effective_col if use_effective else ''}
-                    ) VALUES (
-                        :fips_code, :data_year,
-                        :pred_value, TRUE,
-                        :pred_method, :pred_years,
-                        :source_label{',' + ':effective_value' if use_effective else ''}
+                params = {
+                    "fips_code": fips_code,
+                    "data_year": int(pred_year),
+                    "pred_value": float(pred_value),
+                    "pred_method": method,
+                    "pred_years": int(pred_years),
+                    "source_label": source_label,
+                    "effective_value": float(pred_value) if use_effective else None,
+                }
+
+                if use_databricks_backend:
+                    db.execute(
+                        text(
+                            f"""
+                        INSERT INTO {table} ({fips_col}, {year_col})
+                        SELECT :fips_code, :data_year
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM {table}
+                            WHERE {fips_col} = :fips_code AND {year_col} = :data_year
+                        )
+                        """
+                        ),
+                        params,
                     )
-                    ON CONFLICT ({fips_col}, {year_col})
-                    DO UPDATE SET
-                        {pred_col} = EXCLUDED.{pred_col},
-                        {pred_flag_col} = EXCLUDED.{pred_flag_col},
-                        {pred_method_col} = EXCLUDED.{pred_method_col},
-                        {pred_years_col} = EXCLUDED.{pred_years_col},
-                        {source_col} = EXCLUDED.{source_col}
-                        {',' + f'{effective_col} = COALESCE({table}.{metric_col}, EXCLUDED.{pred_col})' if use_effective else ''}
-                """
-                    ),
-                    {
-                        "fips_code": fips_code,
-                        "data_year": int(pred_year),
-                        "pred_value": float(pred_value),
-                        "pred_method": method,
-                        "pred_years": int(pred_years),
-                        "source_label": source_label,
-                        "effective_value": float(pred_value) if use_effective else None,
-                    },
-                )
+                    db.execute(
+                        text(
+                            f"""
+                        UPDATE {table}
+                        SET
+                            {pred_col} = :pred_value,
+                            {pred_flag_col} = TRUE,
+                            {pred_method_col} = :pred_method,
+                            {pred_years_col} = :pred_years,
+                            {source_col} = :source_label
+                            {',' + f'{effective_col} = COALESCE({metric_col}, :pred_value)' if use_effective else ''}
+                        WHERE {fips_col} = :fips_code AND {year_col} = :data_year
+                        """
+                        ),
+                        params,
+                    )
+                else:
+                    db.execute(
+                        text(
+                            f"""
+                        INSERT INTO {table} (
+                            {fips_col}, {year_col},
+                            {pred_col}, {pred_flag_col},
+                            {pred_method_col}, {pred_years_col},
+                            {source_col}{',' + effective_col if use_effective else ''}
+                        ) VALUES (
+                            :fips_code, :data_year,
+                            :pred_value, TRUE,
+                            :pred_method, :pred_years,
+                            :source_label{',' + ':effective_value' if use_effective else ''}
+                        )
+                        ON CONFLICT ({fips_col}, {year_col})
+                        DO UPDATE SET
+                            {pred_col} = EXCLUDED.{pred_col},
+                            {pred_flag_col} = EXCLUDED.{pred_flag_col},
+                            {pred_method_col} = EXCLUDED.{pred_method_col},
+                            {pred_years_col} = EXCLUDED.{pred_years_col},
+                            {source_col} = EXCLUDED.{source_col}
+                            {',' + f'{effective_col} = COALESCE({table}.{metric_col}, EXCLUDED.{pred_col})' if use_effective else ''}
+                    """
+                        ),
+                        params,
+                    )
                 inserted += 1
 
         if use_effective:

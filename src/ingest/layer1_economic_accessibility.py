@@ -26,6 +26,7 @@ Version: 2.0
 
 import hashlib
 import os
+import re
 import sys
 import warnings
 from dataclasses import dataclass
@@ -90,6 +91,7 @@ QWI_BLEND_WEIGHT = 0.15
 ACCESSIBILITY_MODE_AUTO = "auto"
 ACCESSIBILITY_MODE_NETWORK = "network"
 ACCESSIBILITY_MODE_PROXY = "proxy"
+SAFE_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Sectors for diversity analysis (NAICS 2-digit via CNS codes)
 NAICS_SECTORS = {
@@ -407,6 +409,316 @@ def fetch_qwi_by_county(data_year: int) -> pd.DataFrame:
     qwi_df = pd.DataFrame(grouped)
     logger.info(f"Loaded QWI records for {len(qwi_df)} counties (year={qwi_year})")
     return qwi_df
+
+
+def _resolve_table_name(table_name: Optional[str]) -> Optional[str]:
+    if not table_name:
+        return None
+    if not SAFE_TABLE_NAME_RE.match(table_name):
+        logger.warning(f"Ignoring unsafe table name: {table_name}")
+        return None
+    return table_name
+
+
+def _fetch_lodes_od_county_flows_from_table(od_year: int, table_name: str) -> pd.DataFrame:
+    table_name = _resolve_table_name(table_name)
+    if table_name is None:
+        return pd.DataFrame()
+
+    sql = text(
+        f"""
+        WITH base AS (
+            SELECT
+                h_county,
+                w_county,
+                SUM(COALESCE(s000, 0)) AS s000,
+                SUM(COALESCE(sa02, 0) + COALESCE(sa03, 0)) AS working_age_workers,
+                SUM(COALESCE(se03, 0)) AS high_wage_workers
+            FROM {table_name}
+            WHERE data_year = :od_year
+              AND h_county LIKE '24%'
+              AND w_county LIKE '24%'
+            GROUP BY h_county, w_county
+        ),
+        resident AS (
+            SELECT
+                h_county AS fips_code,
+                SUM(s000) AS od_resident_workers,
+                SUM(working_age_workers) AS od_working_age_resident_workers,
+                SUM(high_wage_workers) AS od_high_wage_resident_workers
+            FROM base
+            GROUP BY h_county
+        ),
+        same_county AS (
+            SELECT
+                h_county AS fips_code,
+                SUM(s000) AS od_live_work_same_county,
+                SUM(working_age_workers) AS od_working_age_live_work_same_county,
+                SUM(high_wage_workers) AS od_high_wage_live_work_same_county
+            FROM base
+            WHERE h_county = w_county
+            GROUP BY h_county
+        ),
+        outbound AS (
+            SELECT
+                h_county AS fips_code,
+                SUM(s000) AS od_outbound_workers
+            FROM base
+            WHERE h_county <> w_county
+            GROUP BY h_county
+        ),
+        inbound AS (
+            SELECT
+                w_county AS fips_code,
+                SUM(s000) AS od_inbound_workers
+            FROM base
+            WHERE h_county <> w_county
+            GROUP BY w_county
+        )
+        SELECT
+            r.fips_code,
+            CAST(:od_year AS INT) AS od_year,
+            r.od_resident_workers,
+            COALESCE(i.od_inbound_workers, 0) AS od_inbound_workers,
+            COALESCE(o.od_outbound_workers, 0) AS od_outbound_workers,
+            COALESCE(s.od_live_work_same_county, 0) AS od_live_work_same_county,
+            COALESCE(s.od_working_age_live_work_same_county, 0) AS od_working_age_live_work_same_county,
+            COALESCE(s.od_high_wage_live_work_same_county, 0) AS od_high_wage_live_work_same_county,
+            r.od_working_age_resident_workers,
+            r.od_high_wage_resident_workers
+        FROM resident r
+        LEFT JOIN inbound i ON i.fips_code = r.fips_code
+        LEFT JOIN outbound o ON o.fips_code = r.fips_code
+        LEFT JOIN same_county s ON s.fips_code = r.fips_code
+        """
+    )
+
+    try:
+        with get_db() as db:
+            rows = db.execute(sql, {"od_year": int(od_year)}).fetchall()
+    except Exception:
+        logger.info(
+            "LODES OD raw table query unavailable; falling back to CSV-based OD aggregation",
+            exc_info=True,
+        )
+        return pd.DataFrame()
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame([dict(row._mapping) for row in rows])
+    if df.empty:
+        return df
+
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())].copy()
+    if df.empty:
+        return df
+
+    df["od_net_commuter_flow"] = df["od_inbound_workers"] - df["od_outbound_workers"]
+    df["od_local_capture_rate"] = np.where(
+        df["od_resident_workers"] > 0,
+        df["od_live_work_same_county"] / df["od_resident_workers"],
+        np.nan,
+    )
+    df["od_working_age_share"] = np.where(
+        df["od_resident_workers"] > 0,
+        df["od_working_age_resident_workers"] / df["od_resident_workers"],
+        np.nan,
+    )
+    df["od_working_age_local_capture_rate"] = np.where(
+        df["od_working_age_resident_workers"] > 0,
+        df["od_working_age_live_work_same_county"] / df["od_working_age_resident_workers"],
+        np.nan,
+    )
+    df["od_high_wage_share"] = np.where(
+        df["od_resident_workers"] > 0,
+        df["od_high_wage_resident_workers"] / df["od_resident_workers"],
+        np.nan,
+    )
+    df["od_high_wage_local_capture_rate"] = np.where(
+        df["od_high_wage_resident_workers"] > 0,
+        df["od_high_wage_live_work_same_county"] / df["od_high_wage_resident_workers"],
+        np.nan,
+    )
+
+    logger.info(
+        f"Loaded LODES OD county metrics from table {table_name} for year={od_year} "
+        f"({len(df)} counties)"
+    )
+    return df
+
+
+def fetch_lodes_od_county_flows(od_year: int) -> pd.DataFrame:
+    """
+    Aggregate LODES OD flows to county-level commute indicators.
+
+    Expected OD schema (OnTheMap OD download):
+      w_geocode, h_geocode, year, S000, SA01, SA02, SA03, SE01, SE02, SE03, ...
+
+    Working-age commuters follow the project rule:
+      working_age = SA02 + SA03  (ages 30-54 and 55+)
+    """
+    table_name = _resolve_table_name(getattr(settings, "LODES_OD_TABLE", None))
+    if table_name:
+        table_df = _fetch_lodes_od_county_flows_from_table(od_year=od_year, table_name=table_name)
+        if not table_df.empty:
+            return table_df
+
+    source_path = _resolve_data_path(
+        settings.LODES_OD_DATA_PATH,
+        settings.LODES_OD_DATA_URL,
+        LODES_CACHE_DIR,
+        f"md_od_JT00_{od_year}.csv",
+    )
+    if source_path is None:
+        logger.info("LODES OD source not configured; skipping OD commute-flow enrichment")
+        return pd.DataFrame()
+
+    required_cols = {"w_geocode", "h_geocode", "year", "s000", "sa02", "sa03", "se03"}
+    numeric_cols = ["s000", "sa02", "sa03", "se03"]
+    county_keys = set(MD_COUNTY_FIPS.keys())
+    chunk_size = max(10000, int(settings.LODES_OD_CHUNK_SIZE or 500000))
+
+    try:
+        reader = pd.read_csv(
+            source_path,
+            dtype={"w_geocode": str, "h_geocode": str},
+            usecols=lambda c: str(c).strip().lower() in required_cols,
+            chunksize=chunk_size,
+            low_memory=False,
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to read LODES OD data from {source_path}: {exc}")
+        return pd.DataFrame()
+
+    def _empty_metrics() -> Dict[str, int]:
+        return {
+            "od_resident_workers": 0,
+            "od_inbound_workers": 0,
+            "od_outbound_workers": 0,
+            "od_live_work_same_county": 0,
+            "od_working_age_resident_workers": 0,
+            "od_working_age_live_work_same_county": 0,
+            "od_high_wage_resident_workers": 0,
+            "od_high_wage_live_work_same_county": 0,
+        }
+
+    county_metrics: Dict[str, Dict[str, int]] = {}
+    total_rows = 0
+    year_rows = 0
+
+    for chunk in reader:
+        chunk = _normalize_columns(chunk)
+        total_rows += len(chunk)
+
+        if "year" in chunk.columns:
+            chunk["year"] = pd.to_numeric(chunk["year"], errors="coerce")
+            chunk = chunk[chunk["year"] == int(od_year)]
+        if chunk.empty:
+            continue
+        year_rows += len(chunk)
+
+        chunk["w_geocode"] = chunk["w_geocode"].astype(str).str.zfill(15)
+        chunk["h_geocode"] = chunk["h_geocode"].astype(str).str.zfill(15)
+        chunk["w_county"] = chunk["w_geocode"].str[:5]
+        chunk["h_county"] = chunk["h_geocode"].str[:5]
+
+        chunk = chunk[
+            chunk["h_county"].isin(county_keys) & chunk["w_county"].isin(county_keys)
+        ].copy()
+        if chunk.empty:
+            continue
+
+        for col in numeric_cols:
+            chunk[col] = pd.to_numeric(chunk[col], errors="coerce").fillna(0)
+
+        chunk["working_age_workers"] = chunk["sa02"] + chunk["sa03"]
+        chunk["high_wage_workers"] = chunk["se03"]
+
+        resident = chunk.groupby("h_county")[["s000", "working_age_workers", "high_wage_workers"]].sum()
+        for fips_code, vals in resident.iterrows():
+            metrics = county_metrics.setdefault(fips_code, _empty_metrics())
+            metrics["od_resident_workers"] += int(vals["s000"])
+            metrics["od_working_age_resident_workers"] += int(vals["working_age_workers"])
+            metrics["od_high_wage_resident_workers"] += int(vals["high_wage_workers"])
+
+        same_county = chunk[chunk["h_county"] == chunk["w_county"]]
+        if not same_county.empty:
+            same_agg = same_county.groupby("h_county")[
+                ["s000", "working_age_workers", "high_wage_workers"]
+            ].sum()
+            for fips_code, vals in same_agg.iterrows():
+                metrics = county_metrics.setdefault(fips_code, _empty_metrics())
+                metrics["od_live_work_same_county"] += int(vals["s000"])
+                metrics["od_working_age_live_work_same_county"] += int(vals["working_age_workers"])
+                metrics["od_high_wage_live_work_same_county"] += int(vals["high_wage_workers"])
+
+        cross_county = chunk[chunk["h_county"] != chunk["w_county"]]
+        if not cross_county.empty:
+            outbound = cross_county.groupby("h_county")["s000"].sum()
+            inbound = cross_county.groupby("w_county")["s000"].sum()
+
+            for fips_code, val in outbound.items():
+                metrics = county_metrics.setdefault(fips_code, _empty_metrics())
+                metrics["od_outbound_workers"] += int(val)
+
+            for fips_code, val in inbound.items():
+                metrics = county_metrics.setdefault(fips_code, _empty_metrics())
+                metrics["od_inbound_workers"] += int(val)
+
+    if not county_metrics:
+        logger.warning(
+            "LODES OD data had no Maryland county rows for requested year",
+            extra={"od_year": od_year, "source_path": str(source_path)},
+        )
+        return pd.DataFrame()
+
+    records = []
+    for fips_code, metrics in county_metrics.items():
+        resident = metrics["od_resident_workers"]
+        resident_working_age = metrics["od_working_age_resident_workers"]
+        resident_high_wage = metrics["od_high_wage_resident_workers"]
+
+        records.append(
+            {
+                "fips_code": fips_code,
+                "od_year": int(od_year),
+                **metrics,
+                "od_net_commuter_flow": metrics["od_inbound_workers"] - metrics["od_outbound_workers"],
+                "od_local_capture_rate": (
+                    metrics["od_live_work_same_county"] / resident if resident > 0 else np.nan
+                ),
+                "od_working_age_share": (
+                    resident_working_age / resident if resident > 0 else np.nan
+                ),
+                "od_working_age_local_capture_rate": (
+                    metrics["od_working_age_live_work_same_county"] / resident_working_age
+                    if resident_working_age > 0
+                    else np.nan
+                ),
+                "od_high_wage_share": (
+                    resident_high_wage / resident if resident > 0 else np.nan
+                ),
+                "od_high_wage_local_capture_rate": (
+                    metrics["od_high_wage_live_work_same_county"] / resident_high_wage
+                    if resident_high_wage > 0
+                    else np.nan
+                ),
+            }
+        )
+
+    od_df = pd.DataFrame(records).sort_values("fips_code").reset_index(drop=True)
+    logger.info(
+        "Loaded LODES OD county metrics",
+        extra={
+            "source_path": str(source_path),
+            "od_year": od_year,
+            "rows_total": total_rows,
+            "rows_matched_year": year_rows,
+            "counties": len(od_df),
+        },
+    )
+    return od_df
 
 
 def download_lodes_wac_segments(year: int) -> pd.DataFrame:
@@ -1174,10 +1486,13 @@ def compute_sector_diversity(tract_jobs: pd.DataFrame) -> pd.DataFrame:
     """
     sector_cols = [f"CNS{i:02d}" for i in range(1, 21)]
     available_sectors = [c for c in sector_cols if c in tract_jobs.columns]
+    stable_sector_cols = [c for c in ["CNS15", "CNS16", "CNS20"] if c in tract_jobs.columns]
 
     if not available_sectors:
         tract_jobs["sector_diversity_entropy"] = 0
         tract_jobs["high_wage_sector_concentration"] = 0
+        tract_jobs["stable_sector_jobs"] = 0
+        tract_jobs["stable_sector_share"] = 0.0
         return tract_jobs
 
     def shannon_entropy(row):
@@ -1203,6 +1518,15 @@ def compute_sector_diversity(tract_jobs: pd.DataFrame) -> pd.DataFrame:
 
     tract_jobs["sector_diversity_entropy"] = tract_jobs.apply(shannon_entropy, axis=1)
     tract_jobs["high_wage_sector_concentration"] = tract_jobs.apply(hhi_concentration, axis=1)
+    if stable_sector_cols:
+        tract_jobs["stable_sector_jobs"] = tract_jobs[stable_sector_cols].fillna(0).sum(axis=1)
+    else:
+        tract_jobs["stable_sector_jobs"] = 0
+    tract_jobs["stable_sector_share"] = np.where(
+        tract_jobs["total_jobs"] > 0,
+        tract_jobs["stable_sector_jobs"] / tract_jobs["total_jobs"],
+        0.0,
+    )
 
     return tract_jobs
 
@@ -1314,6 +1638,8 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
         # Area
         "area_sq_mi": ("area_sq_mi", "sum"),
     }
+    if "stable_sector_jobs" in tract_df.columns:
+        agg_spec["stable_sector_jobs"] = ("stable_sector_jobs", "sum")
 
     # Add weighted columns to spec
     for new_col, (src_col, func) in weighted_cols.items():
@@ -1376,6 +1702,13 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
             county_agg["wage_quality_ratio"].rank(pct=True)
         )
         county_agg["upward_mobility_score"] = county_agg["economic_accessibility_score"]
+
+    if "stable_sector_jobs" in county_agg.columns:
+        county_agg["stable_sector_share"] = np.where(
+            county_agg["total_jobs"] > 0,
+            county_agg["stable_sector_jobs"] / county_agg["total_jobs"],
+            np.nan,
+        )
 
     # Compute regional percentages
     regional_high_wage = county_agg["high_wage_jobs"].sum()
@@ -1566,7 +1899,7 @@ def store_county_economic_opportunity(
                     local_strength = None
 
             if local_strength is not None:
-                local_strength = max(0.0, min(1.0, local_strength))
+                local_strength = float(max(0.0, min(1.0, float(local_strength))))
 
             local_strength_scores[fips_code] = local_strength
 
@@ -1604,11 +1937,25 @@ def store_county_economic_opportunity(
                     },
                 )
 
-            local_strength = local_strength_scores.get(row["fips_code"])
-            if local_strength is not None and pd.isna(local_strength):
-                local_strength = None
-            elif local_strength is not None:
-                local_strength = float(local_strength)
+            local_strength = None
+            row_entropy = row.get("sector_diversity_entropy")
+            row_stable_share = row.get("stable_sector_share")
+            if pd.notna(row_entropy) and pd.notna(row_stable_share):
+                try:
+                    entropy_score = float(row_entropy) / np.log2(20)
+                    local_strength = 0.7 * entropy_score + 0.3 * float(row_stable_share)
+                except (TypeError, ValueError):
+                    local_strength = None
+
+            if local_strength is None:
+                local_strength = local_strength_scores.get(row["fips_code"])
+                if local_strength is not None and pd.isna(local_strength):
+                    local_strength = None
+                elif local_strength is not None:
+                    local_strength = float(local_strength)
+
+            if local_strength is not None:
+                local_strength = float(max(0.0, min(1.0, float(local_strength))))
 
             econ_score = row.get("economic_accessibility_score", None)
             if econ_score is not None and pd.isna(econ_score):
@@ -1641,6 +1988,8 @@ def store_county_economic_opportunity(
                 opportunity_index = (
                     1 - QWI_BLEND_WEIGHT
                 ) * base_index + QWI_BLEND_WEIGHT * qwi_score
+            if opportunity_index is not None and pd.notna(opportunity_index):
+                opportunity_index = float(opportunity_index)
 
             # Update existing records with new accessibility columns
             db.execute(
@@ -1648,6 +1997,7 @@ def store_county_economic_opportunity(
                     """
                 UPDATE layer1_employment_gravity
                 SET
+                    total_jobs = :total_jobs,
                     high_wage_jobs = :high_wage_jobs,
                     mid_wage_jobs = :mid_wage_jobs,
                     low_wage_jobs = :low_wage_jobs,
@@ -1668,9 +2018,12 @@ def store_county_economic_opportunity(
                     wage_quality_ratio = :wage_ratio,
                     pct_regional_high_wage_accessible = :pct_hw,
                     pct_regional_jobs_accessible = :pct_total,
+                    sector_diversity_entropy = :sector_diversity_entropy,
+                    stable_sector_share = :stable_sector_share,
                     high_wage_sector_concentration = :concentration,
                     upward_mobility_score = :mobility,
                     job_quality_index = :quality,
+                    entrepreneurship_density = :entrepreneurship_density,
                     qwi_emp_total = :qwi_emp_total,
                     qwi_hires = :qwi_hires,
                     qwi_separations = :qwi_separations,
@@ -1679,6 +2032,21 @@ def store_county_economic_opportunity(
                     qwi_turnover_rate = :qwi_turnover_rate,
                     qwi_net_job_growth_rate = :qwi_net_job_growth_rate,
                     qwi_year = :qwi_year,
+                    od_year = :od_year,
+                    od_resident_workers = :od_resident_workers,
+                    od_inbound_workers = :od_inbound_workers,
+                    od_outbound_workers = :od_outbound_workers,
+                    od_live_work_same_county = :od_live_work_same_county,
+                    od_net_commuter_flow = :od_net_commuter_flow,
+                    od_local_capture_rate = :od_local_capture_rate,
+                    od_working_age_resident_workers = :od_working_age_resident_workers,
+                    od_working_age_live_work_same_county = :od_working_age_live_work_same_county,
+                    od_working_age_share = :od_working_age_share,
+                    od_working_age_local_capture_rate = :od_working_age_local_capture_rate,
+                    od_high_wage_resident_workers = :od_high_wage_resident_workers,
+                    od_high_wage_live_work_same_county = :od_high_wage_live_work_same_county,
+                    od_high_wage_share = :od_high_wage_share,
+                    od_high_wage_local_capture_rate = :od_high_wage_local_capture_rate,
                     employment_diversification_score = COALESCE(:local_strength, employment_diversification_score),
                     economic_opportunity_index = :opportunity_index,
                     working_age_pop = :working_age,
@@ -1698,6 +2066,7 @@ def store_county_economic_opportunity(
                 {
                     "fips_code": row["fips_code"],
                     "data_year": data_year,
+                    "total_jobs": int(row.get("total_jobs", 0)),
                     "high_wage_jobs": int(row.get("high_wage_jobs", 0)),
                     "mid_wage_jobs": int(row.get("mid_wage_jobs", 0)),
                     "low_wage_jobs": int(row.get("low_wage_jobs", 0)),
@@ -1750,9 +2119,24 @@ def store_county_economic_opportunity(
                     "wage_ratio": float(row.get("wage_quality_ratio", 0)),
                     "pct_hw": float(row.get("pct_regional_high_wage_accessible", 0)),
                     "pct_total": float(row.get("pct_regional_jobs_accessible", 0)),
+                    "sector_diversity_entropy": (
+                        float(row.get("sector_diversity_entropy"))
+                        if pd.notna(row.get("sector_diversity_entropy"))
+                        else None
+                    ),
+                    "stable_sector_share": (
+                        float(row.get("stable_sector_share"))
+                        if pd.notna(row.get("stable_sector_share"))
+                        else None
+                    ),
                     "concentration": float(row.get("high_wage_sector_concentration", 0)),
                     "mobility": float(row.get("upward_mobility_score", 0)),
                     "quality": float(row.get("job_quality_index", 0)),
+                    "entrepreneurship_density": (
+                        float(row.get("entrepreneurship_density"))
+                        if pd.notna(row.get("entrepreneurship_density"))
+                        else None
+                    ),
                     "local_strength": local_strength,
                     "opportunity_index": opportunity_index,
                     "qwi_emp_total": (
@@ -1789,6 +2173,77 @@ def store_county_economic_opportunity(
                         else None
                     ),
                     "qwi_year": int(row.get("qwi_year")) if pd.notna(row.get("qwi_year")) else None,
+                    "od_year": int(row.get("od_year")) if pd.notna(row.get("od_year")) else None,
+                    "od_resident_workers": (
+                        int(row.get("od_resident_workers"))
+                        if pd.notna(row.get("od_resident_workers"))
+                        else None
+                    ),
+                    "od_inbound_workers": (
+                        int(row.get("od_inbound_workers"))
+                        if pd.notna(row.get("od_inbound_workers"))
+                        else None
+                    ),
+                    "od_outbound_workers": (
+                        int(row.get("od_outbound_workers"))
+                        if pd.notna(row.get("od_outbound_workers"))
+                        else None
+                    ),
+                    "od_live_work_same_county": (
+                        int(row.get("od_live_work_same_county"))
+                        if pd.notna(row.get("od_live_work_same_county"))
+                        else None
+                    ),
+                    "od_net_commuter_flow": (
+                        int(row.get("od_net_commuter_flow"))
+                        if pd.notna(row.get("od_net_commuter_flow"))
+                        else None
+                    ),
+                    "od_local_capture_rate": (
+                        float(row.get("od_local_capture_rate"))
+                        if pd.notna(row.get("od_local_capture_rate"))
+                        else None
+                    ),
+                    "od_working_age_resident_workers": (
+                        int(row.get("od_working_age_resident_workers"))
+                        if pd.notna(row.get("od_working_age_resident_workers"))
+                        else None
+                    ),
+                    "od_working_age_live_work_same_county": (
+                        int(row.get("od_working_age_live_work_same_county"))
+                        if pd.notna(row.get("od_working_age_live_work_same_county"))
+                        else None
+                    ),
+                    "od_working_age_share": (
+                        float(row.get("od_working_age_share"))
+                        if pd.notna(row.get("od_working_age_share"))
+                        else None
+                    ),
+                    "od_working_age_local_capture_rate": (
+                        float(row.get("od_working_age_local_capture_rate"))
+                        if pd.notna(row.get("od_working_age_local_capture_rate"))
+                        else None
+                    ),
+                    "od_high_wage_resident_workers": (
+                        int(row.get("od_high_wage_resident_workers"))
+                        if pd.notna(row.get("od_high_wage_resident_workers"))
+                        else None
+                    ),
+                    "od_high_wage_live_work_same_county": (
+                        int(row.get("od_high_wage_live_work_same_county"))
+                        if pd.notna(row.get("od_high_wage_live_work_same_county"))
+                        else None
+                    ),
+                    "od_high_wage_share": (
+                        float(row.get("od_high_wage_share"))
+                        if pd.notna(row.get("od_high_wage_share"))
+                        else None
+                    ),
+                    "od_high_wage_local_capture_rate": (
+                        float(row.get("od_high_wage_local_capture_rate"))
+                        if pd.notna(row.get("od_high_wage_local_capture_rate"))
+                        else None
+                    ),
                     "working_age": int(row.get("working_age_pop", 0)),
                     "lfp": float(row.get("labor_force_participation", 0)),
                     "accessibility_method": (
@@ -1925,6 +2380,11 @@ def calculate_economic_opportunity_indicators(
                     pct=True
                 )
 
+    # Optional: LODES OD enrichment for county commute flow / capture metrics.
+    od_df = fetch_lodes_od_county_flows(lodes_year)
+    if not od_df.empty:
+        county_df = county_df.merge(od_df, on="fips_code", how="left")
+
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("ECONOMIC OPPORTUNITY ANALYSIS COMPLETE")
@@ -2036,6 +2496,17 @@ def run_layer1_v2_ingestion(
                             "counties": len(county_df),
                             "total_jobs": int(tract_df["total_jobs"].sum()),
                             "high_wage_jobs": int(tract_df["high_wage_jobs"].sum()),
+                            "od_counties": (
+                                int(county_df["od_resident_workers"].notna().sum())
+                                if "od_resident_workers" in county_df.columns
+                                else 0
+                            ),
+                            "od_year": (
+                                int(county_df["od_year"].dropna().iloc[0])
+                                if "od_year" in county_df.columns
+                                and county_df["od_year"].notna().any()
+                                else None
+                            ),
                         },
                     )
 
