@@ -27,6 +27,10 @@ SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 BRONZE_TABLES: Set[str] = {
     "layer1_lodes_od_raw",
     "layer1_lodes2_od_raw",
+    "layer2_acs_flows_raw",
+    "layer2_gtfs_feeds_raw",
+    "mobility_gtfs_feeds",
+    "mobility_computation_cache",
     "education_msde_data",
     "education_schooldigger_data",
     "education_schooldigger_quarantine",
@@ -35,6 +39,7 @@ BRONZE_TABLES: Set[str] = {
 SILVER_TABLES: Set[str] = {
     "education_school_directory",
     "layer1_economic_opportunity_tract",
+    "layer2_county_general_flows",
     "layer2_mobility_accessibility_tract",
     "layer3_education_accessibility_tract",
     "layer4_housing_affordability_tract",
@@ -88,7 +93,7 @@ def _normalize_table_identifier(table_name: str) -> str:
 def table_schema_for(table_name: str) -> str:
     """
     Resolve Databricks medallion schema for a logical table name.
-    Unknown tables default to gold.
+    Unknown tables default to bronze.
     """
     name = _normalize_table_identifier(table_name)
     if "." in name:

@@ -62,6 +62,9 @@ settings = get_settings()
 
 L2_TRACT_TABLE = db_table_name("layer2_mobility_accessibility_tract")
 L2_COUNTY_TABLE = db_table_name("layer2_mobility_optionality")
+L2_GTFS_RAW_TABLE = db_table_name("layer2_gtfs_feeds_raw")
+L2_ACS_FLOW_RAW_TABLE = db_table_name("layer2_acs_flows_raw")
+L2_GENERAL_FLOW_TABLE = db_table_name("layer2_county_general_flows")
 
 # =============================================================================
 # CONFIGURATION
@@ -137,6 +140,26 @@ ACCESSIBILITY_WEIGHTS = {
     "walk_30": 0.25,  # Secondary: walkable jobs
     "bike_30": 0.15,  # Tertiary: bikeable jobs
 }
+
+# County mobility index blend:
+# - base multimodal accessibility remains primary
+# - ACS flow score adds county movement dynamics
+MOBILITY_BASE_WEIGHT = 0.85
+MOBILITY_FLOW_WEIGHT = 0.15
+
+ACS_FLOW_API_FIELDS = [
+    "GEOID1",
+    "GEOID2",
+    "SUMLEV2",
+    "MOVEDIN",
+    "MOVEDOUT",
+    "NONMOVERS",
+    "FROMDIFFCTY",
+    "FROMDIFFSTATE",
+    "FROMABROAD",
+    "TODIFFCTY",
+    "TODIFFSTATE",
+]
 
 # =============================================================================
 # DATA CLASSES
@@ -953,12 +976,228 @@ def compute_transit_quality_metrics(
     ]
 
 
+def fetch_acs_county_flow_rows(flow_year: int) -> pd.DataFrame:
+    """
+    Load county-level ACS flow rows from Census API.
+
+    Notes:
+    - The ACS flows endpoint returns reference county rows crossed with second geographies.
+    - We persist all rows for lineage and later derive county-level totals from summary variables.
+    """
+    endpoint = f"{settings.CENSUS_API_BASE_URL.rstrip('/')}/{int(flow_year)}/acs/flows"
+    params: Dict[str, str] = {
+        "get": ",".join(ACS_FLOW_API_FIELDS),
+        "for": "county:*",
+        "in": "state:24",
+    }
+    if settings.CENSUS_API_KEY:
+        params["key"] = settings.CENSUS_API_KEY
+
+    try:
+        response = requests.get(endpoint, params=params, timeout=120)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        logger.warning("ACS flows API unavailable; skipping Layer 2 flow enrichment", exc_info=True)
+        return pd.DataFrame()
+
+    if not isinstance(payload, list) or len(payload) <= 1:
+        return pd.DataFrame()
+
+    flow_df = pd.DataFrame(payload[1:], columns=payload[0])
+    if flow_df.empty:
+        return flow_df
+
+    flow_df = flow_df.rename(columns=lambda c: str(c).strip().lower())
+    if "geoid1" not in flow_df.columns:
+        logger.warning("ACS flow payload missing GEOID1; skipping flow enrichment")
+        return pd.DataFrame()
+    flow_df["fips_code"] = flow_df["geoid1"].astype(str).str.zfill(5)
+    flow_df = flow_df[flow_df["fips_code"].isin(MD_COUNTY_FIPS.keys())].copy()
+    if flow_df.empty:
+        return flow_df
+
+    # county flows endpoint returns second-geography state rows (SUMLEV2=40)
+    if "sumlev2" not in flow_df.columns:
+        logger.warning("ACS flow payload missing SUMLEV2; skipping flow enrichment")
+        return pd.DataFrame()
+    flow_df["sumlev2"] = flow_df["sumlev2"].astype(str)
+    flow_df = flow_df[flow_df["sumlev2"] == "40"].copy()
+    if flow_df.empty:
+        return flow_df
+
+    numeric_cols = [
+        "movedin",
+        "movedout",
+        "nonmovers",
+        "fromdiffcty",
+        "fromdiffstate",
+        "fromabroad",
+        "todiffcty",
+        "todiffstate",
+    ]
+    for col in numeric_cols:
+        if col in flow_df.columns:
+            flow_df[col] = pd.to_numeric(flow_df[col], errors="coerce")
+        else:
+            flow_df[col] = np.nan
+
+    flow_df["flow_year"] = int(flow_year)
+    logger.info(f"Loaded {len(flow_df)} ACS flow rows for year={flow_year}")
+    return flow_df
+
+
+def summarize_acs_county_flows(flow_df: pd.DataFrame, flow_year: int) -> pd.DataFrame:
+    """Summarize ACS flow rows into county-level movement metrics for Layer 2."""
+    if flow_df.empty:
+        return pd.DataFrame()
+
+    def _first_numeric(series: pd.Series) -> float:
+        numeric = pd.to_numeric(series, errors="coerce").dropna()
+        if numeric.empty:
+            return float("nan")
+        return float(numeric.iloc[0])
+
+    summary = (
+        flow_df.groupby("fips_code")
+        .agg(
+            movedin_pair_sum=("movedin", "sum"),
+            movedout_reported=("movedout", _first_numeric),
+            general_nonmovers=("nonmovers", _first_numeric),
+            general_from_diff_county=("fromdiffcty", _first_numeric),
+            general_from_diff_state=("fromdiffstate", _first_numeric),
+            general_from_abroad=("fromabroad", _first_numeric),
+            general_to_diff_county=("todiffcty", _first_numeric),
+            general_to_diff_state=("todiffstate", _first_numeric),
+        )
+        .reset_index()
+    )
+
+    inflow_components = (
+        summary["general_from_diff_county"].fillna(0)
+        + summary["general_from_diff_state"].fillna(0)
+        + summary["general_from_abroad"].fillna(0)
+    )
+    summary["general_inflow_total"] = np.where(
+        inflow_components > 0, inflow_components, summary["movedin_pair_sum"].fillna(0)
+    )
+
+    outflow_components = summary["general_to_diff_county"].fillna(0) + summary[
+        "general_to_diff_state"
+    ].fillna(0)
+    summary["general_outflow_total"] = summary["movedout_reported"]
+    outflow_missing = summary["general_outflow_total"].isna() | (
+        summary["general_outflow_total"] <= 0
+    )
+    summary.loc[outflow_missing & (outflow_components > 0), "general_outflow_total"] = (
+        outflow_components
+    )
+
+    summary["general_outflow_observed"] = summary["general_outflow_total"].notna()
+    summary["general_outflow_total"] = summary["general_outflow_total"].fillna(0.0)
+    summary["general_net_flow"] = summary["general_inflow_total"] - summary["general_outflow_total"]
+
+    denominator = summary["general_nonmovers"].fillna(0) + summary["general_inflow_total"]
+    summary["general_inflow_rate"] = np.where(
+        denominator > 0, summary["general_inflow_total"] / denominator, 0.0
+    )
+    summary["general_outflow_rate"] = np.where(
+        denominator > 0, summary["general_outflow_total"] / denominator, 0.0
+    )
+    summary["general_net_flow_rate"] = np.where(
+        denominator > 0, summary["general_net_flow"] / denominator, 0.0
+    )
+
+    if bool(summary["general_outflow_observed"].any()):
+        score_source = summary["general_net_flow_rate"]
+        method = "v2-accessibility+acs-net-flow"
+    else:
+        score_source = summary["general_inflow_rate"]
+        method = "v2-accessibility+acs-inflow"
+
+    summary["general_flow_score"] = score_source.rank(pct=True).fillna(0.0)
+    summary["mobility_flow_method"] = method
+    summary["acs_flow_year"] = int(flow_year)
+    return summary
+
+
+def _enrich_county_with_general_flows(
+    county_df: pd.DataFrame,
+    flow_summary: pd.DataFrame,
+    flow_year: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Blend multimodal accessibility with ACS county movement dynamics.
+
+    Principle: accessibility potential + observed resident movement.
+    """
+    county_df = county_df.copy()
+    county_df["mobility_optionality_base_score"] = county_df[
+        "multimodal_accessibility_score"
+    ].fillna(0.0)
+
+    if flow_summary.empty:
+        county_df["acs_flow_year"] = int(flow_year) if flow_year is not None else pd.NA
+        county_df["general_nonmovers"] = 0
+        county_df["general_inflow_total"] = 0
+        county_df["general_outflow_total"] = 0
+        county_df["general_net_flow"] = 0
+        county_df["general_inflow_rate"] = 0.0
+        county_df["general_outflow_rate"] = 0.0
+        county_df["general_net_flow_rate"] = 0.0
+        county_df["general_flow_score"] = 0.0
+        county_df["mobility_optionality_method"] = "v2-accessibility-only"
+        county_df["mobility_optionality_index"] = county_df["mobility_optionality_base_score"].clip(
+            0, 1
+        )
+        return county_df
+
+    county_df = county_df.merge(flow_summary, on="fips_code", how="left")
+    numeric_cols = [
+        "general_nonmovers",
+        "general_inflow_total",
+        "general_outflow_total",
+        "general_net_flow",
+        "general_inflow_rate",
+        "general_outflow_rate",
+        "general_net_flow_rate",
+        "general_flow_score",
+    ]
+    for col in numeric_cols:
+        county_df[col] = pd.to_numeric(county_df[col], errors="coerce").fillna(0.0)
+
+    county_df["mobility_optionality_index"] = (
+        MOBILITY_BASE_WEIGHT * county_df["mobility_optionality_base_score"]
+        + MOBILITY_FLOW_WEIGHT * county_df["general_flow_score"]
+    ).clip(0, 1)
+    county_df["mobility_optionality_method"] = county_df.get("mobility_flow_method").fillna(
+        "v2-accessibility-only"
+    )
+    if flow_year is not None:
+        county_df["acs_flow_year"] = int(flow_year)
+
+    for int_col in [
+        "general_nonmovers",
+        "general_inflow_total",
+        "general_outflow_total",
+        "general_net_flow",
+    ]:
+        county_df[int_col] = county_df[int_col].round().astype(int)
+
+    return county_df
+
+
 # =============================================================================
 # AGGREGATION
 # =============================================================================
 
 
-def aggregate_to_county(tract_df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
+def aggregate_to_county(
+    tract_df: pd.DataFrame,
+    tracts: gpd.GeoDataFrame,
+    county_general_flows: Optional[pd.DataFrame] = None,
+    flow_year: Optional[int] = None,
+) -> pd.DataFrame:
     """
     Aggregate tract-level accessibility to county level.
 
@@ -968,6 +1207,8 @@ def aggregate_to_county(tract_df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     Args:
         tract_df: DataFrame with tract-level metrics
         tracts: GeoDataFrame with tract population
+        county_general_flows: Optional county-level ACS movement summary rows
+        flow_year: ACS flow reference year for county flow enrichment
 
     Returns:
         DataFrame with county-level metrics
@@ -1051,6 +1292,9 @@ def aggregate_to_county(tract_df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
             "tract_count",
         ]
     )
+
+    flow_df = county_general_flows if county_general_flows is not None else pd.DataFrame()
+    county_agg = _enrich_county_with_general_flows(county_agg, flow_df, flow_year=flow_year)
 
     return county_agg
 
@@ -1152,8 +1396,280 @@ def store_tract_accessibility(
     logger.info("✓ Tract accessibility data stored")
 
 
+def store_gtfs_feeds_raw(feeds: List[GTFSFeedInfo], data_year: int) -> None:
+    """Persist GTFS feed lineage metadata to a raw bronze table."""
+    if not feeds:
+        logger.info("No GTFS feeds available to persist in raw lineage table")
+        return
+
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
+    with get_db() as db:
+        if use_databricks_backend:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {L2_GTFS_RAW_TABLE} (
+                feed_name STRING,
+                feed_url STRING,
+                agency_name STRING,
+                feed_date DATE,
+                download_timestamp TIMESTAMP,
+                file_hash STRING,
+                is_active BOOLEAN,
+                coverage_area STRING,
+                data_year INT
+            ) USING DELTA
+            """
+        else:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {L2_GTFS_RAW_TABLE} (
+                feed_name VARCHAR(100),
+                feed_url VARCHAR(500),
+                agency_name VARCHAR(200),
+                feed_date DATE,
+                download_timestamp TIMESTAMP,
+                file_hash VARCHAR(64),
+                is_active BOOLEAN,
+                coverage_area VARCHAR(100),
+                data_year INTEGER
+            )
+            """
+        db.execute(text(ddl))
+        for feed in feeds:
+            db.execute(
+                text(
+                    f"""
+                    DELETE FROM {L2_GTFS_RAW_TABLE}
+                    WHERE feed_name = :feed_name AND feed_date = :feed_date
+                    """
+                ),
+                {"feed_name": feed.name, "feed_date": feed.feed_date},
+            )
+        insert_sql = text(
+            f"""
+            INSERT INTO {L2_GTFS_RAW_TABLE} (
+                feed_name, feed_url, agency_name, feed_date, download_timestamp,
+                file_hash, is_active, coverage_area, data_year
+            ) VALUES (
+                :feed_name, :feed_url, :agency_name, :feed_date, :download_timestamp,
+                :file_hash, :is_active, :coverage_area, :data_year
+            )
+            """
+        )
+        rows = []
+        for feed in feeds:
+            rows.append(
+                {
+                    "feed_name": feed.name,
+                    "feed_url": feed.source_url,
+                    "agency_name": feed.agency,
+                    "feed_date": feed.feed_date,
+                    "download_timestamp": datetime.fromisoformat(feed.fetch_date),
+                    "file_hash": feed.file_hash,
+                    "is_active": True,
+                    "coverage_area": "Maryland",
+                    "data_year": int(data_year),
+                }
+            )
+        execute_batch(db, insert_sql, rows, chunk_size=500)
+        db.commit()
+    logger.info(f"✓ Stored {len(feeds)} GTFS feed lineage rows in raw table")
+
+
+def store_acs_flow_rows_raw(flow_df: pd.DataFrame, flow_year: int) -> int:
+    """Persist raw ACS flow API rows (bronze lineage)."""
+    if flow_df.empty:
+        logger.info("No ACS flow rows to persist in raw table")
+        return 0
+
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
+    with get_db() as db:
+        if use_databricks_backend:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {L2_ACS_FLOW_RAW_TABLE} (
+                fips_code STRING,
+                geoid2 STRING,
+                sumlev2 STRING,
+                movedin BIGINT,
+                movedout BIGINT,
+                nonmovers BIGINT,
+                fromdiffcty BIGINT,
+                fromdiffstate BIGINT,
+                fromabroad BIGINT,
+                todiffcty BIGINT,
+                todiffstate BIGINT,
+                flow_year INT,
+                source_endpoint STRING,
+                loaded_at TIMESTAMP
+            ) USING DELTA
+            """
+        else:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {L2_ACS_FLOW_RAW_TABLE} (
+                fips_code VARCHAR(5),
+                geoid2 VARCHAR(16),
+                sumlev2 VARCHAR(8),
+                movedin BIGINT,
+                movedout BIGINT,
+                nonmovers BIGINT,
+                fromdiffcty BIGINT,
+                fromdiffstate BIGINT,
+                fromabroad BIGINT,
+                todiffcty BIGINT,
+                todiffstate BIGINT,
+                flow_year INTEGER,
+                source_endpoint VARCHAR(255),
+                loaded_at TIMESTAMP
+            )
+            """
+        db.execute(text(ddl))
+        db.execute(
+            text(f"DELETE FROM {L2_ACS_FLOW_RAW_TABLE} WHERE flow_year = :flow_year"),
+            {"flow_year": int(flow_year)},
+        )
+        insert_sql = text(
+            f"""
+            INSERT INTO {L2_ACS_FLOW_RAW_TABLE} (
+                fips_code, geoid2, sumlev2,
+                movedin, movedout, nonmovers,
+                fromdiffcty, fromdiffstate, fromabroad,
+                todiffcty, todiffstate,
+                flow_year, source_endpoint, loaded_at
+            ) VALUES (
+                :fips_code, :geoid2, :sumlev2,
+                :movedin, :movedout, :nonmovers,
+                :fromdiffcty, :fromdiffstate, :fromabroad,
+                :todiffcty, :todiffstate,
+                :flow_year, :source_endpoint, :loaded_at
+            )
+            """
+        )
+        endpoint = f"{settings.CENSUS_API_BASE_URL.rstrip('/')}/{int(flow_year)}/acs/flows"
+
+        def _int_or_none(value: Any) -> Optional[int]:
+            if pd.isna(value):
+                return None
+            return int(value)
+
+        rows = []
+        for _, row in flow_df.iterrows():
+            rows.append(
+                {
+                    "fips_code": str(row.get("fips_code", "")),
+                    "geoid2": str(row.get("geoid2", "")),
+                    "sumlev2": str(row.get("sumlev2", "")),
+                    "movedin": _int_or_none(row.get("movedin")),
+                    "movedout": _int_or_none(row.get("movedout")),
+                    "nonmovers": _int_or_none(row.get("nonmovers")),
+                    "fromdiffcty": _int_or_none(row.get("fromdiffcty")),
+                    "fromdiffstate": _int_or_none(row.get("fromdiffstate")),
+                    "fromabroad": _int_or_none(row.get("fromabroad")),
+                    "todiffcty": _int_or_none(row.get("todiffcty")),
+                    "todiffstate": _int_or_none(row.get("todiffstate")),
+                    "flow_year": int(flow_year),
+                    "source_endpoint": endpoint,
+                    "loaded_at": datetime.utcnow(),
+                }
+            )
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
+        db.commit()
+    logger.info(f"✓ Stored {len(flow_df)} ACS flow rows in raw table")
+    return int(len(flow_df))
+
+
+def store_county_general_flows(flow_summary: pd.DataFrame, flow_year: int) -> int:
+    """Persist derived county flow summary to silver."""
+    if flow_summary.empty:
+        logger.info("No county general-flow rows to persist")
+        return 0
+
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
+    with get_db() as db:
+        if use_databricks_backend:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {L2_GENERAL_FLOW_TABLE} (
+                fips_code STRING,
+                acs_flow_year INT,
+                general_nonmovers BIGINT,
+                general_inflow_total BIGINT,
+                general_outflow_total BIGINT,
+                general_net_flow BIGINT,
+                general_inflow_rate DOUBLE,
+                general_outflow_rate DOUBLE,
+                general_net_flow_rate DOUBLE,
+                general_flow_score DOUBLE,
+                mobility_flow_method STRING,
+                updated_at TIMESTAMP
+            ) USING DELTA
+            """
+        else:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {L2_GENERAL_FLOW_TABLE} (
+                fips_code VARCHAR(5),
+                acs_flow_year INTEGER,
+                general_nonmovers BIGINT,
+                general_inflow_total BIGINT,
+                general_outflow_total BIGINT,
+                general_net_flow BIGINT,
+                general_inflow_rate NUMERIC(8,6),
+                general_outflow_rate NUMERIC(8,6),
+                general_net_flow_rate NUMERIC(8,6),
+                general_flow_score NUMERIC(8,6),
+                mobility_flow_method VARCHAR(64),
+                updated_at TIMESTAMP
+            )
+            """
+        db.execute(text(ddl))
+        db.execute(
+            text(f"DELETE FROM {L2_GENERAL_FLOW_TABLE} WHERE acs_flow_year = :flow_year"),
+            {"flow_year": int(flow_year)},
+        )
+        insert_sql = text(
+            f"""
+            INSERT INTO {L2_GENERAL_FLOW_TABLE} (
+                fips_code, acs_flow_year,
+                general_nonmovers, general_inflow_total, general_outflow_total, general_net_flow,
+                general_inflow_rate, general_outflow_rate, general_net_flow_rate, general_flow_score,
+                mobility_flow_method, updated_at
+            ) VALUES (
+                :fips_code, :acs_flow_year,
+                :general_nonmovers, :general_inflow_total, :general_outflow_total, :general_net_flow,
+                :general_inflow_rate, :general_outflow_rate, :general_net_flow_rate, :general_flow_score,
+                :mobility_flow_method, :updated_at
+            )
+            """
+        )
+        rows = []
+        for _, row in flow_summary.iterrows():
+            rows.append(
+                {
+                    "fips_code": str(row.get("fips_code", "")),
+                    "acs_flow_year": int(flow_year),
+                    "general_nonmovers": int(row.get("general_nonmovers", 0)),
+                    "general_inflow_total": int(row.get("general_inflow_total", 0)),
+                    "general_outflow_total": int(row.get("general_outflow_total", 0)),
+                    "general_net_flow": int(row.get("general_net_flow", 0)),
+                    "general_inflow_rate": float(row.get("general_inflow_rate", 0)),
+                    "general_outflow_rate": float(row.get("general_outflow_rate", 0)),
+                    "general_net_flow_rate": float(row.get("general_net_flow_rate", 0)),
+                    "general_flow_score": float(row.get("general_flow_score", 0)),
+                    "mobility_flow_method": str(
+                        row.get("mobility_flow_method", "v2-accessibility+acs-inflow")
+                    ),
+                    "updated_at": datetime.utcnow(),
+                }
+            )
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
+        db.commit()
+    logger.info(f"✓ Stored {len(flow_summary)} county general-flow summary rows in silver table")
+    return int(len(flow_summary))
+
+
 def store_county_accessibility(
-    df: pd.DataFrame, data_year: int, gtfs_date: date, osm_date: date, lodes_year: int
+    df: pd.DataFrame,
+    data_year: int,
+    gtfs_date: date,
+    osm_date: date,
+    lodes_year: int,
+    acs_flow_year: Optional[int] = None,
 ):
     """
     Store county-level accessibility data in the main Layer 2 table.
@@ -1167,11 +1683,53 @@ def store_county_accessibility(
         gtfs_date: Date of GTFS feeds used
         osm_date: Date of OSM extract used
         lodes_year: Year of LODES data used
+        acs_flow_year: ACS flows year used for movement enrichment
     """
     logger.info(f"Updating {len(df)} county accessibility records")
     use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
+        if use_databricks_backend:
+            existing_cols_rows = db.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_catalog = :catalog
+                      AND table_schema = :schema
+                      AND table_name = :table_name
+                    """
+                ),
+                {
+                    "catalog": settings.DATABRICKS_CATALOG,
+                    "schema": settings.DATABRICKS_GOLD_SCHEMA,
+                    "table_name": "layer2_mobility_optionality",
+                },
+            ).fetchall()
+            existing_cols = {str(row[0]).lower() for row in existing_cols_rows}
+            required_databricks_cols = {
+                "acs_flow_year": "INT",
+                "general_nonmovers": "BIGINT",
+                "general_inflow_total": "BIGINT",
+                "general_outflow_total": "BIGINT",
+                "general_net_flow": "BIGINT",
+                "general_inflow_rate": "DOUBLE",
+                "general_outflow_rate": "DOUBLE",
+                "general_net_flow_rate": "DOUBLE",
+                "general_flow_score": "DOUBLE",
+                "mobility_optionality_base_score": "DOUBLE",
+                "mobility_optionality_method": "STRING",
+            }
+            missing_defs = [
+                f"{name} {dtype}"
+                for name, dtype in required_databricks_cols.items()
+                if name.lower() not in existing_cols
+            ]
+            if missing_defs:
+                db.execute(
+                    text(f"ALTER TABLE {L2_COUNTY_TABLE} ADD COLUMNS ({', '.join(missing_defs)})")
+                )
+
         insert_sql = text(
             f"""
                 INSERT INTO {L2_COUNTY_TABLE} (
@@ -1184,6 +1742,10 @@ def store_county_accessibility(
                     pct_regional_jobs_by_transit, transit_car_accessibility_ratio,
                     transit_stop_density, frequent_transit_area_pct,
                     average_headway_minutes,
+                    acs_flow_year, general_nonmovers, general_inflow_total,
+                    general_outflow_total, general_net_flow,
+                    general_inflow_rate, general_outflow_rate, general_net_flow_rate, general_flow_score,
+                    mobility_optionality_base_score, mobility_optionality_method,
                     gtfs_feed_date, osm_extract_date, lodes_year,
                     accessibility_version, mobility_optionality_index
                 ) VALUES (
@@ -1193,8 +1755,12 @@ def store_county_accessibility(
                     :transit_score, :walk_score, :bike_score, :multimodal_score,
                     :pct_regional, :transit_car_ratio,
                     :stop_density, :frequent_pct, :avg_headway,
+                    :acs_flow_year, :general_nonmovers, :general_inflow_total,
+                    :general_outflow_total, :general_net_flow,
+                    :general_inflow_rate, :general_outflow_rate, :general_net_flow_rate, :general_flow_score,
+                    :base_score, :mobility_method,
                     :gtfs_date, :osm_date, :lodes_year,
-                    'v2-accessibility', :multimodal_score
+                    'v2-accessibility', :mobility_index
                 )
             """
         )
@@ -1211,6 +1777,10 @@ def store_county_accessibility(
                     pct_regional_jobs_by_transit, transit_car_accessibility_ratio,
                     transit_stop_density, frequent_transit_area_pct,
                     average_headway_minutes,
+                    acs_flow_year, general_nonmovers, general_inflow_total,
+                    general_outflow_total, general_net_flow,
+                    general_inflow_rate, general_outflow_rate, general_net_flow_rate, general_flow_score,
+                    mobility_optionality_base_score, mobility_optionality_method,
                     gtfs_feed_date, osm_extract_date, lodes_year,
                     accessibility_version, mobility_optionality_index
                 ) VALUES (
@@ -1220,8 +1790,12 @@ def store_county_accessibility(
                     :transit_score, :walk_score, :bike_score, :multimodal_score,
                     :pct_regional, :transit_car_ratio,
                     :stop_density, :frequent_pct, :avg_headway,
+                    :acs_flow_year, :general_nonmovers, :general_inflow_total,
+                    :general_outflow_total, :general_net_flow,
+                    :general_inflow_rate, :general_outflow_rate, :general_net_flow_rate, :general_flow_score,
+                    :base_score, :mobility_method,
                     :gtfs_date, :osm_date, :lodes_year,
-                    'v2-accessibility', :multimodal_score
+                    'v2-accessibility', :mobility_index
                 )
                 ON CONFLICT (fips_code, data_year)
                 DO UPDATE SET
@@ -1239,6 +1813,17 @@ def store_county_accessibility(
                     transit_stop_density = EXCLUDED.transit_stop_density,
                     frequent_transit_area_pct = EXCLUDED.frequent_transit_area_pct,
                     average_headway_minutes = EXCLUDED.average_headway_minutes,
+                    acs_flow_year = EXCLUDED.acs_flow_year,
+                    general_nonmovers = EXCLUDED.general_nonmovers,
+                    general_inflow_total = EXCLUDED.general_inflow_total,
+                    general_outflow_total = EXCLUDED.general_outflow_total,
+                    general_net_flow = EXCLUDED.general_net_flow,
+                    general_inflow_rate = EXCLUDED.general_inflow_rate,
+                    general_outflow_rate = EXCLUDED.general_outflow_rate,
+                    general_net_flow_rate = EXCLUDED.general_net_flow_rate,
+                    general_flow_score = EXCLUDED.general_flow_score,
+                    mobility_optionality_base_score = EXCLUDED.mobility_optionality_base_score,
+                    mobility_optionality_method = EXCLUDED.mobility_optionality_method,
                     gtfs_feed_date = EXCLUDED.gtfs_feed_date,
                     osm_extract_date = EXCLUDED.osm_extract_date,
                     lodes_year = EXCLUDED.lodes_year,
@@ -1268,6 +1853,29 @@ def store_county_accessibility(
                     "stop_density": float(row.get("transit_stop_density", 0)),
                     "frequent_pct": float(row.get("frequent_transit_area_pct", 0)),
                     "avg_headway": float(row.get("average_headway_minutes", 999)),
+                    "acs_flow_year": (
+                        int(row.get("acs_flow_year"))
+                        if pd.notna(row.get("acs_flow_year"))
+                        else int(acs_flow_year if acs_flow_year is not None else data_year)
+                    ),
+                    "general_nonmovers": int(row.get("general_nonmovers", 0)),
+                    "general_inflow_total": int(row.get("general_inflow_total", 0)),
+                    "general_outflow_total": int(row.get("general_outflow_total", 0)),
+                    "general_net_flow": int(row.get("general_net_flow", 0)),
+                    "general_inflow_rate": float(row.get("general_inflow_rate", 0)),
+                    "general_outflow_rate": float(row.get("general_outflow_rate", 0)),
+                    "general_net_flow_rate": float(row.get("general_net_flow_rate", 0)),
+                    "general_flow_score": float(row.get("general_flow_score", 0)),
+                    "base_score": float(row.get("mobility_optionality_base_score", 0)),
+                    "mobility_method": str(
+                        row.get("mobility_optionality_method", "v2-accessibility-only")
+                    ),
+                    "mobility_index": float(
+                        row.get(
+                            "mobility_optionality_index",
+                            row.get("multimodal_accessibility_score", 0),
+                        )
+                    ),
                     "gtfs_date": gtfs_date,
                     "osm_date": osm_date,
                     "lodes_year": lodes_year,
@@ -1314,12 +1922,14 @@ def calculate_accessibility_indicators(
     """
     data_year = data_year or current_year()
     lodes_year = lodes_year or lodes_year_for_data_year(data_year)
+    acs_flow_year = min(int(data_year), int(settings.ACS_GEOGRAPHY_MAX_YEAR))
 
     logger.info("=" * 60)
     logger.info("LAYER 2 v2: ACCESSIBILITY-BASED MOBILITY ANALYSIS")
     logger.info("=" * 60)
     logger.info(f"Data year: {data_year}")
     logger.info(f"LODES year: {lodes_year}")
+    logger.info(f"ACS flows year: {acs_flow_year}")
 
     # Step 1: Download data
     logger.info("\n[1/6] Downloading data sources...")
@@ -1367,8 +1977,23 @@ def calculate_accessibility_indicators(
     logger.info("\n[6/6] Normalizing and aggregating...")
     tract_accessibility = normalize_accessibility_scores(tract_accessibility, jobs)
 
+    flow_rows = fetch_acs_county_flow_rows(flow_year=acs_flow_year)
+    county_general_flows = summarize_acs_county_flows(flow_rows, flow_year=acs_flow_year)
+    if county_general_flows.empty:
+        logger.info("No ACS flow rows available; using accessibility-only mobility index")
+    else:
+        logger.info(
+            f"Using {len(county_general_flows)} county ACS flow summaries for mobility enrichment "
+            f"(year={acs_flow_year})"
+        )
+
     # Aggregate to county
-    county_accessibility = aggregate_to_county(tract_accessibility, tracts)
+    county_accessibility = aggregate_to_county(
+        tract_accessibility,
+        tracts,
+        county_general_flows=county_general_flows,
+        flow_year=acs_flow_year,
+    )
 
     # Summary statistics
     logger.info("\n" + "=" * 60)
@@ -1402,6 +2027,7 @@ def run_layer2_v2_ingestion(
     """
     data_year = data_year or current_year()
     lodes_year = lodes_year_for_data_year(data_year)
+    acs_flow_year = min(int(data_year), int(settings.ACS_GEOGRAPHY_MAX_YEAR))
 
     try:
         # Calculate accessibility
@@ -1418,29 +2044,49 @@ def run_layer2_v2_ingestion(
 
             gtfs_feeds = download_gtfs_feeds()
             gtfs_date = max(f.feed_date for f in gtfs_feeds) if gtfs_feeds else date.today()
+            store_gtfs_feeds_raw(gtfs_feeds, data_year=data_year)
+
+            flow_rows = fetch_acs_county_flow_rows(flow_year=acs_flow_year)
+            flow_summary = summarize_acs_county_flows(flow_rows, flow_year=acs_flow_year)
+            raw_flow_rows = store_acs_flow_rows_raw(flow_rows, flow_year=acs_flow_year)
+            summary_flow_rows = store_county_general_flows(flow_summary, flow_year=acs_flow_year)
 
             # Store tract-level data
             store_tract_accessibility(tract_df, data_year, gtfs_date, osm_date, lodes_year)
 
             # Store county-level data
-            store_county_accessibility(county_df, data_year, gtfs_date, osm_date, lodes_year)
+            store_county_accessibility(
+                county_df,
+                data_year,
+                gtfs_date,
+                osm_date,
+                lodes_year,
+                acs_flow_year=acs_flow_year,
+            )
 
             # Log refresh
             log_refresh(
                 layer_name="layer2_mobility_optionality",
-                data_source="OSM+GTFS+LODES (v2 accessibility)",
+                data_source="OSM+GTFS+LODES+ACS flows (v2 accessibility)",
                 status="success",
                 records_processed=len(tract_df),
                 records_inserted=len(tract_df) + len(county_df),
                 metadata={
                     "data_year": data_year,
                     "lodes_year": lodes_year,
+                    "acs_flow_year": acs_flow_year,
                     "gtfs_date": str(gtfs_date),
                     "osm_date": str(osm_date),
                     "version": "v2-accessibility",
                     "tracts": len(tract_df),
                     "counties": len(county_df),
                     "used_r5": use_r5 and check_r5py_available(),
+                    "acs_flow_rows_raw": raw_flow_rows,
+                    "acs_flow_rows_summary": summary_flow_rows,
+                    "mobility_index_blend": (
+                        f"{MOBILITY_BASE_WEIGHT:.2f} accessibility + "
+                        f"{MOBILITY_FLOW_WEIGHT:.2f} ACS general flow"
+                    ),
                 },
             )
 
@@ -1460,7 +2106,7 @@ def run_layer2_v2_ingestion(
         logger.error(f"Layer 2 v2 ingestion failed: {e}", exc_info=True)
         log_refresh(
             layer_name="layer2_mobility_optionality",
-            data_source="OSM+GTFS+LODES (v2 accessibility)",
+            data_source="OSM+GTFS+LODES+ACS flows (v2 accessibility)",
             status="failed",
             error_message=str(e),
         )

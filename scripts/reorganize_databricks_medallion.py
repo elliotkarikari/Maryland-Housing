@@ -24,6 +24,10 @@ from sqlalchemy import create_engine, text
 BRONZE_TABLES = {
     "layer1_lodes_od_raw",
     "layer1_lodes2_od_raw",
+    "layer2_acs_flows_raw",
+    "layer2_gtfs_feeds_raw",
+    "mobility_gtfs_feeds",
+    "mobility_computation_cache",
     "education_msde_data",
     "education_schooldigger_data",
     "education_schooldigger_quarantine",
@@ -32,6 +36,7 @@ BRONZE_TABLES = {
 SILVER_TABLES = {
     "education_school_directory",
     "layer1_economic_opportunity_tract",
+    "layer2_county_general_flows",
     "layer2_mobility_accessibility_tract",
     "layer3_education_accessibility_tract",
     "layer4_housing_affordability_tract",

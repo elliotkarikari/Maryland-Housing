@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import get_db
+from config.database import get_db, table_name as db_table_name
 from config.settings import get_settings
 from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
@@ -24,13 +24,17 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 settings = get_settings()
 
-TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,2}$")
 
 
 def _validate_table_name(table_name: str) -> str:
     if not TABLE_NAME_RE.match(table_name):
         raise ValueError(f"Unsafe table name: {table_name}")
     return table_name
+
+
+def _table_ref(table_name: str) -> str:
+    return db_table_name(table_name)
 
 
 def _to_int(value: str | None) -> int:
@@ -40,8 +44,9 @@ def _to_int(value: str | None) -> int:
 
 
 def _ensure_raw_table(db, table_name: str) -> None:
+    table_ref = _table_ref(table_name)
     ddl = f"""
-    CREATE TABLE IF NOT EXISTS {table_name} (
+    CREATE TABLE IF NOT EXISTS {table_ref} (
         w_geocode STRING,
         h_geocode STRING,
         w_county STRING,
@@ -65,9 +70,10 @@ def _ensure_raw_table(db, table_name: str) -> None:
 
 
 def _insert_sql(table_name: str):
+    table_ref = _table_ref(table_name)
     return text(
         f"""
-        INSERT INTO {table_name} (
+        INSERT INTO {table_ref} (
             w_geocode, h_geocode, w_county, h_county, data_year,
             s000, sa01, sa02, sa03, se01, se02, se03, si01, si02, si03, source_file
         ) VALUES (
@@ -94,13 +100,14 @@ def load_csv_to_table(
 
     with get_db() as db:
         _ensure_raw_table(db, table_name)
+        table_ref = _table_ref(table_name)
         if truncate:
-            logger.info(f"Truncating Databricks table {table_name}")
-            db.execute(text(f"TRUNCATE TABLE {table_name}"))
+            logger.info(f"Truncating Databricks table {table_ref}")
+            db.execute(text(f"TRUNCATE TABLE {table_ref}"))
         else:
             logger.info(f"Deleting prior rows for source_file={source_file}")
             db.execute(
-                text(f"DELETE FROM {table_name} WHERE source_file = :source_file"),
+                text(f"DELETE FROM {table_ref} WHERE source_file = :source_file"),
                 {"source_file": source_file},
             )
         db.commit()

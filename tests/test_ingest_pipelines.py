@@ -89,6 +89,15 @@ def test_layer2_pipeline(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(layer2, "check_r5py_available", lambda: False)
     monkeypatch.setattr(layer2, "apply_predictions_to_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(layer2, "store_gtfs_feeds_raw", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        layer2, "fetch_acs_county_flow_rows", lambda *args, **kwargs: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        layer2, "summarize_acs_county_flows", lambda *args, **kwargs: pd.DataFrame()
+    )
+    monkeypatch.setattr(layer2, "store_acs_flow_rows_raw", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(layer2, "store_county_general_flows", lambda *args, **kwargs: 0)
 
     feed = layer2.GTFSFeedInfo(
         name="test",

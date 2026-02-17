@@ -50,6 +50,7 @@ Each layer measures a distinct dimension of structural advantage or constraint:
 - Gold: serving and final output tables for API/map.
 - Overlap across sources is expected in bronze; reconciliation, de-duplication, and harmonization are downstream silver/gold responsibilities.
 - Raw records should remain reproducible and lineage-preserving so formulas can be adjusted later without re-pulling source history.
+- Layer 2 mobility now persists raw ACS county flow rows in bronze (`layer2_acs_flows_raw`) and derived county flow summaries in silver (`layer2_county_general_flows`) for downstream scoring lineage.
 
 #### Layer 1: Employment Gravity
 
@@ -271,6 +272,7 @@ Where weights (w_i) are defined in the feature registry. Example for Employment 
 |--------|---------|-------------------------------|
 | Layer 1 base index (`economic_opportunity_index`) | `0.4 * local_strength + 0.6 * economic_accessibility_score` | Access to reachable high-wage jobs is treated as the stronger direct opportunity signal; local structure still matters but is lower weight. |
 | Layer 1 QWI blend | `0.85 * base_index + 0.15 * qwi_net_job_growth_score` when QWI exists | QWI adds labor-market dynamism but is noisier/more volatile, so it is a bounded adjustment rather than the dominant driver. |
+| Layer 2 final index (`mobility_optionality_index`) | `0.85 * multimodal_accessibility_score + 0.15 * general_flow_score` | Established transport-planning principle: combine potential access (network reachability) with observed residential movement dynamics (ACS flows) to avoid infrastructure-only bias. |
 | Layer 3 final index (`education_opportunity_index`) | `0.4 * school_supply_score + 0.6 * education_accessibility_composite` | Seats/supply alone is insufficient; practical access to quality schools carries more weight for household viability. |
 | Layer 3 accessibility composite | `0.5 * high_quality_access + 0.3 * prek_access + 0.2 * equity_score` | Prioritizes quality access first, then early-childhood access, with equity adjustment included but not dominant while tract equity inputs mature. |
 | Multi-year composition (`layer_overall_score`) | `0.50 level + 0.30 momentum + 0.20 stability` | Current conditions are primary, trend direction is secondary, and volatility moderates confidence without overwhelming level signal. |

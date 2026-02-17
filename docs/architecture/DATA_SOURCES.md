@@ -287,6 +287,29 @@ feed = gk.read_feed("https://www.mta.maryland.gov/gtfs/marc-train", dist_units="
 
 ---
 
+### 2.4 Census ACS Flows (Layer 2 general movement dynamics)
+**Agency:** US Census Bureau
+**Source:** ACS Flows API
+**URL:** https://api.census.gov/data/2022/acs/flows
+**Geography:** County reference geography (`GEOID1`) crossed with second geographies (`GEOID2`)
+**Cadence:** Annual (lagged)
+**Key Fields Used:**
+- `GEOID1`, `GEOID2`, `SUMLEV2`
+- `MOVEDIN`, `MOVEDOUT`, `NONMOVERS`
+- `FROMDIFFCTY`, `FROMDIFFSTATE`, `FROMABROAD`
+- `TODIFFCTY`, `TODIFFSTATE`
+
+**Runtime role (current):**
+- Raw ACS flow API rows land in Databricks bronze table `bronze.layer2_acs_flows_raw`.
+- Layer 2 derives county movement summaries in `silver.layer2_county_general_flows`.
+- `general_flow_score` is used as a bounded adjustment to `mobility_optionality_index`
+  alongside multimodal accessibility.
+- If county-level outbound fields are missing for a given ACS flow year, Layer 2 uses
+  inflow-rate ranking only (explicit fallback, logged in method metadata).
+- Work-commute OD detail remains in Layer 1 (LODES OD), not Layer 2.
+
+---
+
 ## Layer 3: School System Trajectory
 
 ### 3.1 Maryland State Department of Education
