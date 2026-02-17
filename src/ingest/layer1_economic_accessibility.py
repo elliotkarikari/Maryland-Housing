@@ -635,7 +635,9 @@ def fetch_lodes_od_county_flows(od_year: int) -> pd.DataFrame:
         chunk["working_age_workers"] = chunk["sa02"] + chunk["sa03"]
         chunk["high_wage_workers"] = chunk["se03"]
 
-        resident = chunk.groupby("h_county")[["s000", "working_age_workers", "high_wage_workers"]].sum()
+        resident = chunk.groupby("h_county")[
+            ["s000", "working_age_workers", "high_wage_workers"]
+        ].sum()
         for fips_code, vals in resident.iterrows():
             metrics = county_metrics.setdefault(fips_code, _empty_metrics())
             metrics["od_resident_workers"] += int(vals["s000"])
@@ -684,7 +686,8 @@ def fetch_lodes_od_county_flows(od_year: int) -> pd.DataFrame:
                 "fips_code": fips_code,
                 "od_year": int(od_year),
                 **metrics,
-                "od_net_commuter_flow": metrics["od_inbound_workers"] - metrics["od_outbound_workers"],
+                "od_net_commuter_flow": metrics["od_inbound_workers"]
+                - metrics["od_outbound_workers"],
                 "od_local_capture_rate": (
                     metrics["od_live_work_same_county"] / resident if resident > 0 else np.nan
                 ),
@@ -696,9 +699,7 @@ def fetch_lodes_od_county_flows(od_year: int) -> pd.DataFrame:
                     if resident_working_age > 0
                     else np.nan
                 ),
-                "od_high_wage_share": (
-                    resident_high_wage / resident if resident > 0 else np.nan
-                ),
+                "od_high_wage_share": (resident_high_wage / resident if resident > 0 else np.nan),
                 "od_high_wage_local_capture_rate": (
                     metrics["od_high_wage_live_work_same_county"] / resident_high_wage
                     if resident_high_wage > 0
@@ -1261,9 +1262,7 @@ def _compute_accessibility_network(
     transit_df["to_id"] = transit_df["to_id"].astype(str)
 
     od = drive_df.merge(transit_df, on=["from_id", "to_id"], how="outer")
-    od["travel_time"] = od[["travel_time_drive", "travel_time_transit"]].min(
-        axis=1, skipna=True
-    )
+    od["travel_time"] = od[["travel_time_drive", "travel_time_transit"]].min(axis=1, skipna=True)
     od = od.drop(columns=["travel_time_drive", "travel_time_transit"])
 
     jobs_lookup = (
@@ -1279,17 +1278,25 @@ def _compute_accessibility_network(
     within_30 = od[(od["travel_time"].notna()) & (od["travel_time"] <= threshold_30_min)]
     within_45 = od[(od["travel_time"].notna()) & (od["travel_time"] <= threshold_45_min)]
 
-    agg_30 = within_30.groupby("from_id")[["high_wage_jobs", "total_jobs"]].sum().rename(
-        columns={
-            "high_wage_jobs": "high_wage_jobs_accessible_30min",
-            "total_jobs": "total_jobs_accessible_30min",
-        }
+    agg_30 = (
+        within_30.groupby("from_id")[["high_wage_jobs", "total_jobs"]]
+        .sum()
+        .rename(
+            columns={
+                "high_wage_jobs": "high_wage_jobs_accessible_30min",
+                "total_jobs": "total_jobs_accessible_30min",
+            }
+        )
     )
-    agg_45 = within_45.groupby("from_id")[["high_wage_jobs", "total_jobs"]].sum().rename(
-        columns={
-            "high_wage_jobs": "high_wage_jobs_accessible_45min",
-            "total_jobs": "total_jobs_accessible_45min",
-        }
+    agg_45 = (
+        within_45.groupby("from_id")[["high_wage_jobs", "total_jobs"]]
+        .sum()
+        .rename(
+            columns={
+                "high_wage_jobs": "high_wage_jobs_accessible_45min",
+                "total_jobs": "total_jobs_accessible_45min",
+            }
+        )
     )
 
     enriched = df.merge(
@@ -2486,12 +2493,16 @@ def run_layer1_v2_ingestion(
                             or settings.LAYER1_THRESHOLD_30_MINUTES,
                             "threshold_45_min": threshold_45_min
                             or settings.LAYER1_THRESHOLD_45_MINUTES,
-                            "proxy_distance_30_km": proxy_distance_30_km
-                            if proxy_distance_30_km is not None
-                            else settings.LAYER1_PROXY_DISTANCE_30_KM,
-                            "proxy_distance_45_km": proxy_distance_45_km
-                            if proxy_distance_45_km is not None
-                            else settings.LAYER1_PROXY_DISTANCE_45_KM,
+                            "proxy_distance_30_km": (
+                                proxy_distance_30_km
+                                if proxy_distance_30_km is not None
+                                else settings.LAYER1_PROXY_DISTANCE_30_KM
+                            ),
+                            "proxy_distance_45_km": (
+                                proxy_distance_45_km
+                                if proxy_distance_45_km is not None
+                                else settings.LAYER1_PROXY_DISTANCE_45_KM
+                            ),
                             "tracts": len(tract_df),
                             "counties": len(county_df),
                             "total_jobs": int(tract_df["total_jobs"].sum()),

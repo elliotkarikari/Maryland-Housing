@@ -115,9 +115,7 @@ def test_compute_sector_diversity_adds_stable_sector_share():
     assert out.loc[0, "stable_sector_share"] == pytest.approx(0.35)
 
 
-def test_fetch_lodes_od_county_flows_derives_working_age_and_capture_metrics(
-    tmp_path, monkeypatch
-):
+def test_fetch_lodes_od_county_flows_derives_working_age_and_capture_metrics(tmp_path, monkeypatch):
     od_csv = tmp_path / "od.csv"
     od_csv.write_text(
         "\n".join(
