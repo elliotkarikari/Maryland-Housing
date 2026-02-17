@@ -32,6 +32,11 @@ When adding or refreshing a data source:
 - If the data feeds into scoring, update `docs/METHODOLOGY.md` or `docs/ARCHITECTURE.md` as needed.
 - Run the related `make ingest-layerX` and `make pipeline` to validate outputs.
 
+When changing scoring formulas or weights:
+- Update `docs/METHODOLOGY.md` in the same PR with exact old/new weights and explicit rationale.
+- Add a short validation note (distribution shift, rank stability, sensitivity impact).
+- Keep raw pulls in bronze unchanged; apply weighting/derivation changes downstream in silver/gold.
+
 When the ingest schema changes:
 - Add a migration in `migrations/` to align table columns/precision with the new dataframe.
 - Apply the migration before re-running `make ingest-all`.

@@ -24,6 +24,11 @@ def test_table_name_databricks_routes_by_medallion(monkeypatch):
         dbcfg.table_name("final_synthesis_current")
         == "`maryland_atlas`.`gold`.`final_synthesis_current`"
     )
+    # Unknown/new pull tables default to bronze.
+    assert (
+        dbcfg.table_name("future_county_pull_raw")
+        == "`maryland_atlas`.`bronze`.`future_county_pull_raw`"
+    )
 
 
 def test_table_name_databricks_respects_explicit_schema(monkeypatch):

@@ -420,6 +420,8 @@ Within catalog `maryland_atlas`, the operational schema layout is:
 
 Current runtime default is `DATABRICKS_SCHEMA=gold`, so unqualified table reads/writes
 resolve to gold for API + pipeline continuity.
+Routing rule for new tables: unknown/new pull tables default to bronze unless explicitly
+mapped to silver/gold.
 
 ### Core Tables
 

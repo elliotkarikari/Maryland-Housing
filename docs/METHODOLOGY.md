@@ -3,7 +3,7 @@
 **Maryland Growth & Family Viability Atlas**
 
 **Version:** 1.1
-**Last Updated:** 2026-02-16
+**Last Updated:** 2026-02-17
 
 ---
 
@@ -43,6 +43,13 @@ Each layer measures a distinct dimension of structural advantage or constraint:
 ### Stage 1: Data Ingestion
 
 **Principle:** Only real, verifiable open data sources. No synthetic data, ever.
+
+**Raw-first medallion rule (Databricks):**
+- Bronze: raw source pulls only (county + tract pulls land here first).
+- Silver: cleaned/derived intermediate transforms.
+- Gold: serving and final output tables for API/map.
+- Overlap across sources is expected in bronze; reconciliation, de-duplication, and harmonization are downstream silver/gold responsibilities.
+- Raw records should remain reproducible and lineage-preserving so formulas can be adjusted later without re-pulling source history.
 
 #### Layer 1: Employment Gravity
 
@@ -250,6 +257,41 @@ Where weights (w_i) are defined in the feature registry. Example for Employment 
 - sector_diversity_entropy: weight = 1.5
 - stable_sector_share: weight = 1.0
 - federal_spending_stability: weight = 0.8
+
+**How current weights were chosen (important):**
+- Current weights are expert-judgment priors, not ML-estimated coefficients.
+- They were chosen to satisfy three constraints:
+  - interpretability for policy users,
+  - stability under missing/partial yearly coverage,
+  - alignment with family-viability theory (access/opportunity signals weighted higher than diagnostics).
+
+**Primary formula weights and rationale (current baseline):**
+
+| Formula | Weights | Why these weights were chosen |
+|--------|---------|-------------------------------|
+| Layer 1 base index (`economic_opportunity_index`) | `0.4 * local_strength + 0.6 * economic_accessibility_score` | Access to reachable high-wage jobs is treated as the stronger direct opportunity signal; local structure still matters but is lower weight. |
+| Layer 1 QWI blend | `0.85 * base_index + 0.15 * qwi_net_job_growth_score` when QWI exists | QWI adds labor-market dynamism but is noisier/more volatile, so it is a bounded adjustment rather than the dominant driver. |
+| Layer 3 final index (`education_opportunity_index`) | `0.4 * school_supply_score + 0.6 * education_accessibility_composite` | Seats/supply alone is insufficient; practical access to quality schools carries more weight for household viability. |
+| Layer 3 accessibility composite | `0.5 * high_quality_access + 0.3 * prek_access + 0.2 * equity_score` | Prioritizes quality access first, then early-childhood access, with equity adjustment included but not dominant while tract equity inputs mature. |
+| Multi-year composition (`layer_overall_score`) | `0.50 level + 0.30 momentum + 0.20 stability` | Current conditions are primary, trend direction is secondary, and volatility moderates confidence without overwhelming level signal. |
+
+**Weight governance rule (required for any change):**
+- Any weight/formula change must update this document in the same PR with:
+  - exact old/new values,
+  - one-paragraph rationale,
+  - expected directional impact,
+  - validation evidence (distribution shift, rank stability, and sensitivity summary).
+- Changes are invalid if raw provenance is not preserved in bronze.
+- Source-of-truth code references must be included:
+  - `src/ingest/layer1_economic_accessibility.py`
+  - `src/ingest/layer3_education_accessibility.py`
+  - `src/processing/feature_registry.py`
+  - `src/processing/multiyear_scoring.py`
+
+**AI-assisted weighting (future, controlled):**
+- AI may be used to propose candidate weights and interactions.
+- AI-proposed weights must remain reviewable, reproducible, and rejected by default until validated on held-out years and fairness checks.
+- Raw pulls stay unchanged in bronze; experimentation happens downstream in silver/gold derivations.
 
 **Where weights live (source of truth):**
 - Feature weights: `src/processing/feature_registry.py`

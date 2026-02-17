@@ -161,17 +161,21 @@ def _classify_target_schema(
     if layout == "serving-first":
         return gold_schema
 
-    if object_name in BRONZE_TABLES:
+    if object_name in GOLD_TABLES:
+        return gold_schema
+
+    if (
+        object_name in BRONZE_TABLES
+        or object_name.endswith("_raw")
+        or object_name.startswith("raw_")
+    ):
         return bronze_schema
 
     if object_name in SILVER_TABLES or object_name.endswith("_tract"):
         return silver_schema
 
-    if object_name in GOLD_TABLES:
-        return gold_schema
-
-    # Conservative fallback: unknown objects stay in gold.
-    return gold_schema
+    # Unknown/new objects default to bronze so raw pulls land there first.
+    return bronze_schema
 
 
 def _create_schema_if_missing(conn, catalog: str, schema: str) -> None:

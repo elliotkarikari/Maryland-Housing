@@ -95,13 +95,14 @@ def table_schema_for(table_name: str) -> str:
         # Caller provided explicit schema/cross-catalog reference.
         return ""
 
-    if name in BRONZE_TABLES:
+    if name in GOLD_TABLES:
+        return settings.DATABRICKS_GOLD_SCHEMA
+    if name in BRONZE_TABLES or name.endswith("_raw") or name.startswith("raw_"):
         return settings.DATABRICKS_BRONZE_SCHEMA
     if name in SILVER_TABLES or name.endswith("_tract"):
         return settings.DATABRICKS_SILVER_SCHEMA
-    if name in GOLD_TABLES:
-        return settings.DATABRICKS_GOLD_SCHEMA
-    return settings.DATABRICKS_GOLD_SCHEMA
+    # Default unknown/new tables to bronze so fresh data pulls land in raw.
+    return settings.DATABRICKS_BRONZE_SCHEMA
 
 
 def qualified_table_name(table_name: str) -> str:
