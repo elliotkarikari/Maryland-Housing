@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from src.ingest.layer1_economic_accessibility import (
+    _resolve_table_name,
     aggregate_to_county,
     compute_economic_accessibility,
     compute_sector_diversity,
@@ -164,3 +165,13 @@ def test_fetch_lodes_od_county_flows_derives_working_age_and_capture_metrics(tmp
     assert row_24003["od_outbound_workers"] == 7
     assert row_24003["od_inbound_workers"] == 5
     assert row_24003["od_net_commuter_flow"] == -2
+
+
+def test_resolve_table_name_allows_qualified_databricks_identifiers():
+    assert _resolve_table_name("layer1_lodes_od_raw") == "layer1_lodes_od_raw"
+    assert _resolve_table_name("bronze.layer1_lodes_od_raw") == "bronze.layer1_lodes_od_raw"
+    assert (
+        _resolve_table_name("maryland_atlas.bronze.layer1_lodes_od_raw")
+        == "maryland_atlas.bronze.layer1_lodes_od_raw"
+    )
+    assert _resolve_table_name("bronze.layer1_lodes_od_raw;DROP TABLE x") is None

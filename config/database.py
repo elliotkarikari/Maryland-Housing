@@ -4,8 +4,9 @@ SQLAlchemy + PostGIS configuration
 """
 
 import logging
+import re
 from contextlib import contextmanager
-from typing import Any, Generator, Optional
+from typing import Any, Dict, Generator, Optional, Set
 from urllib.parse import quote_plus
 
 from geoalchemy2 import Geometry
@@ -21,9 +22,133 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+BRONZE_TABLES: Set[str] = {
+    "layer1_lodes_od_raw",
+    "layer1_lodes2_od_raw",
+    "education_msde_data",
+    "education_schooldigger_data",
+    "education_schooldigger_quarantine",
+}
+
+SILVER_TABLES: Set[str] = {
+    "education_school_directory",
+    "layer1_economic_opportunity_tract",
+    "layer2_mobility_accessibility_tract",
+    "layer3_education_accessibility_tract",
+    "layer4_housing_affordability_tract",
+    "layer5_demographic_equity_tract",
+    "layer6_risk_vulnerability_tract",
+}
+
+GOLD_TABLES: Set[str] = {
+    "md_counties",
+    "data_refresh_log",
+    "layer1_employment_gravity",
+    "layer2_mobility_optionality",
+    "layer3_school_trajectory",
+    "layer4_housing_elasticity",
+    "layer5_demographic_momentum",
+    "layer6_risk_drag",
+    "policy_persistence",
+    "layer_scores",
+    "county_classifications",
+    "export_versions",
+    "layer_timeseries_features",
+    "layer_summary_scores",
+    "final_synthesis_current",
+    "normalized_features",
+    "ai_document",
+    "ai_extraction",
+    "ai_evidence_link",
+    "schema_migrations",
+    "v_latest_synthesis",
+    "v_timeseries_summary",
+}
+
 
 def _normalized_backend() -> str:
     return (settings.DATA_BACKEND or "databricks").strip().lower()
+
+
+def _quote_identifier(identifier: str) -> str:
+    return f"`{identifier}`"
+
+
+def _assert_safe_identifier(identifier: str) -> None:
+    if not SAFE_IDENTIFIER_RE.match(identifier):
+        raise ValueError(f"Unsafe SQL identifier: {identifier}")
+
+
+def _normalize_table_identifier(table_name: str) -> str:
+    return (table_name or "").strip()
+
+
+def table_schema_for(table_name: str) -> str:
+    """
+    Resolve Databricks medallion schema for a logical table name.
+    Unknown tables default to gold.
+    """
+    name = _normalize_table_identifier(table_name)
+    if "." in name:
+        # Caller provided explicit schema/cross-catalog reference.
+        return ""
+
+    if name in BRONZE_TABLES:
+        return settings.DATABRICKS_BRONZE_SCHEMA
+    if name in SILVER_TABLES or name.endswith("_tract"):
+        return settings.DATABRICKS_SILVER_SCHEMA
+    if name in GOLD_TABLES:
+        return settings.DATABRICKS_GOLD_SCHEMA
+    return settings.DATABRICKS_GOLD_SCHEMA
+
+
+def qualified_table_name(table_name: str) -> str:
+    """
+    Return a SQL-safe table reference for current backend.
+
+    - Postgres: returns logical table name unchanged.
+    - Databricks:
+      - unqualified table names are routed to bronze/silver/gold schemas
+      - explicit schema.table or catalog.schema.table are preserved
+    """
+    raw = _normalize_table_identifier(table_name)
+    if not raw:
+        raise ValueError("table_name must not be empty")
+
+    if DATABASE_BACKEND != "databricks":
+        return raw
+
+    explicit_parts = raw.split(".")
+    if len(explicit_parts) > 1:
+        if len(explicit_parts) not in (2, 3):
+            raise ValueError(f"Invalid table identifier: {raw}")
+        for part in explicit_parts:
+            _assert_safe_identifier(part)
+        if len(explicit_parts) == 2:
+            schema, table = explicit_parts
+            catalog = settings.DATABRICKS_CATALOG
+            _assert_safe_identifier(catalog)
+            return ".".join(
+                (_quote_identifier(catalog), _quote_identifier(schema), _quote_identifier(table))
+            )
+        catalog, schema, table = explicit_parts
+        return ".".join(
+            (_quote_identifier(catalog), _quote_identifier(schema), _quote_identifier(table))
+        )
+
+    _assert_safe_identifier(raw)
+    schema = table_schema_for(raw)
+    catalog = settings.DATABRICKS_CATALOG
+    _assert_safe_identifier(schema)
+    _assert_safe_identifier(catalog)
+    return ".".join((_quote_identifier(catalog), _quote_identifier(schema), _quote_identifier(raw)))
+
+
+def table_name(table_name: str) -> str:
+    """Alias for `qualified_table_name` for concise call sites."""
+    return qualified_table_name(table_name)
 
 
 def _build_databricks_url() -> str:
@@ -180,7 +305,7 @@ def test_connection() -> bool:
                     )
                 )
                 if result.scalar() == 1:
-                    result = db.execute(text("SELECT COUNT(*) FROM md_counties"))
+                    result = db.execute(text(f"SELECT COUNT(*) FROM {table_name('md_counties')}"))
                     count = result.scalar()
                     logger.info(f"Found {count} Maryland counties in database")
             else:
@@ -313,8 +438,8 @@ def log_refresh(
             from datetime import datetime
 
             sql = text(
-                """
-                INSERT INTO data_refresh_log (
+                f"""
+                INSERT INTO {table_name('data_refresh_log')} (
                     layer_name, data_source, refresh_date, status,
                     records_processed, records_inserted, records_updated,
                     error_message, metadata
@@ -357,14 +482,16 @@ def log_refresh(
 def get_county_fips_list() -> list[str]:
     """Get list of all Maryland county FIPS codes from database."""
     with get_db() as db:
-        result = db.execute(text("SELECT fips_code FROM md_counties ORDER BY fips_code"))
+        result = db.execute(
+            text(f"SELECT fips_code FROM {table_name('md_counties')} ORDER BY fips_code")
+        )
         return [row[0] for row in result]
 
 
 def get_latest_data_year(layer_table: str) -> int:
     """Get the most recent data year for a given layer table."""
     with get_db() as db:
-        result = db.execute(text(f"SELECT MAX(data_year) FROM {layer_table}"))
+        result = db.execute(text(f"SELECT MAX(data_year) FROM {table_name(layer_table)}"))
         year = result.scalar()
         return int(year) if year is not None else 0
 

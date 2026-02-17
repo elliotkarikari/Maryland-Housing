@@ -49,7 +49,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.db_bulk import execute_batch
@@ -59,6 +59,9 @@ from src.utils.year_policy import current_year, lodes_year_for_data_year
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+L2_TRACT_TABLE = db_table_name("layer2_mobility_accessibility_tract")
+L2_COUNTY_TABLE = db_table_name("layer2_mobility_optionality")
 
 # =============================================================================
 # CONFIGURATION
@@ -1076,8 +1079,8 @@ def store_tract_accessibility(
         # Clear existing data for this year
         db.execute(
             text(
-                """
-            DELETE FROM layer2_mobility_accessibility_tract
+                f"""
+            DELETE FROM {L2_TRACT_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1086,8 +1089,8 @@ def store_tract_accessibility(
 
         # Insert new records
         insert_sql = text(
-            """
-                INSERT INTO layer2_mobility_accessibility_tract (
+            f"""
+                INSERT INTO {L2_TRACT_TABLE} (
                     tract_geoid, fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
                     jobs_accessible_walk_30min, jobs_accessible_bike_30min,
@@ -1170,8 +1173,8 @@ def store_county_accessibility(
 
     with get_db() as db:
         insert_sql = text(
-            """
-                INSERT INTO layer2_mobility_optionality (
+            f"""
+                INSERT INTO {L2_COUNTY_TABLE} (
                     fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
                     jobs_accessible_walk_30min, jobs_accessible_bike_30min,
@@ -1197,8 +1200,8 @@ def store_county_accessibility(
         )
 
         upsert_sql = text(
-            """
-                INSERT INTO layer2_mobility_optionality (
+            f"""
+                INSERT INTO {L2_COUNTY_TABLE} (
                     fips_code, data_year,
                     jobs_accessible_transit_45min, jobs_accessible_transit_30min,
                     jobs_accessible_walk_30min, jobs_accessible_bike_30min,
@@ -1274,8 +1277,8 @@ def store_county_accessibility(
         if use_databricks_backend:
             db.execute(
                 text(
-                    """
-                    DELETE FROM layer2_mobility_optionality
+                    f"""
+                    DELETE FROM {L2_COUNTY_TABLE}
                     WHERE data_year = :data_year
                     """
                 ),

@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
+.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all process pipeline export serve frontend test lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -16,6 +16,7 @@ help:
 	@echo "  make init-db        - Initialize database with migrations"
 	@echo "  make db-setup       - Initialize PostgreSQL/PostGIS database"
 	@echo "  make db-migrate     - Run database migrations"
+	@echo "  make databricks-medallion - Reorganize Databricks default schema into gold"
 	@echo "  make ingest-all     - Run all data ingestion pipelines"
 	@echo "  make ingest-layer1  - Ingest Economic Opportunity (v2) data"
 	@echo "  make ingest-layer2  - Ingest Mobility Accessibility (v2) data"
@@ -55,6 +56,10 @@ db-setup:
 
 db-migrate:
 	$(PYTHON) scripts/run_sql_migrations.py
+
+databricks-medallion:
+	@echo "Reorganizing Databricks objects to bronze/silver/gold schemas..."
+	set -a; . ./.env; set +a; $(PYTHON) scripts/reorganize_databricks_medallion.py --apply --layout layered --skip-existing-target
 
 ingest-all:
 	@echo "Running all data ingestion pipelines..."

@@ -196,7 +196,9 @@ https://lehd.ces.census.gov/doc/help/onthemap/LODESTechDoc.pdf
 - `LODES_OD_DATA_PATH` (preferred local file path), or
 - `LODES_OD_DATA_URL` (optional remote fetch),
 - `LODES_OD_CHUNK_SIZE` for large-file chunked aggregation.
-- `LODES_OD_TABLE` for Databricks raw landing table (default: `layer1_lodes_od_raw`).
+- `LODES_OD_TABLE` for Databricks raw landing table (default: `bronze.layer1_lodes_od_raw`).
+  - Supports `table`, `schema.table`, or `catalog.schema.table` format for medallion layouts
+    (example: `bronze.layer1_lodes_od_raw`).
 
 **Operational note:**
 - For full-row lineage loads, use `scripts/load_lodes_od_to_databricks.py` to land the OD CSV

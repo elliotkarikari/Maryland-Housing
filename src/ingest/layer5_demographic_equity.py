@@ -41,7 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.db_bulk import execute_batch
@@ -51,6 +51,8 @@ from src.utils.year_policy import acs_geography_year, layer5_default_data_year
 
 logger = get_logger(__name__)
 settings = get_settings()
+L5_TRACT_TABLE = db_table_name("layer5_demographic_equity_tract")
+L5_COUNTY_TABLE = db_table_name("layer5_demographic_momentum")
 
 # =============================================================================
 # CONFIGURATION
@@ -1060,8 +1062,8 @@ def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: i
         # Clear existing data
         db.execute(
             text(
-                """
-            DELETE FROM layer5_demographic_equity_tract
+                f"""
+            DELETE FROM {L5_TRACT_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1069,8 +1071,8 @@ def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: i
         )
 
         insert_sql = text(
-            """
-                    INSERT INTO layer5_demographic_equity_tract (
+            f"""
+                    INSERT INTO {L5_TRACT_TABLE} (
                         tract_geoid, fips_code, data_year,
                         total_population, pop_under_18, pop_18_24, pop_25_44, pop_45_64, pop_65_plus,
                         working_age_pct,
@@ -1169,8 +1171,8 @@ def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: 
 
     with get_db() as db:
         insert_sql = text(
-            """
-            INSERT INTO layer5_demographic_momentum (
+            f"""
+            INSERT INTO {L5_COUNTY_TABLE} (
                 fips_code, data_year,
                 pop_total, pop_age_25_44, pop_age_25_44_pct,
                 households_total, households_family, households_family_with_children,
@@ -1201,8 +1203,8 @@ def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: 
         )
 
         upsert_sql = text(
-            """
-            INSERT INTO layer5_demographic_momentum (
+            f"""
+            INSERT INTO {L5_COUNTY_TABLE} (
                 fips_code, data_year,
                 pop_total, pop_age_25_44, pop_age_25_44_pct,
                 households_total, households_family, households_family_with_children,
@@ -1253,7 +1255,7 @@ def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: 
                 outflow_rate = EXCLUDED.outflow_rate,
                 migration_dynamics_score = EXCLUDED.migration_dynamics_score,
                 demographic_opportunity_index = EXCLUDED.demographic_opportunity_index,
-                demographic_momentum_score = COALESCE(layer5_demographic_momentum.demographic_momentum_score, EXCLUDED.demographic_momentum_score),
+                demographic_momentum_score = COALESCE({L5_COUNTY_TABLE}.demographic_momentum_score, EXCLUDED.demographic_momentum_score),
                 acs_year = EXCLUDED.acs_year,
                 demographic_version = 'v2-equity',
                 updated_at = CURRENT_TIMESTAMP
@@ -1315,8 +1317,8 @@ def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: 
         if use_databricks_backend:
             db.execute(
                 text(
-                    """
-                    DELETE FROM layer5_demographic_momentum
+                    f"""
+                    DELETE FROM {L5_COUNTY_TABLE}
                     WHERE data_year = :data_year
                     """
                 ),

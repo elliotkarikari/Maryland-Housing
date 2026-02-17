@@ -33,7 +33,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.db_bulk import execute_batch
@@ -42,6 +42,8 @@ from src.utils.prediction_utils import apply_predictions_to_table
 
 logger = get_logger(__name__)
 settings = get_settings()
+L4_TRACT_TABLE = db_table_name("layer4_housing_affordability_tract")
+L4_COUNTY_TABLE = db_table_name("layer4_housing_elasticity")
 
 # =============================================================================
 # CONSTANTS
@@ -1286,8 +1288,8 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
         # Clear existing data for this year
         db.execute(
             text(
-                """
-            DELETE FROM layer4_housing_affordability_tract
+                f"""
+            DELETE FROM {L4_TRACT_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1296,8 +1298,8 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
 
         # Insert new records
         insert_sql = text(
-            """
-                INSERT INTO layer4_housing_affordability_tract (
+            f"""
+                INSERT INTO {L4_TRACT_TABLE} (
                     tract_geoid, fips_code, data_year,
                     total_housing_units, occupied_units, owner_occupied_units, renter_occupied_units,
                     vacant_units, vacancy_rate,
@@ -1437,9 +1439,9 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
         elasticity_scores = {}
         result = db.execute(
             text(
-                """
+                f"""
             SELECT fips_code, housing_elasticity_index
-            FROM layer4_housing_elasticity
+            FROM {L4_COUNTY_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1452,8 +1454,8 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
                 elasticity_scores[fips_code] = float(v1_score)
 
         update_sql = text(
-            """
-                UPDATE layer4_housing_elasticity
+            f"""
+                UPDATE {L4_COUNTY_TABLE}
                 SET
                     total_households = :households,
                     cost_burdened_households = :burdened,
@@ -1656,9 +1658,7 @@ def run_layer4_v2_ingestion(
     latest_county_year: Optional[int] = None
     try:
         with get_db() as db:
-            max_year = db.execute(
-                text("SELECT MAX(data_year) FROM layer4_housing_elasticity")
-            ).scalar()
+            max_year = db.execute(text(f"SELECT MAX(data_year) FROM {L4_COUNTY_TABLE}")).scalar()
             if max_year is not None:
                 latest_county_year = int(max_year)
     except Exception as e:

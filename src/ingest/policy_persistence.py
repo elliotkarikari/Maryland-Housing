@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import fetch_usaspending_county
 from src.utils.logging import get_logger
@@ -134,13 +134,13 @@ def fetch_ai_cip_follow_through() -> pd.DataFrame:
     with get_db() as db:
         # Query ai_evidence_link for CIP follow-through claims
         query = text(
-            """
+            f"""
             SELECT
                 ael.geoid as fips_code,
                 AVG(ael.claim_value) as cip_follow_through_rate,
                 COUNT(*) as evidence_count
-            FROM ai_evidence_link ael
-            JOIN ai_extraction ae ON ael.extraction_id = ae.id
+            FROM {table_name('ai_evidence_link')} ael
+            JOIN {table_name('ai_extraction')} ae ON ael.extraction_id = ae.id
             WHERE ael.claim_type = 'cip_follow_through_rate'
                 AND ae.validation_status = 'valid'
                 AND ael.claim_value IS NOT NULL
@@ -281,8 +281,8 @@ def merge_and_store_policy_persistence(
     use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
     with get_db() as db:
         insert_sql = text(
-            """
-            INSERT INTO policy_persistence (
+            f"""
+            INSERT INTO {table_name('policy_persistence')} (
                 fips_code, data_year,
                 federal_awards_yoy_consistency,
                 cip_follow_through_rate,
@@ -298,8 +298,8 @@ def merge_and_store_policy_persistence(
         """
         )
         upsert_sql = text(
-            """
-            INSERT INTO policy_persistence (
+            f"""
+            INSERT INTO {table_name('policy_persistence')} (
                 fips_code, data_year,
                 federal_awards_yoy_consistency,
                 cip_follow_through_rate,
@@ -325,8 +325,8 @@ def merge_and_store_policy_persistence(
         if use_databricks_backend:
             db.execute(
                 text(
-                    """
-                    DELETE FROM policy_persistence
+                    f"""
+                    DELETE FROM {table_name('policy_persistence')}
                     WHERE data_year = :data_year
                     """
                 ),

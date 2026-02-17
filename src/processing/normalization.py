@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
 from src.processing.feature_registry import (
     ALL_FEATURES,
@@ -198,7 +198,7 @@ def fetch_layer_data(layer_name: str, data_year: Optional[int] = None) -> pd.Dat
         return pd.DataFrame()
 
     # Get source table (should be same for all features in a layer)
-    source_table = features[0].source_table
+    source_table = table_name(features[0].source_table)
 
     with get_db() as db:
         if data_year:
@@ -330,8 +330,8 @@ def store_normalized_features(normalized_layers: Dict[str, pd.DataFrame], data_y
     with get_db() as db:
         # Create normalized_features table if it doesn't exist
         create_table_sql = text(
-            """
-            CREATE TABLE IF NOT EXISTS normalized_features (
+            f"""
+            CREATE TABLE IF NOT EXISTS {table_name('normalized_features')} (
                 id SERIAL PRIMARY KEY,
                 fips_code VARCHAR(5) NOT NULL,
                 data_year INTEGER NOT NULL,
@@ -358,8 +358,8 @@ def store_normalized_features(normalized_layers: Dict[str, pd.DataFrame], data_y
 
                     if pd.notna(normalized_value):
                         insert_sql = text(
-                            """
-                            INSERT INTO normalized_features (
+                            f"""
+                            INSERT INTO {table_name('normalized_features')} (
                                 fips_code, data_year, feature_name, normalized_value
                             ) VALUES (
                                 :fips_code, :data_year, :feature_name, :normalized_value

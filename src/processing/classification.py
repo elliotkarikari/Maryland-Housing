@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
 from src.utils.logging import get_logger
 
@@ -291,9 +291,9 @@ def classify_all_counties(layer_scores_df: pd.DataFrame, data_year: int) -> pd.D
     # Fetch policy persistence scores
     with get_db() as db:
         policy_query = text(
-            """
+            f"""
             SELECT fips_code, confidence_score
-            FROM policy_persistence
+            FROM {table_name('policy_persistence')}
             WHERE data_year = :data_year
         """
         )
@@ -405,8 +405,8 @@ def store_classifications(classifications_df: pd.DataFrame):
     with get_db() as db:
         for _, row in classifications_df.iterrows():
             sql = text(
-                """
-                INSERT INTO county_classifications (
+                f"""
+                INSERT INTO {table_name('county_classifications')} (
                     fips_code, data_year, directional_class, composite_score,
                     confidence_class, synthesis_grouping, primary_strengths, primary_weaknesses,
                     key_trends, classification_method, version

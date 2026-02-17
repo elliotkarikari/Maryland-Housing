@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
 from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
@@ -53,7 +53,7 @@ def load_layer_summary_scores(as_of_year: int = 2025) -> pd.DataFrame:
 
     with get_db() as db:
         query = text(
-            """
+            f"""
             SELECT
                 geoid,
                 layer_name,
@@ -63,7 +63,7 @@ def load_layer_summary_scores(as_of_year: int = 2025) -> pd.DataFrame:
                 has_stability,
                 coverage_years,
                 missingness_penalty
-            FROM layer_summary_scores
+            FROM {table_name('layer_summary_scores')}
             WHERE as_of_year = :as_of_year
             ORDER BY geoid, layer_name
         """
@@ -379,12 +379,12 @@ def store_final_synthesis(df: pd.DataFrame):
 
     with get_db() as db:
         # Delete existing records
-        db.execute(text("DELETE FROM final_synthesis_current"))
+        db.execute(text(f"DELETE FROM {table_name('final_synthesis_current')}"))
 
         # Insert new records
         insert_sql = text(
-            """
-            INSERT INTO final_synthesis_current (
+            f"""
+            INSERT INTO {table_name('final_synthesis_current')} (
                 geoid, current_as_of_year,
                 final_grouping, directional_status, confidence_level,
                 uncertainty_level, uncertainty_reasons,

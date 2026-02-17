@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
 from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
@@ -115,7 +115,7 @@ def load_timeseries_features(as_of_year: int = 2025) -> pd.DataFrame:
 
     with get_db() as db:
         query = text(
-            """
+            f"""
             SELECT
                 geoid,
                 layer_name,
@@ -132,7 +132,7 @@ def load_timeseries_features(as_of_year: int = 2025) -> pd.DataFrame:
                 coverage_years,
                 min_year,
                 max_year
-            FROM layer_timeseries_features
+            FROM {table_name('layer_timeseries_features')}
             WHERE as_of_year = :as_of_year
             ORDER BY geoid, layer_name
         """
@@ -322,8 +322,8 @@ def store_layer_summary_scores(df: pd.DataFrame):
         # Delete existing scores for this as_of_year
         as_of_year = df["as_of_year"].iloc[0]
         delete_sql = text(
-            """
-            DELETE FROM layer_summary_scores
+            f"""
+            DELETE FROM {table_name('layer_summary_scores')}
             WHERE as_of_year = :as_of_year
         """
         )
@@ -331,8 +331,8 @@ def store_layer_summary_scores(df: pd.DataFrame):
 
         # Insert new scores
         insert_sql = text(
-            """
-            INSERT INTO layer_summary_scores (
+            f"""
+            INSERT INTO {table_name('layer_summary_scores')} (
                 geoid, layer_name, as_of_year,
                 layer_level_score, layer_momentum_score, layer_stability_score,
                 layer_overall_score,

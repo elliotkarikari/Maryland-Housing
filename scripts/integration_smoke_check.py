@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import DATABASE_BACKEND, get_db, test_connection
+from config.database import DATABASE_BACKEND, get_db, table_name, test_connection
 from config.settings import get_settings
 
 TIMEOUT_SECONDS = 30
@@ -97,9 +97,14 @@ def check_database_connection() -> CheckResult:
 def check_live_county_feed_tables() -> CheckResult:
     try:
         with get_db() as db:
-            county_count = int(db.execute(text("SELECT COUNT(*) FROM md_counties")).scalar() or 0)
+            county_count = int(
+                db.execute(text(f"SELECT COUNT(*) FROM {table_name('md_counties')}")).scalar() or 0
+            )
             synthesis_count = int(
-                db.execute(text("SELECT COUNT(*) FROM final_synthesis_current")).scalar() or 0
+                db.execute(
+                    text(f"SELECT COUNT(*) FROM {table_name('final_synthesis_current')}")
+                ).scalar()
+                or 0
             )
     except Exception as exc:
         return CheckResult(
@@ -126,7 +131,7 @@ def check_layer1_effective_coverage() -> CheckResult:
     try:
         with get_db() as db:
             latest_year = db.execute(
-                text("SELECT MAX(data_year) FROM layer1_employment_gravity")
+                text(f"SELECT MAX(data_year) FROM {table_name('layer1_employment_gravity')}")
             ).scalar()
             if latest_year is None:
                 return CheckResult(
@@ -143,7 +148,7 @@ def check_layer1_effective_coverage() -> CheckResult:
                         SUM(CASE WHEN economic_opportunity_index IS NOT NULL THEN 1 ELSE 0 END) AS observed_non_null,
                         SUM(CASE WHEN economic_opportunity_index_pred IS NOT NULL THEN 1 ELSE 0 END) AS pred_non_null,
                         SUM(CASE WHEN economic_opportunity_index_effective IS NOT NULL THEN 1 ELSE 0 END) AS effective_non_null
-                    FROM layer1_employment_gravity
+                    FROM {table_name('layer1_employment_gravity')}
                     WHERE data_year = :year
                     """
                 ),

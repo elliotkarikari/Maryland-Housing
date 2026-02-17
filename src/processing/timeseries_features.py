@@ -17,7 +17,7 @@ import pandas as pd
 from scipy import stats
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
 from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
@@ -143,7 +143,7 @@ def extract_timeseries_data(
         query = text(
             f"""
             SELECT data_year as year, {metric_column} as value
-            FROM {layer_table}
+            FROM {table_name(layer_table)}
             WHERE fips_code = :geoid
               AND data_year >= :min_year
               AND {metric_column} IS NOT NULL
@@ -280,8 +280,8 @@ def store_timeseries_features(features: List[Dict]):
         # Delete existing features for this as_of_year
         as_of_year = features[0]["as_of_year"]
         delete_sql = text(
-            """
-            DELETE FROM layer_timeseries_features
+            f"""
+            DELETE FROM {table_name('layer_timeseries_features')}
             WHERE as_of_year = :as_of_year
         """
         )
@@ -289,8 +289,8 @@ def store_timeseries_features(features: List[Dict]):
 
         # Insert new features
         insert_sql = text(
-            """
-            INSERT INTO layer_timeseries_features (
+            f"""
+            INSERT INTO {table_name('layer_timeseries_features')} (
                 geoid, layer_name, as_of_year,
                 level_latest, level_baseline,
                 momentum_slope, momentum_delta, momentum_percent_change, momentum_fit_quality,
@@ -384,7 +384,9 @@ def compute_all_timeseries_features(
 
     # Get all geoids
     with get_db() as db:
-        result = db.execute(text("SELECT fips_code FROM md_counties ORDER BY fips_code"))
+        result = db.execute(
+            text(f"SELECT fips_code FROM {table_name('md_counties')} ORDER BY fips_code")
+        )
         geoids = [row[0] for row in result.fetchall()]
 
     logger.info(f"Processing {len(geoids)} geographies across {len(layer_configs)} layers")

@@ -44,7 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
@@ -58,6 +58,9 @@ from src.utils.year_policy import (
 
 logger = get_logger(__name__)
 settings = get_settings()
+L3_SCHOOL_DIRECTORY_TABLE = db_table_name("education_school_directory")
+L3_TRACT_TABLE = db_table_name("layer3_education_accessibility_tract")
+L3_COUNTY_TABLE = db_table_name("layer3_school_trajectory")
 
 # =============================================================================
 # CONFIGURATION
@@ -239,9 +242,9 @@ def _generate_fallback_school_directory(year: int) -> pd.DataFrame:
     with get_db() as db:
         result = db.execute(
             text(
-                """
+                f"""
             SELECT fips_code, total_enrollment, schools_total
-            FROM layer3_school_trajectory
+            FROM {L3_COUNTY_TABLE}
             WHERE data_year = :year
         """
             ),
@@ -1073,8 +1076,8 @@ def store_school_directory(schools_df: pd.DataFrame, data_year: int):
         # Clear existing data for this year
         db.execute(
             text(
-                """
-            DELETE FROM education_school_directory
+                f"""
+            DELETE FROM {L3_SCHOOL_DIRECTORY_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1082,8 +1085,8 @@ def store_school_directory(schools_df: pd.DataFrame, data_year: int):
         )
 
         insert_sql = text(
-            """
-                    INSERT INTO education_school_directory (
+            f"""
+                    INSERT INTO {L3_SCHOOL_DIRECTORY_TABLE} (
                         nces_school_id, school_name, school_type, grade_low, grade_high,
                         fips_code, tract_geoid, latitude, longitude,
                         is_public, has_prek, total_enrollment,
@@ -1171,8 +1174,8 @@ def store_tract_education_accessibility(
         # Clear existing data for this year
         db.execute(
             text(
-                """
-            DELETE FROM layer3_education_accessibility_tract
+                f"""
+            DELETE FROM {L3_TRACT_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1180,8 +1183,8 @@ def store_tract_education_accessibility(
         )
 
         insert_sql = text(
-            """
-                    INSERT INTO layer3_education_accessibility_tract (
+            f"""
+                    INSERT INTO {L3_TRACT_TABLE} (
                         tract_geoid, fips_code, data_year,
                         school_age_pop_5_17, school_age_pop_under_5, tract_population,
                         total_schools_in_tract, has_prek_program,
@@ -1259,8 +1262,8 @@ def store_county_education_accessibility(
 
     with get_db() as db:
         insert_sql = text(
-            """
-            INSERT INTO layer3_school_trajectory (
+            f"""
+            INSERT INTO {L3_COUNTY_TABLE} (
                 fips_code, data_year,
                 total_schools, schools_with_prek,
                 high_quality_schools_count, top_quartile_schools_count,
@@ -1289,8 +1292,8 @@ def store_county_education_accessibility(
         )
 
         upsert_sql = text(
-            """
-            INSERT INTO layer3_school_trajectory (
+            f"""
+            INSERT INTO {L3_COUNTY_TABLE} (
                 fips_code, data_year,
                 total_schools, schools_with_prek,
                 high_quality_schools_count, top_quartile_schools_count,
@@ -1396,8 +1399,8 @@ def store_county_education_accessibility(
         if use_databricks_backend:
             db.execute(
                 text(
-                    """
-                    DELETE FROM layer3_school_trajectory
+                    f"""
+                    DELETE FROM {L3_COUNTY_TABLE}
                     WHERE data_year = :data_year
                     """
                 ),

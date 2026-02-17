@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from config.database import get_db, test_connection
+from config.database import get_db, table_name, test_connection
 from config.settings import get_settings
 from src.api.chat_routes import router as chat_router
 from src.api.routes import router
@@ -95,7 +95,8 @@ async def health_check():
         if db_healthy:
             with get_db() as db:
                 counties_count = int(
-                    db.execute(text("SELECT COUNT(*) FROM md_counties")).scalar() or 0
+                    db.execute(text(f"SELECT COUNT(*) FROM {table_name('md_counties')}")).scalar()
+                    or 0
                 )
 
         counties_available = counties_count > 0

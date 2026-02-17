@@ -45,7 +45,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
@@ -53,6 +53,9 @@ from src.utils.prediction_utils import apply_predictions_to_table
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+L1_TRACT_TABLE = db_table_name("layer1_economic_opportunity_tract")
+L1_COUNTY_TABLE = db_table_name("layer1_employment_gravity")
 
 # =============================================================================
 # CONFIGURATION
@@ -91,7 +94,8 @@ QWI_BLEND_WEIGHT = 0.15
 ACCESSIBILITY_MODE_AUTO = "auto"
 ACCESSIBILITY_MODE_NETWORK = "network"
 ACCESSIBILITY_MODE_PROXY = "proxy"
-SAFE_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Allow table, schema.table, or catalog.schema.table identifiers.
+SAFE_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,2}$")
 
 # Sectors for diversity analysis (NAICS 2-digit via CNS codes)
 NAICS_SECTORS = {
@@ -424,6 +428,7 @@ def _fetch_lodes_od_county_flows_from_table(od_year: int, table_name: str) -> pd
     table_name = _resolve_table_name(table_name)
     if table_name is None:
         return pd.DataFrame()
+    table_ref = table_name if "." in table_name else db_table_name(table_name)
 
     sql = text(
         f"""
@@ -434,7 +439,7 @@ def _fetch_lodes_od_county_flows_from_table(od_year: int, table_name: str) -> pd
                 SUM(COALESCE(s000, 0)) AS s000,
                 SUM(COALESCE(sa02, 0) + COALESCE(sa03, 0)) AS working_age_workers,
                 SUM(COALESCE(se03, 0)) AS high_wage_workers
-            FROM {table_name}
+            FROM {table_ref}
             WHERE data_year = :od_year
               AND h_county LIKE '24%'
               AND w_county LIKE '24%'
@@ -1779,8 +1784,8 @@ def store_tract_economic_opportunity(
         # Clear existing data for this year
         db.execute(
             text(
-                """
-            DELETE FROM layer1_economic_opportunity_tract
+                f"""
+            DELETE FROM {L1_TRACT_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1797,8 +1802,8 @@ def store_tract_economic_opportunity(
 
             db.execute(
                 text(
-                    """
-                INSERT INTO layer1_economic_opportunity_tract (
+                    f"""
+                INSERT INTO {L1_TRACT_TABLE} (
                     tract_geoid, fips_code, data_year,
                     total_jobs, high_wage_jobs, mid_wage_jobs, low_wage_jobs,
                     high_wage_jobs_accessible_45min, high_wage_jobs_accessible_30min,
@@ -1877,12 +1882,12 @@ def store_county_economic_opportunity(
         local_strength_scores = {}
         local_result = db.execute(
             text(
-                """
+                f"""
             SELECT fips_code,
                    employment_diversification_score,
                    sector_diversity_entropy,
                    stable_sector_share
-            FROM layer1_employment_gravity
+            FROM {L1_COUNTY_TABLE}
             WHERE data_year = :data_year
         """
             ),
@@ -1914,12 +1919,12 @@ def store_county_economic_opportunity(
             if use_databricks_backend:
                 db.execute(
                     text(
-                        """
-                        INSERT INTO layer1_employment_gravity (fips_code, data_year)
+                        f"""
+                        INSERT INTO {L1_COUNTY_TABLE} (fips_code, data_year)
                         SELECT :fips_code, :data_year
                         WHERE NOT EXISTS (
                             SELECT 1
-                            FROM layer1_employment_gravity
+                            FROM {L1_COUNTY_TABLE}
                             WHERE fips_code = :fips_code AND data_year = :data_year
                         )
                         """
@@ -1932,8 +1937,8 @@ def store_county_economic_opportunity(
             else:
                 db.execute(
                     text(
-                        """
-                        INSERT INTO layer1_employment_gravity (fips_code, data_year)
+                        f"""
+                        INSERT INTO {L1_COUNTY_TABLE} (fips_code, data_year)
                         VALUES (:fips_code, :data_year)
                         ON CONFLICT (fips_code, data_year) DO NOTHING
                         """
@@ -2001,8 +2006,8 @@ def store_county_economic_opportunity(
             # Update existing records with new accessibility columns
             db.execute(
                 text(
-                    """
-                UPDATE layer1_employment_gravity
+                    f"""
+                UPDATE {L1_COUNTY_TABLE}
                 SET
                     total_jobs = :total_jobs,
                     high_wage_jobs = :high_wage_jobs,

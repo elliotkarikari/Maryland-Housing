@@ -79,7 +79,7 @@ DATABRICKS_SERVER_HOSTNAME=adb-xxxx.azuredatabricks.net
 DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/xxxx
 DATABRICKS_ACCESS_TOKEN=dapi_xxxx
 DATABRICKS_CATALOG=maryland_atlas
-DATABRICKS_SCHEMA=default
+DATABRICKS_SCHEMA=gold
 
 # Optional postgres fallback (used only when DATA_BACKEND=postgres)
 DATABASE_URL=postgresql://localhost/maryland_atlas
@@ -105,6 +105,13 @@ ACS_LATEST_YEAR=2024
 ACS_GEOGRAPHY_MAX_YEAR=2022
 NCES_OBSERVED_MAX_YEAR=2024
 PREDICT_TO_YEAR=2025
+```
+
+If your existing Databricks objects are still in `maryland_atlas.default`, run a one-time reorganization:
+
+```bash
+set -a; source .env; set +a
+./scripts/reorganize_databricks_medallion.py --apply --layout layered --skip-existing-target
 ```
 
 ### Step 4: Initialize Database (Postgres Fallback Only)

@@ -14,13 +14,24 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from config.database import DATABASE_BACKEND, get_db_session
+from config.database import DATABASE_BACKEND, get_db_session, table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.logging import get_logger
 
 router = APIRouter()
 settings = get_settings()
 logger = get_logger(__name__)
+
+TABLE_MD_COUNTIES = table_name("md_counties")
+TABLE_FINAL_SYNTHESIS = table_name("final_synthesis_current")
+TABLE_LAYER1 = table_name("layer1_employment_gravity")
+TABLE_LAYER2 = table_name("layer2_mobility_optionality")
+TABLE_LAYER3 = table_name("layer3_school_trajectory")
+TABLE_LAYER4 = table_name("layer4_housing_elasticity")
+TABLE_LAYER5 = table_name("layer5_demographic_momentum")
+TABLE_LAYER6 = table_name("layer6_risk_drag")
+TABLE_TIMESERIES = table_name("layer_timeseries_features")
+TABLE_REFRESH_LOG = table_name("data_refresh_log")
 
 COUNTIES_DEFAULT_GROUPING = "high_uncertainty"
 COUNTIES_DEFAULT_DIRECTIONAL = "stable"
@@ -30,27 +41,27 @@ _counties_geojson_cache: Optional[Dict[str, Any]] = None
 
 LAYER_LATEST_SNAPSHOT_CONFIG: Dict[str, Dict[str, str]] = {
     "employment_gravity": {
-        "table": "layer1_employment_gravity",
+        "table": TABLE_LAYER1,
         "column": "economic_opportunity_index_effective",
     },
     "mobility_optionality": {
-        "table": "layer2_mobility_optionality",
+        "table": TABLE_LAYER2,
         "column": "mobility_optionality_index",
     },
     "school_trajectory": {
-        "table": "layer3_school_trajectory",
+        "table": TABLE_LAYER3,
         "column": "education_opportunity_index",
     },
     "housing_elasticity": {
-        "table": "layer4_housing_elasticity",
+        "table": TABLE_LAYER4,
         "column": "housing_opportunity_index",
     },
     "demographic_momentum": {
-        "table": "layer5_demographic_momentum",
+        "table": TABLE_LAYER5,
         "column": "demographic_opportunity_index",
     },
     "risk_drag": {
-        "table": "layer6_risk_drag",
+        "table": TABLE_LAYER6,
         "column": "risk_drag_index",
     },
 }
@@ -387,7 +398,7 @@ def _counties_geojson_query() -> str:
                     economic_opportunity_index_effective,
                     economic_opportunity_index_pred,
                     ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
-                FROM layer1_employment_gravity
+                FROM {TABLE_LAYER1}
             ) t
             WHERE rn = 1
         ),
@@ -399,7 +410,7 @@ def _counties_geojson_query() -> str:
                     data_year,
                     mobility_optionality_index,
                     ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
-                FROM layer2_mobility_optionality
+                FROM {TABLE_LAYER2}
             ) t
             WHERE rn = 1
         ),
@@ -411,7 +422,7 @@ def _counties_geojson_query() -> str:
                     data_year,
                     education_opportunity_index,
                     ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
-                FROM layer3_school_trajectory
+                FROM {TABLE_LAYER3}
             ) t
             WHERE rn = 1
         ),
@@ -423,7 +434,7 @@ def _counties_geojson_query() -> str:
                     data_year,
                     housing_opportunity_index,
                     ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
-                FROM layer4_housing_elasticity
+                FROM {TABLE_LAYER4}
             ) t
             WHERE rn = 1
         ),
@@ -435,7 +446,7 @@ def _counties_geojson_query() -> str:
                     data_year,
                     demographic_opportunity_index,
                     ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
-                FROM layer5_demographic_momentum
+                FROM {TABLE_LAYER5}
             ) t
             WHERE rn = 1
         ),
@@ -447,7 +458,7 @@ def _counties_geojson_query() -> str:
                     data_year,
                     risk_drag_index,
                     ROW_NUMBER() OVER (PARTITION BY fips_code ORDER BY data_year DESC) AS rn
-                FROM layer6_risk_drag
+                FROM {TABLE_LAYER6}
             ) t
             WHERE rn = 1
         )
@@ -483,8 +494,8 @@ def _counties_geojson_query() -> str:
             l5.l5_score,
             l6.l6_data_year,
             l6.l6_score
-        FROM md_counties mc
-        LEFT JOIN final_synthesis_current fsc ON fsc.geoid = mc.fips_code
+        FROM {TABLE_MD_COUNTIES} mc
+        LEFT JOIN {TABLE_FINAL_SYNTHESIS} fsc ON fsc.geoid = mc.fips_code
         LEFT JOIN l1_latest l1 ON l1.fips_code = mc.fips_code
         LEFT JOIN l2_latest l2 ON l2.fips_code = mc.fips_code
         LEFT JOIN l3_latest l3 ON l3.fips_code = mc.fips_code
@@ -740,7 +751,7 @@ async def get_area_detail(geoid: str, db: Session = Depends(get_db_session)):
 
     try:
         query = text(
-            """
+            f"""
             SELECT
                 fsc.geoid AS fips_code,
                 fsc.current_as_of_year AS data_year,
@@ -755,7 +766,7 @@ async def get_area_detail(geoid: str, db: Session = Depends(get_db_session)):
                 fsc.housing_elasticity_score,
                 fsc.demographic_momentum_score,
                 fsc.risk_drag_score
-            FROM final_synthesis_current fsc
+            FROM {TABLE_FINAL_SYNTHESIS} fsc
             WHERE fsc.geoid = :geoid
         """
         )
@@ -870,7 +881,7 @@ async def get_area_detail(geoid: str, db: Session = Depends(get_db_session)):
 # Layer configuration for factor breakdown
 LAYER_CONFIGS: Dict[str, LayerConfig] = {
     "employment_gravity": {
-        "table": "layer1_employment_gravity",
+        "table": TABLE_LAYER1,
         "display_name": "Economic Opportunity",
         "description": "Measures access to high-wage jobs and economic diversification",
         "version": "v2",
@@ -921,7 +932,7 @@ LAYER_CONFIGS: Dict[str, LayerConfig] = {
         ],
     },
     "mobility_optionality": {
-        "table": "layer2_mobility_optionality",
+        "table": TABLE_LAYER2,
         "display_name": "Mobility Options",
         "description": "Measures transportation accessibility and mode options",
         "version": "v2",
@@ -966,7 +977,7 @@ LAYER_CONFIGS: Dict[str, LayerConfig] = {
         ],
     },
     "school_trajectory": {
-        "table": "layer3_school_trajectory",
+        "table": TABLE_LAYER3,
         "display_name": "Education Access",
         "description": "Measures access to quality schools and educational opportunity",
         "version": "v2",
@@ -1011,7 +1022,7 @@ LAYER_CONFIGS: Dict[str, LayerConfig] = {
         ],
     },
     "housing_elasticity": {
-        "table": "layer4_housing_elasticity",
+        "table": TABLE_LAYER4,
         "display_name": "Housing Affordability",
         "description": "Measures housing supply responsiveness and affordability burden",
         "version": "v2",
@@ -1058,7 +1069,7 @@ LAYER_CONFIGS: Dict[str, LayerConfig] = {
         ],
     },
     "demographic_momentum": {
-        "table": "layer5_demographic_momentum",
+        "table": TABLE_LAYER5,
         "display_name": "Demographic Health",
         "description": "Measures population dynamics, equity, and migration patterns",
         "version": "v2",
@@ -1103,7 +1114,7 @@ LAYER_CONFIGS: Dict[str, LayerConfig] = {
         ],
     },
     "risk_drag": {
-        "table": "layer6_risk_drag",
+        "table": TABLE_LAYER6,
         "display_name": "Risk & Vulnerability",
         "description": "Measures environmental hazards, climate risk, and community vulnerability",
         "version": "v2",
@@ -1206,14 +1217,14 @@ async def get_layer_detail(geoid: str, layer_key: str, db: Session = Depends(get
 
         # Query timeseries features for momentum
         ts_query = text(
-            """
+            f"""
             SELECT
                 momentum_slope,
                 momentum_percent_change,
                 coverage_years,
                 level_latest,
                 level_baseline
-            FROM layer_timeseries_features
+            FROM {TABLE_TIMESERIES}
             WHERE geoid = :geoid AND layer_name = :layer_name
             ORDER BY as_of_year DESC
             LIMIT 1
@@ -1308,14 +1319,14 @@ async def get_latest_refresh_status(
     """
     try:
         query = text(
-            """
+            f"""
             SELECT DISTINCT ON (layer_name)
                 layer_name,
                 data_source,
                 refresh_date,
                 status,
                 records_processed
-            FROM data_refresh_log
+            FROM {TABLE_REFRESH_LOG}
             ORDER BY layer_name, refresh_date DESC
             LIMIT :limit
         """

@@ -59,7 +59,10 @@ class Settings(BaseSettings):
     DATABRICKS_HTTP_PATH: Optional[str] = None
     DATABRICKS_ACCESS_TOKEN: Optional[str] = None
     DATABRICKS_CATALOG: str = "hive_metastore"
-    DATABRICKS_SCHEMA: str = "default"
+    DATABRICKS_SCHEMA: str = "gold"
+    DATABRICKS_BRONZE_SCHEMA: str = "bronze"
+    DATABRICKS_SILVER_SCHEMA: str = "silver"
+    DATABRICKS_GOLD_SCHEMA: str = "gold"
 
     # Rate limiting (requests per minute)
     CENSUS_API_RATE_LIMIT: int = 8  # Conservative: 500/day = ~8/min
@@ -113,7 +116,7 @@ class Settings(BaseSettings):
     LODES_OD_DATA_URL: Optional[str] = None
     LODES_OD_DATA_PATH: Optional[str] = None
     LODES_OD_CHUNK_SIZE: int = 500000
-    LODES_OD_TABLE: str = "layer1_lodes_od_raw"
+    LODES_OD_TABLE: str = "bronze.layer1_lodes_od_raw"
 
     # Maryland state FIPS code
     MD_STATE_FIPS: str = "24"

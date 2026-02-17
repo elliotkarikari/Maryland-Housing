@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db
+from config.database import get_db, table_name as db_table_name
 from config.settings import get_settings
 from src.utils.logging import get_logger
 
@@ -93,6 +93,7 @@ def apply_predictions_to_table(
     min_years = min_years if min_years is not None else settings.PREDICTION_MIN_YEARS
     max_extrap = max_extrap if max_extrap is not None else settings.PREDICTION_MAX_EXTRAP_YEARS
     use_effective = use_effective if use_effective is not None else settings.USE_EFFECTIVE_VALUES
+    table_ref = db_table_name(table)
 
     pred_col = f"{metric_col}_pred"
     pred_flag_col = f"{metric_col}_predicted"
@@ -107,7 +108,7 @@ def apply_predictions_to_table(
             text(
                 f"""
             SELECT {fips_col} AS fips_code, {year_col} AS data_year, {metric_col} AS value
-            FROM {table}
+            FROM {table_ref}
             WHERE {metric_col} IS NOT NULL
             ORDER BY {fips_col}, {year_col}
         """
@@ -153,10 +154,10 @@ def apply_predictions_to_table(
                     db.execute(
                         text(
                             f"""
-                        INSERT INTO {table} ({fips_col}, {year_col})
+                        INSERT INTO {table_ref} ({fips_col}, {year_col})
                         SELECT :fips_code, :data_year
                         WHERE NOT EXISTS (
-                            SELECT 1 FROM {table}
+                            SELECT 1 FROM {table_ref}
                             WHERE {fips_col} = :fips_code AND {year_col} = :data_year
                         )
                         """
@@ -166,7 +167,7 @@ def apply_predictions_to_table(
                     db.execute(
                         text(
                             f"""
-                        UPDATE {table}
+                        UPDATE {table_ref}
                         SET
                             {pred_col} = :pred_value,
                             {pred_flag_col} = TRUE,
@@ -183,7 +184,7 @@ def apply_predictions_to_table(
                     db.execute(
                         text(
                             f"""
-                        INSERT INTO {table} (
+                        INSERT INTO {table_ref} (
                             {fips_col}, {year_col},
                             {pred_col}, {pred_flag_col},
                             {pred_method_col}, {pred_years_col},
@@ -201,7 +202,7 @@ def apply_predictions_to_table(
                             {pred_method_col} = EXCLUDED.{pred_method_col},
                             {pred_years_col} = EXCLUDED.{pred_years_col},
                             {source_col} = EXCLUDED.{source_col}
-                            {',' + f'{effective_col} = COALESCE({table}.{metric_col}, EXCLUDED.{pred_col})' if use_effective else ''}
+                            {',' + f'{effective_col} = COALESCE({table_ref}.{metric_col}, EXCLUDED.{pred_col})' if use_effective else ''}
                     """
                         ),
                         params,
@@ -212,7 +213,7 @@ def apply_predictions_to_table(
             db.execute(
                 text(
                     f"""
-                UPDATE {table}
+                UPDATE {table_ref}
                 SET {effective_col} = COALESCE({metric_col}, {pred_col})
                 WHERE {year_col} <= :target_year
             """
@@ -222,5 +223,5 @@ def apply_predictions_to_table(
 
         db.commit()
 
-    logger.info(f"Applied predictions for {table}.{metric_col}: {inserted} rows")
+    logger.info(f"Applied predictions for {table_ref}.{metric_col}: {inserted} rows")
     return inserted

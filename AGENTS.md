@@ -21,6 +21,8 @@ Maryland Growth & Family Viability Atlas: a spatial analytics pipeline that inge
 - Export GeoJSON only: `make export`
 - Run API: `make serve`
 - Tests: `make test`
+- One-time Databricks medallion move from `maryland_atlas.default` to layered bronze/silver/gold layout:
+  `make databricks-medallion`
 
 ## Ingestion updates (recurring task)
 When adding or refreshing a data source:
@@ -44,6 +46,7 @@ Optional source toggles (keep deterministic defaults):
 
 ## Preflight checks (recurring failure points)
 - Confirm `.env` has required keys for Databricks ingest: `DATA_BACKEND=databricks`, `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN`, `CENSUS_API_KEY`, `MAPBOX_ACCESS_TOKEN`.
+- For medallion runtime, set `DATABRICKS_SCHEMA=gold` for API/pipeline/ingest jobs.
 - Postgres/PostGIS checks only apply when using fallback mode (`DATA_BACKEND=postgres`).
 - Ensure `LODES_LATEST_YEAR`, `LODES_LAG_YEARS`, `ACS_LATEST_YEAR`, `ACS_GEOGRAPHY_MAX_YEAR`, `NCES_OBSERVED_MAX_YEAR`, and `PREDICT_TO_YEAR` match available data.
 - Confirm `CORS_ALLOW_ORIGINS` includes expected frontend origins.

@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
 from src.processing.feature_registry import (
     FEATURES_BY_LAYER,
@@ -231,8 +231,8 @@ def store_layer_scores(layer_scores_df: pd.DataFrame, data_year: int):
             }
 
             sql = text(
-                """
-                INSERT INTO layer_scores (
+                f"""
+                INSERT INTO {table_name('layer_scores')} (
                     fips_code, data_year,
                     employment_gravity_score, mobility_optionality_score,
                     school_trajectory_score, housing_elasticity_score,

@@ -21,7 +21,7 @@ import geopandas as gpd
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db, log_refresh
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
 from src.utils.logging import get_logger
 
@@ -144,7 +144,7 @@ def fetch_latest_synthesis() -> pd.DataFrame:
 
     with get_db() as db:
         query = text(
-            """
+            f"""
             SELECT
                 fsc.geoid AS fips_code,
                 fsc.current_as_of_year AS data_year,
@@ -162,7 +162,7 @@ def fetch_latest_synthesis() -> pd.DataFrame:
                 fsc.risk_drag_score,
                 fsc.classification_version,
                 fsc.updated_at
-            FROM final_synthesis_current fsc
+            FROM {table_name('final_synthesis_current')} fsc
         """
         )
 
@@ -376,8 +376,8 @@ def log_export_version(version: str, geojson_path: str, record_count: int, data_
 
     with get_db() as db:
         sql = text(
-            """
-            INSERT INTO export_versions (
+            f"""
+            INSERT INTO {table_name('export_versions')} (
                 version, export_date, data_year, geojson_path,
                 record_count, checksum, metadata
             ) VALUES (

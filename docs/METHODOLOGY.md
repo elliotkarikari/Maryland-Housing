@@ -297,6 +297,8 @@ Example:
 
 ### API/Map Population Behavior (Databricks Runtime)
 
+- Runtime schema convention: map-serving and pipeline tables live in
+  `DATABRICKS_CATALOG.gold` and `DATABRICKS_SCHEMA=gold`.
 - `GET /api/v1/layers/counties/latest` serves county geometries from `md_counties`.
 - If `final_synthesis_current` rows exist, synthesis values are used directly.
 - If synthesis rows are missing, the API derives county properties from the latest available rows in:

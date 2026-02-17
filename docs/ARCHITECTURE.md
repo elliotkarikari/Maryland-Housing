@@ -410,6 +410,17 @@ maryland-housing/
 
 ## Database Schema
 
+### Databricks Medallion Layout
+
+Within catalog `maryland_atlas`, the operational schema layout is:
+
+- `bronze`: raw landed source tables (for example `layer1_lodes_od_raw`)
+- `silver`: refined intermediate datasets (tract-level and source-harmonized tables)
+- `gold`: API-serving and scoring/pipeline runtime tables
+
+Current runtime default is `DATABRICKS_SCHEMA=gold`, so unqualified table reads/writes
+resolve to gold for API + pipeline continuity.
+
 ### Core Tables
 
 #### Layer Data Tables (Versioned by Year)
