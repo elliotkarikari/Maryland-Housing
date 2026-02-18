@@ -30,7 +30,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -41,7 +41,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh, table_name as db_table_name
+from config.database import get_db, log_refresh
+from config.database import table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.db_bulk import execute_batch
@@ -1054,6 +1055,148 @@ def aggregate_to_county(
 # =============================================================================
 
 
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _int_or_default(value: Any, default: int = 0) -> int:
+    if _is_missing(value):
+        return int(default)
+    return int(value)
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if _is_missing(value):
+        return None
+    return int(value)
+
+
+def _float_or_default(value: Any, default: float = 0.0) -> float:
+    if _is_missing(value):
+        return float(default)
+    return float(value)
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if _is_missing(value):
+        return None
+    return float(value)
+
+
+def _str_or_default(value: Any, default: str = "") -> str:
+    if _is_missing(value):
+        return default
+    return str(value)
+
+
+def _build_tract_demographic_rows(
+    df: pd.DataFrame, data_year: int, acs_year: int
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "tract": _str_or_default(row.get("tract_geoid")),
+                "fips": _str_or_default(row.get("fips_code")),
+                "data_year": int(data_year),
+                "pop": _int_or_default(row.get("total_population"), 0),
+                "under_18": _int_or_default(row.get("pop_under_18"), 0),
+                "age_18_24": _int_or_default(row.get("pop_18_24"), 0),
+                "age_25_44": _int_or_default(row.get("pop_25_44"), 0),
+                "age_45_64": _int_or_default(row.get("pop_45_64"), 0),
+                "age_65_plus": _int_or_default(row.get("pop_65_plus"), 0),
+                "working_age_pct": _float_or_default(row.get("working_age_pct"), 0.0),
+                "hh_total": _int_or_default(row.get("total_households"), 0),
+                "hh_family": _int_or_default(row.get("family_households"), 0),
+                "hh_children": _int_or_default(row.get("family_with_children"), 0),
+                "hh_single_parent": _int_or_default(row.get("single_parent_households"), 0),
+                "hh_married": _int_or_default(row.get("married_couple_households"), 0),
+                "hh_nonfamily": _int_or_default(row.get("nonfamily_households"), 0),
+                "white": _int_or_default(row.get("pop_white_alone"), 0),
+                "black": _int_or_default(row.get("pop_black_alone"), 0),
+                "asian": _int_or_default(row.get("pop_asian_alone"), 0),
+                "hispanic": _int_or_default(row.get("pop_hispanic"), 0),
+                "other": _int_or_default(row.get("pop_other_race"), 0),
+                "diversity": _float_or_default(row.get("racial_diversity_index"), 0.0),
+                "dependency": _float_or_default(row.get("age_dependency_ratio"), 0.0),
+                "family_pct": _float_or_default(row.get("family_household_pct"), 0.0),
+                "dissimilarity": _float_or_default(row.get("dissimilarity_index"), 0.0),
+                "exposure": _float_or_default(row.get("exposure_index"), 0.0),
+                "isolation": _float_or_default(row.get("isolation_index"), 0.0),
+                "single_parent_pct": _float_or_default(row.get("single_parent_pct"), 0.0),
+                "median_income": _int_or_none(row.get("median_family_income")),
+                "poverty": _float_or_default(row.get("poverty_rate"), 0.0),
+                "child_poverty": _float_or_default(row.get("child_poverty_rate"), 0.0),
+                "viability": _float_or_default(row.get("family_viability_score"), 0.0),
+                "net_migration": _float_or_default(row.get("est_net_migration_rate"), 0.0),
+                "inflow": _float_or_default(row.get("est_inflow_rate"), 0.0),
+                "outflow": _float_or_default(row.get("est_outflow_rate"), 0.0),
+                "static_score": _float_or_default(row.get("static_demographic_score"), 0.0),
+                "equity_score": _float_or_default(row.get("equity_score"), 0.0),
+                "migration_score": _float_or_default(row.get("migration_dynamics_score"), 0.0),
+                "composite": _float_or_default(row.get("demographic_opportunity_score"), 0.0),
+                "acs_year": int(acs_year),
+            }
+        )
+    return rows
+
+
+def _build_county_demographic_rows(
+    df: pd.DataFrame, data_year: int, acs_year: int
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        pop_total = _int_or_default(row.get("pop_total"), 0)
+        pop_25_44 = _int_or_default(row.get("pop_age_25_44"), 0)
+        rows.append(
+            {
+                "fips": _str_or_default(row.get("fips_code")),
+                "data_year": int(data_year),
+                "pop_total": pop_total,
+                "pop_25_44": pop_25_44,
+                "pop_25_44_pct": float(pop_25_44 / pop_total) if pop_total > 0 else 0.0,
+                "hh_total": _int_or_default(row.get("households_total"), 0),
+                "hh_family": _int_or_default(row.get("households_family"), 0),
+                "hh_children": _int_or_default(row.get("households_family_with_children"), 0),
+                "inflow_hh": row.get("inflow_households"),
+                "outflow_hh": row.get("outflow_households"),
+                "net_hh": row.get("net_migration_households"),
+                "white": _int_or_default(row.get("pop_white_alone"), 0),
+                "black": _int_or_default(row.get("pop_black_alone"), 0),
+                "asian": _int_or_default(row.get("pop_asian_alone"), 0),
+                "hispanic": _int_or_default(row.get("pop_hispanic"), 0),
+                "other": _int_or_default(row.get("pop_other_race"), 0),
+                "diversity": _float_or_default(row.get("racial_diversity_index"), 0.0),
+                "dependency": _float_or_default(row.get("age_dependency_ratio"), 0.0),
+                "family_pct": _float_or_default(row.get("family_household_pct"), 0.0),
+                "static_score": _float_or_default(row.get("static_demographic_score"), 0.0),
+                "dissimilarity": _float_or_default(row.get("dissimilarity_index"), 0.0),
+                "exposure": _float_or_default(row.get("exposure_index"), 0.0),
+                "isolation": _float_or_default(row.get("isolation_index"), 0.0),
+                "single_parent": _float_or_default(row.get("single_parent_pct"), 0.0),
+                "poverty": _float_or_default(row.get("poverty_rate"), 0.0),
+                "child_poverty": _float_or_default(row.get("child_poverty_rate"), 0.0),
+                "viability": _float_or_default(row.get("family_viability_score"), 0.0),
+                "equity_score": _float_or_default(row.get("equity_score"), 0.0),
+                "net_rate": _float_or_none(row.get("net_migration_rate")),
+                "inflow_rate": _float_or_none(row.get("inflow_rate")),
+                "outflow_rate": _float_or_none(row.get("outflow_rate")),
+                "migration_score": _float_or_default(row.get("migration_dynamics_score"), 0.0),
+                "opportunity_index": _float_or_default(
+                    row.get("demographic_opportunity_index"), 0.0
+                ),
+                "momentum_score": _float_or_default(row.get("static_demographic_score"), 0.0),
+                "acs_year": int(acs_year),
+            }
+        )
+    return rows
+
+
 def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: int):
     """Store tract-level demographic equity data."""
     logger.info(f"Storing {len(df)} tract demographic equity records...")
@@ -1106,56 +1249,7 @@ def store_tract_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: i
                 """
         )
 
-        rows = []
-        for _, row in df.iterrows():
-            rows.append(
-                {
-                    "tract": row["tract_geoid"],
-                    "fips": row["fips_code"],
-                    "data_year": data_year,
-                    "pop": int(row.get("total_population", 0)),
-                    "under_18": int(row.get("pop_under_18", 0)),
-                    "age_18_24": int(row.get("pop_18_24", 0)),
-                    "age_25_44": int(row.get("pop_25_44", 0)),
-                    "age_45_64": int(row.get("pop_45_64", 0)),
-                    "age_65_plus": int(row.get("pop_65_plus", 0)),
-                    "working_age_pct": float(row.get("working_age_pct", 0)),
-                    "hh_total": int(row.get("total_households", 0)),
-                    "hh_family": int(row.get("family_households", 0)),
-                    "hh_children": int(row.get("family_with_children", 0)),
-                    "hh_single_parent": int(row.get("single_parent_households", 0)),
-                    "hh_married": int(row.get("married_couple_households", 0)),
-                    "hh_nonfamily": int(row.get("nonfamily_households", 0)),
-                    "white": int(row.get("pop_white_alone", 0)),
-                    "black": int(row.get("pop_black_alone", 0)),
-                    "asian": int(row.get("pop_asian_alone", 0)),
-                    "hispanic": int(row.get("pop_hispanic", 0)),
-                    "other": int(row.get("pop_other_race", 0)),
-                    "diversity": float(row.get("racial_diversity_index", 0)),
-                    "dependency": float(row.get("age_dependency_ratio", 0)),
-                    "family_pct": float(row.get("family_household_pct", 0)),
-                    "dissimilarity": float(row.get("dissimilarity_index", 0)),
-                    "exposure": float(row.get("exposure_index", 0)),
-                    "isolation": float(row.get("isolation_index", 0)),
-                    "single_parent_pct": float(row.get("single_parent_pct", 0)),
-                    "median_income": (
-                        int(row["median_family_income"])
-                        if pd.notna(row.get("median_family_income"))
-                        else None
-                    ),
-                    "poverty": float(row.get("poverty_rate", 0)),
-                    "child_poverty": float(row.get("child_poverty_rate", 0)),
-                    "viability": float(row.get("family_viability_score", 0)),
-                    "net_migration": float(row.get("est_net_migration_rate", 0)),
-                    "inflow": float(row.get("est_inflow_rate", 0)),
-                    "outflow": float(row.get("est_outflow_rate", 0)),
-                    "static_score": float(row.get("static_demographic_score", 0)),
-                    "equity_score": float(row.get("equity_score", 0)),
-                    "migration_score": float(row.get("migration_dynamics_score", 0)),
-                    "composite": float(row.get("demographic_opportunity_score", 0)),
-                    "acs_year": acs_year,
-                }
-            )
+        rows = _build_tract_demographic_rows(df=df, data_year=data_year, acs_year=acs_year)
 
         execute_batch(db, insert_sql, rows, chunk_size=1000)
 
@@ -1262,57 +1356,7 @@ def store_county_demographic_equity(df: pd.DataFrame, data_year: int, acs_year: 
         """
         )
 
-        rows = []
-        for _, row in df.iterrows():
-            pop_total = int(row.get("pop_total", 0))
-            pop_25_44 = int(row.get("pop_age_25_44", 0))
-            rows.append(
-                {
-                    "fips": row["fips_code"],
-                    "data_year": data_year,
-                    "pop_total": pop_total,
-                    "pop_25_44": pop_25_44,
-                    "pop_25_44_pct": float(pop_25_44 / pop_total) if pop_total > 0 else 0,
-                    "hh_total": int(row.get("households_total", 0)),
-                    "hh_family": int(row.get("households_family", 0)),
-                    "hh_children": int(row.get("households_family_with_children", 0)),
-                    "inflow_hh": row.get("inflow_households"),
-                    "outflow_hh": row.get("outflow_households"),
-                    "net_hh": row.get("net_migration_households"),
-                    "white": int(row.get("pop_white_alone", 0)),
-                    "black": int(row.get("pop_black_alone", 0)),
-                    "asian": int(row.get("pop_asian_alone", 0)),
-                    "hispanic": int(row.get("pop_hispanic", 0)),
-                    "other": int(row.get("pop_other_race", 0)),
-                    "diversity": float(row.get("racial_diversity_index", 0)),
-                    "dependency": float(row.get("age_dependency_ratio", 0)),
-                    "family_pct": float(row.get("family_household_pct", 0)),
-                    "static_score": float(row.get("static_demographic_score", 0)),
-                    "dissimilarity": float(row.get("dissimilarity_index", 0)),
-                    "exposure": float(row.get("exposure_index", 0)),
-                    "isolation": float(row.get("isolation_index", 0)),
-                    "single_parent": float(row.get("single_parent_pct", 0)),
-                    "poverty": float(row.get("poverty_rate", 0)),
-                    "child_poverty": float(row.get("child_poverty_rate", 0)),
-                    "viability": float(row.get("family_viability_score", 0)),
-                    "equity_score": float(row.get("equity_score", 0)),
-                    "net_rate": (
-                        float(row["net_migration_rate"])
-                        if pd.notna(row.get("net_migration_rate"))
-                        else None
-                    ),
-                    "inflow_rate": (
-                        float(row["inflow_rate"]) if pd.notna(row.get("inflow_rate")) else None
-                    ),
-                    "outflow_rate": (
-                        float(row["outflow_rate"]) if pd.notna(row.get("outflow_rate")) else None
-                    ),
-                    "migration_score": float(row.get("migration_dynamics_score", 0)),
-                    "opportunity_index": float(row.get("demographic_opportunity_index", 0)),
-                    "momentum_score": float(row.get("static_demographic_score", 0)),
-                    "acs_year": acs_year,
-                }
-            )
+        rows = _build_county_demographic_rows(df=df, data_year=data_year, acs_year=acs_year)
 
         if use_databricks_backend:
             db.execute(

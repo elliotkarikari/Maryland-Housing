@@ -4,6 +4,8 @@ Tests for classification logic
 Run with: pytest tests/test_classification.py -v
 """
 
+from contextlib import contextmanager
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -14,6 +16,7 @@ from src.processing.classification import (
     classify_directional_status,
     identify_top_strengths,
     identify_top_weaknesses,
+    store_classifications,
 )
 
 settings = get_settings()
@@ -225,6 +228,55 @@ class TestThresholdSensitivity:
 
         result_below = classify_directional_status(layer_scores_below, 0.2)
         assert result_below == "at_risk"
+
+
+def test_store_classifications_uses_batched_execute(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.executions = []
+            self.commit_calls = 0
+
+        def execute(self, sql, params):
+            self.executions.append((sql, params))
+
+        def commit(self):
+            self.commit_calls += 1
+
+    fake_db = FakeDB()
+
+    @contextmanager
+    def fake_get_db():
+        yield fake_db
+
+    monkeypatch.setattr("src.processing.classification.get_db", fake_get_db)
+    monkeypatch.setattr("src.processing.classification.table_name", lambda t: t)
+
+    df = pd.DataFrame(
+        {
+            "fips_code": ["24001", "24003"],
+            "data_year": [2024, 2024],
+            "directional_class": ["improving", "stable"],
+            "composite_score": [0.88, np.nan],
+            "confidence_class": ["strong", "conditional"],
+            "synthesis_grouping": ["emerging_tailwinds", "stable_constrained"],
+            "primary_strengths": [["Employment Gravity"], ["Mobility Optionality"]],
+            "primary_weaknesses": [["Risk Drag"], ["School System Trajectory"]],
+            "key_trends": [["Tailwinds"], ["Balanced signals"]],
+            "classification_method": ["rule_based_v1", "rule_based_v1"],
+            "version": ["v1.0", "v1.0"],
+        }
+    )
+
+    store_classifications(df)
+
+    assert fake_db.commit_calls == 1
+    assert len(fake_db.executions) == 1
+    _, params = fake_db.executions[0]
+    assert isinstance(params, list)
+    assert len(params) == 2
+    assert params[0]["fips_code"] == "24001"
+    assert params[0]["data_year"] == 2024
+    assert params[1]["composite_score"] is None
 
 
 if __name__ == "__main__":

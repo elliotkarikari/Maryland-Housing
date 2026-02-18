@@ -21,7 +21,7 @@ import warnings
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -33,7 +33,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh, table_name as db_table_name
+from config.database import get_db, log_refresh
+from config.database import table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.db_bulk import execute_batch
@@ -1262,6 +1263,190 @@ def aggregate_to_county(tract_df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _int_or_default(value: Any, default: int = 0) -> int:
+    if _is_missing(value):
+        return int(default)
+    return int(value)
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if _is_missing(value):
+        return None
+    return int(value)
+
+
+def _float_or_default(value: Any, default: float = 0.0) -> float:
+    if _is_missing(value):
+        return float(default)
+    return float(value)
+
+
+def _safe_float(value: Any, min_value: float = None, max_value: float = None) -> Optional[float]:
+    if _is_missing(value):
+        return None
+    val = float(value)
+    if min_value is not None and val < min_value:
+        return None
+    if max_value is not None and val > max_value:
+        return None
+    return val
+
+
+def _build_tract_housing_rows(
+    df: pd.DataFrame, data_year: int, acs_year: int
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "tract_geoid": str(row.get("tract_geoid", "")),
+                "fips_code": str(row.get("fips_code", "")),
+                "data_year": int(data_year),
+                "total_units": _int_or_default(row.get("total_housing_units"), 0),
+                "occupied": _int_or_default(row.get("occupied_units"), 0),
+                "owner": _int_or_default(row.get("owner_occupied_units"), 0),
+                "renter": _int_or_default(row.get("renter_occupied_units"), 0),
+                "vacant": _int_or_default(row.get("vacant_units"), 0),
+                "vacancy_rate": _float_or_default(row.get("vacancy_rate"), 0.0),
+                "households": _int_or_default(row.get("total_households"), 0),
+                "burdened": _int_or_default(row.get("cost_burdened_households"), 0),
+                "severely_burdened": _int_or_default(
+                    row.get("severely_cost_burdened_households"), 0
+                ),
+                "burden_pct": _float_or_default(row.get("cost_burdened_pct"), 0.0),
+                "severe_pct": _float_or_default(row.get("severely_cost_burdened_pct"), 0.0),
+                "owner_burden": _float_or_default(row.get("owner_cost_burdened_pct"), 0.0),
+                "renter_burden": _float_or_default(row.get("renter_cost_burdened_pct"), 0.0),
+                "rent": (
+                    int(row.get("median_gross_rent"))
+                    if pd.notna(row.get("median_gross_rent")) and row.get("median_gross_rent") > 0
+                    else None
+                ),
+                "home_value": (
+                    int(row.get("median_home_value"))
+                    if pd.notna(row.get("median_home_value")) and row.get("median_home_value") > 0
+                    else None
+                ),
+                "income": (
+                    int(row.get("median_household_income"))
+                    if pd.notna(row.get("median_household_income"))
+                    and row.get("median_household_income") > 0
+                    else None
+                ),
+                "pti": _safe_float(
+                    row.get("price_to_income_ratio"), min_value=0, max_value=9999.99
+                ),
+                "rti": _safe_float(row.get("rent_to_income_ratio"), min_value=0, max_value=1),
+                "commute_time": _float_or_default(row.get("avg_commute_time_minutes"), 0.0),
+                "commute_cost": _int_or_default(row.get("estimated_commute_cost_monthly"), 0),
+                "ht_pct": _safe_float(
+                    row.get("housing_plus_transport_pct"), min_value=0, max_value=1
+                ),
+                "year_built": (
+                    int(row.get("housing_age_median_year"))
+                    if pd.notna(row.get("housing_age_median_year"))
+                    else None
+                ),
+                "pre_1950": _float_or_default(row.get("pre_1950_housing_pct"), 0.0),
+                "crowded": _float_or_default(row.get("crowded_units_pct"), 0.0),
+                "no_plumbing": _float_or_default(row.get("lacking_complete_plumbing_pct"), 0.0),
+                "no_kitchen": _float_or_default(row.get("lacking_complete_kitchen_pct"), 0.0),
+                "burden_score": _float_or_default(row.get("affordability_burden_score"), 0.0),
+                "stock_score": _float_or_default(row.get("affordable_stock_score"), 0.0),
+                "quality_score": _float_or_default(row.get("housing_quality_score"), 0.0),
+                "affordability_score": _float_or_default(
+                    row.get("housing_affordability_score"), 0.0
+                ),
+                "area": _float_or_default(row.get("land_area_sq_mi"), 0.0),
+                "density": _float_or_default(row.get("housing_density_per_sq_mi"), 0.0),
+                "population": _int_or_default(row.get("population"), 0),
+                "acs_year": int(acs_year),
+            }
+        )
+    return rows
+
+
+def _build_county_housing_update_rows(
+    df: pd.DataFrame,
+    data_year: int,
+    acs_year: int,
+    elasticity_scores: Dict[str, Optional[float]],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        fips_code = str(row.get("fips_code", ""))
+        elasticity = elasticity_scores.get(fips_code)
+        affordability = row.get("housing_affordability_score")
+
+        if elasticity is None and affordability is None:
+            opportunity_index = None
+        elif elasticity is None:
+            opportunity_index = affordability
+        elif affordability is None:
+            opportunity_index = elasticity
+        else:
+            opportunity_index = (
+                ELASTICITY_WEIGHT * elasticity + AFFORDABILITY_WEIGHT * affordability
+            )
+
+        rows.append(
+            {
+                "fips_code": fips_code,
+                "data_year": int(data_year),
+                "households": _int_or_default(row.get("total_households"), 0),
+                "burdened": _int_or_default(row.get("cost_burdened_households"), 0),
+                "severely_burdened": _int_or_default(
+                    row.get("severely_cost_burdened_households"), 0
+                ),
+                "burden_pct": _float_or_default(row.get("cost_burdened_pct"), 0.0),
+                "severe_pct": _float_or_default(row.get("severely_cost_burdened_pct"), 0.0),
+                "owner_burden": _float_or_default(row.get("owner_cost_burdened_pct"), 0.0),
+                "renter_burden": _float_or_default(row.get("renter_cost_burdened_pct"), 0.0),
+                "rti": _safe_float(row.get("rent_to_income_ratio"), min_value=0, max_value=1),
+                "commute_time": _float_or_default(row.get("avg_commute_time_minutes"), 0.0),
+                "ht_pct": _safe_float(
+                    row.get("housing_plus_transport_pct"), min_value=0, max_value=1
+                ),
+                "year_built": (
+                    int(row.get("housing_age_median_year"))
+                    if pd.notna(row.get("housing_age_median_year"))
+                    else None
+                ),
+                "pre_1950": _float_or_default(row.get("pre_1950_housing_pct"), 0.0),
+                "crowded": _float_or_default(row.get("crowded_units_pct"), 0.0),
+                "quality_score": _float_or_default(row.get("housing_quality_score"), 0.0),
+                "burden_score": _float_or_default(row.get("affordability_burden_score"), 0.0),
+                "stock_score": _float_or_default(row.get("affordable_stock_score"), 0.0),
+                "affordability_score": _float_or_default(
+                    row.get("housing_affordability_score"), 0.0
+                ),
+                "fmr_2br": _int_or_none(row.get("fmr_2br")),
+                "fmr_2br_to_income": _safe_float(
+                    row.get("fmr_2br_to_income"), min_value=0, max_value=10
+                ),
+                "hud_fmr_year": _int_or_none(row.get("hud_fmr_year")),
+                "lihtc_units": _int_or_none(row.get("lihtc_units")),
+                "lihtc_units_per_1000_households": _safe_float(
+                    row.get("lihtc_units_per_1000_households"), min_value=0, max_value=1000
+                ),
+                "lihtc_year": _int_or_none(row.get("lihtc_year")),
+                "opportunity_index": opportunity_index,
+                "acs_year": int(acs_year),
+                "affordability_version": row.get("affordability_version", "v2-affordability"),
+            }
+        )
+    return rows
+
+
 def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year: int):
     """
     Store tract-level housing affordability data.
@@ -1274,16 +1459,6 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
     logger.info(f"Storing {len(df)} tract housing affordability records...")
 
     with get_db() as db:
-
-        def safe_float(value, min_value: float = None, max_value: float = None):
-            if value is None or pd.isna(value):
-                return None
-            val = float(value)
-            if min_value is not None and val < min_value:
-                return None
-            if max_value is not None and val > max_value:
-                return None
-            return val
 
         # Clear existing data for this year
         db.execute(
@@ -1335,72 +1510,7 @@ def store_tract_housing_affordability(df: pd.DataFrame, data_year: int, acs_year
             """
         )
 
-        rows = []
-        for _, row in df.iterrows():
-            rows.append(
-                {
-                    "tract_geoid": row["tract_geoid"],
-                    "fips_code": row["fips_code"],
-                    "data_year": data_year,
-                    "total_units": int(row.get("total_housing_units", 0)),
-                    "occupied": int(row.get("occupied_units", 0)),
-                    "owner": int(row.get("owner_occupied_units", 0)),
-                    "renter": int(row.get("renter_occupied_units", 0)),
-                    "vacant": int(row.get("vacant_units", 0)),
-                    "vacancy_rate": float(row.get("vacancy_rate", 0)),
-                    "households": int(row.get("total_households", 0)),
-                    "burdened": int(row.get("cost_burdened_households", 0)),
-                    "severely_burdened": int(row.get("severely_cost_burdened_households", 0)),
-                    "burden_pct": float(row.get("cost_burdened_pct", 0)),
-                    "severe_pct": float(row.get("severely_cost_burdened_pct", 0)),
-                    "owner_burden": float(row.get("owner_cost_burdened_pct", 0)),
-                    "renter_burden": float(row.get("renter_cost_burdened_pct", 0)),
-                    "rent": (
-                        int(row.get("median_gross_rent"))
-                        if pd.notna(row.get("median_gross_rent"))
-                        and row.get("median_gross_rent") > 0
-                        else None
-                    ),
-                    "home_value": (
-                        int(row.get("median_home_value"))
-                        if pd.notna(row.get("median_home_value"))
-                        and row.get("median_home_value") > 0
-                        else None
-                    ),
-                    "income": (
-                        int(row.get("median_household_income"))
-                        if pd.notna(row.get("median_household_income"))
-                        and row.get("median_household_income") > 0
-                        else None
-                    ),
-                    "pti": safe_float(
-                        row.get("price_to_income_ratio"), min_value=0, max_value=9999.99
-                    ),
-                    "rti": safe_float(row.get("rent_to_income_ratio"), min_value=0, max_value=1),
-                    "commute_time": float(row.get("avg_commute_time_minutes", 0)),
-                    "commute_cost": int(row.get("estimated_commute_cost_monthly", 0)),
-                    "ht_pct": safe_float(
-                        row.get("housing_plus_transport_pct"), min_value=0, max_value=1
-                    ),
-                    "year_built": (
-                        int(row.get("housing_age_median_year", 0))
-                        if pd.notna(row.get("housing_age_median_year"))
-                        else None
-                    ),
-                    "pre_1950": float(row.get("pre_1950_housing_pct", 0)),
-                    "crowded": float(row.get("crowded_units_pct", 0)),
-                    "no_plumbing": float(row.get("lacking_complete_plumbing_pct", 0)),
-                    "no_kitchen": float(row.get("lacking_complete_kitchen_pct", 0)),
-                    "burden_score": float(row.get("affordability_burden_score", 0)),
-                    "stock_score": float(row.get("affordable_stock_score", 0)),
-                    "quality_score": float(row.get("housing_quality_score", 0)),
-                    "affordability_score": float(row.get("housing_affordability_score", 0)),
-                    "area": float(row.get("land_area_sq_mi", 0)),
-                    "density": float(row.get("housing_density_per_sq_mi", 0)),
-                    "population": int(row.get("population", 0)),
-                    "acs_year": acs_year,
-                }
-            )
+        rows = _build_tract_housing_rows(df=df, data_year=data_year, acs_year=acs_year)
 
         execute_batch(db, insert_sql, rows, chunk_size=1000)
 
@@ -1424,16 +1534,6 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
     logger.info(f"Updating {len(df)} county housing affordability records...")
 
     with get_db() as db:
-
-        def safe_float(value, min_value: float = None, max_value: float = None):
-            if value is None or pd.isna(value):
-                return None
-            val = float(value)
-            if min_value is not None and val < min_value:
-                return None
-            if max_value is not None and val > max_value:
-                return None
-            return val
 
         # Get existing v1 elasticity scores
         elasticity_scores = {}
@@ -1488,73 +1588,12 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
             """
         )
 
-        rows = []
-        # Update each county
-        for _, row in df.iterrows():
-            fips_code = row["fips_code"]
-            elasticity = elasticity_scores.get(fips_code)
-            affordability = row.get("housing_affordability_score")
-
-            # Compute composite index
-            if elasticity is None and affordability is None:
-                opportunity_index = None
-            elif elasticity is None:
-                opportunity_index = affordability
-            elif affordability is None:
-                opportunity_index = elasticity
-            else:
-                opportunity_index = (
-                    ELASTICITY_WEIGHT * elasticity + AFFORDABILITY_WEIGHT * affordability
-                )
-
-            rows.append(
-                {
-                    "fips_code": fips_code,
-                    "data_year": data_year,
-                    "households": int(row.get("total_households", 0)),
-                    "burdened": int(row.get("cost_burdened_households", 0)),
-                    "severely_burdened": int(row.get("severely_cost_burdened_households", 0)),
-                    "burden_pct": float(row.get("cost_burdened_pct", 0)),
-                    "severe_pct": float(row.get("severely_cost_burdened_pct", 0)),
-                    "owner_burden": float(row.get("owner_cost_burdened_pct", 0)),
-                    "renter_burden": float(row.get("renter_cost_burdened_pct", 0)),
-                    "rti": safe_float(row.get("rent_to_income_ratio"), min_value=0, max_value=1),
-                    "commute_time": float(row.get("avg_commute_time_minutes", 0)),
-                    "ht_pct": safe_float(
-                        row.get("housing_plus_transport_pct"), min_value=0, max_value=1
-                    ),
-                    "year_built": (
-                        int(row.get("housing_age_median_year", 0))
-                        if pd.notna(row.get("housing_age_median_year"))
-                        else None
-                    ),
-                    "pre_1950": float(row.get("pre_1950_housing_pct", 0)),
-                    "crowded": float(row.get("crowded_units_pct", 0)),
-                    "quality_score": float(row.get("housing_quality_score", 0)),
-                    "burden_score": float(row.get("affordability_burden_score", 0)),
-                    "stock_score": float(row.get("affordable_stock_score", 0)),
-                    "affordability_score": float(row.get("housing_affordability_score", 0)),
-                    "fmr_2br": int(row.get("fmr_2br")) if pd.notna(row.get("fmr_2br")) else None,
-                    "fmr_2br_to_income": safe_float(
-                        row.get("fmr_2br_to_income"), min_value=0, max_value=10
-                    ),
-                    "hud_fmr_year": (
-                        int(row.get("hud_fmr_year")) if pd.notna(row.get("hud_fmr_year")) else None
-                    ),
-                    "lihtc_units": (
-                        int(row.get("lihtc_units")) if pd.notna(row.get("lihtc_units")) else None
-                    ),
-                    "lihtc_units_per_1000_households": safe_float(
-                        row.get("lihtc_units_per_1000_households"), min_value=0, max_value=1000
-                    ),
-                    "lihtc_year": (
-                        int(row.get("lihtc_year")) if pd.notna(row.get("lihtc_year")) else None
-                    ),
-                    "opportunity_index": opportunity_index,
-                    "acs_year": acs_year,
-                    "affordability_version": row.get("affordability_version", "v2-affordability"),
-                }
-            )
+        rows = _build_county_housing_update_rows(
+            df=df,
+            data_year=data_year,
+            acs_year=acs_year,
+            elasticity_scores=elasticity_scores,
+        )
 
         execute_batch(db, update_sql, rows, chunk_size=1000)
 

@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,6 +10,7 @@ from src.processing.normalization import (
     normalize_feature,
     percentile_normalize,
     robust_zscore_normalize,
+    store_normalized_features,
 )
 
 
@@ -98,3 +101,59 @@ def test_normalize_feature_success_with_nan_padding():
     assert result.loc[0] == pytest.approx(1 / 3)
     assert result.loc[1] == pytest.approx(2 / 3)
     assert result.loc[2] == pytest.approx(1.0)
+
+
+def test_store_normalized_features_uses_batched_execute(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.executions = []
+            self.commit_calls = 0
+
+        def execute(self, sql, params=None):
+            self.executions.append((sql, params))
+
+        def commit(self):
+            self.commit_calls += 1
+
+    fake_db = FakeDB()
+
+    @contextmanager
+    def fake_get_db():
+        yield fake_db
+
+    monkeypatch.setattr("src.processing.normalization.get_db", fake_get_db)
+    monkeypatch.setattr("src.processing.normalization.table_name", lambda t: t)
+
+    normalized_layers = {
+        "layer_a": pd.DataFrame(
+            {
+                "fips_code": ["24001", "24003"],
+                "data_year": [2024, 2024],
+                "feature_a_normalized": [0.1, np.nan],
+            }
+        ),
+        "layer_b": pd.DataFrame(
+            {
+                "fips_code": ["24001", "24003"],
+                "data_year": [2024, 2024],
+                "feature_b_normalized": [0.2, 0.3],
+            }
+        ),
+    }
+
+    store_normalized_features(normalized_layers, data_year=2024)
+
+    assert fake_db.commit_calls == 2
+    assert len(fake_db.executions) == 2
+    _, batched_params = fake_db.executions[1]
+    assert isinstance(batched_params, list)
+    assert len(batched_params) == 3
+
+    observed = {
+        (row["fips_code"], row["feature_name"], row["normalized_value"]) for row in batched_params
+    }
+    assert observed == {
+        ("24001", "feature_a", 0.1),
+        ("24001", "feature_b", 0.2),
+        ("24003", "feature_b", 0.3),
+    }

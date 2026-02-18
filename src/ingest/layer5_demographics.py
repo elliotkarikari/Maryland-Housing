@@ -34,6 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.database import get_db, log_refresh
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file, fetch_census_data
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -715,9 +716,8 @@ def store_demographic_data(df: pd.DataFrame):
         """
         )
 
-        for _, row in df.iterrows():
-            row_dict = {k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()}
-            db.execute(insert_sql, row_dict)
+        rows = df.to_dict(orient="records")
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 

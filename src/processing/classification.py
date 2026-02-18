@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -402,41 +403,57 @@ def store_classifications(classifications_df: pd.DataFrame):
     """
     logger.info(f"Storing classifications for {len(classifications_df)} counties")
 
+    sql = text(
+        f"""
+        INSERT INTO {table_name('county_classifications')} (
+            fips_code, data_year, directional_class, composite_score,
+            confidence_class, synthesis_grouping, primary_strengths, primary_weaknesses,
+            key_trends, classification_method, version
+        ) VALUES (
+            :fips_code, :data_year, :directional_class, :composite_score,
+            :confidence_class, :synthesis_grouping, :primary_strengths, :primary_weaknesses,
+            :key_trends, :classification_method, :version
+        )
+        ON CONFLICT (fips_code, data_year)
+        DO UPDATE SET
+            directional_class = EXCLUDED.directional_class,
+            composite_score = EXCLUDED.composite_score,
+            confidence_class = EXCLUDED.confidence_class,
+            synthesis_grouping = EXCLUDED.synthesis_grouping,
+            primary_strengths = EXCLUDED.primary_strengths,
+            primary_weaknesses = EXCLUDED.primary_weaknesses,
+            key_trends = EXCLUDED.key_trends,
+            classification_method = EXCLUDED.classification_method,
+            version = EXCLUDED.version,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    )
+
+    rows = []
+    for row in classifications_df.to_dict(orient="records"):
+        fips_code = row.get("fips_code")
+        rows.append(
+            {
+                "fips_code": (
+                    None
+                    if pd.isna(fips_code)
+                    else fips_code if isinstance(fips_code, str) else str(int(fips_code))
+                ),
+                "data_year": int(row.get("data_year")),
+                "directional_class": row.get("directional_class"),
+                "composite_score": row.get("composite_score"),
+                "confidence_class": row.get("confidence_class"),
+                "synthesis_grouping": row.get("synthesis_grouping"),
+                "primary_strengths": row.get("primary_strengths"),
+                "primary_weaknesses": row.get("primary_weaknesses"),
+                "key_trends": row.get("key_trends"),
+                "classification_method": row.get("classification_method"),
+                "version": row.get("version"),
+            }
+        )
+
     with get_db() as db:
-        for _, row in classifications_df.iterrows():
-            sql = text(
-                f"""
-                INSERT INTO {table_name('county_classifications')} (
-                    fips_code, data_year, directional_class, composite_score,
-                    confidence_class, synthesis_grouping, primary_strengths, primary_weaknesses,
-                    key_trends, classification_method, version
-                ) VALUES (
-                    :fips_code, :data_year, :directional_class, :composite_score,
-                    :confidence_class, :synthesis_grouping, :primary_strengths, :primary_weaknesses,
-                    :key_trends, :classification_method, :version
-                )
-                ON CONFLICT (fips_code, data_year)
-                DO UPDATE SET
-                    directional_class = EXCLUDED.directional_class,
-                    composite_score = EXCLUDED.composite_score,
-                    confidence_class = EXCLUDED.confidence_class,
-                    synthesis_grouping = EXCLUDED.synthesis_grouping,
-                    primary_strengths = EXCLUDED.primary_strengths,
-                    primary_weaknesses = EXCLUDED.primary_weaknesses,
-                    key_trends = EXCLUDED.key_trends,
-                    classification_method = EXCLUDED.classification_method,
-                    version = EXCLUDED.version,
-                    updated_at = CURRENT_TIMESTAMP
-            """
-            )
-
-            # Convert lists to PostgreSQL arrays
-            params = row.to_dict()
-            params["composite_score"] = (
-                None if pd.isna(params["composite_score"]) else float(params["composite_score"])
-            )
-
-            db.execute(sql, params)
+        execute_batch(db, sql, rows, chunk_size=1000)
 
         db.commit()
 

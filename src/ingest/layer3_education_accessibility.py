@@ -44,7 +44,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh, table_name as db_table_name
+from config.database import get_db, log_refresh
+from config.database import table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
@@ -1068,6 +1069,57 @@ def aggregate_to_county(tract_df: pd.DataFrame, schools_df: pd.DataFrame) -> pd.
 # =============================================================================
 
 
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _int_or_default(value, default: int = 0) -> int:
+    if _is_missing(value):
+        return int(default)
+    return int(value)
+
+
+def _int_or_none(value):
+    if _is_missing(value):
+        return None
+    return int(value)
+
+
+def _float_or_default(value, default: float = 0.0) -> float:
+    if _is_missing(value):
+        return float(default)
+    return float(value)
+
+
+def _float_or_none(value):
+    if _is_missing(value):
+        return None
+    return float(value)
+
+
+def _str_or_default(value, default: str = "") -> str:
+    if _is_missing(value):
+        return default
+    return str(value)
+
+
+def _bool_or_default(value, default: bool = False) -> bool:
+    if _is_missing(value):
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "t"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "f"}:
+            return False
+    return bool(value)
+
+
 def store_school_directory(schools_df: pd.DataFrame, data_year: int):
     """Store school directory to database."""
     logger.info(f"Storing {len(schools_df)} school directory records...")
@@ -1105,55 +1157,29 @@ def store_school_directory(schools_df: pd.DataFrame, data_year: int):
         )
 
         rows = []
-        for _, row in schools_df.iterrows():
+        for row in schools_df.to_dict(orient="records"):
             rows.append(
                 {
-                    "nces_id": str(row.get("nces_school_id", "")),
-                    "name": row.get("school_name", "Unknown"),
+                    "nces_id": _str_or_default(row.get("nces_school_id")),
+                    "name": _str_or_default(row.get("school_name"), "Unknown"),
                     "type": row.get("school_type"),
                     "grade_low": row.get("grade_low"),
                     "grade_high": row.get("grade_high"),
-                    "fips": row["fips_code"],
+                    "fips": _str_or_default(row.get("fips_code")),
                     "tract": row.get("tract_geoid"),
-                    "lat": float(row["latitude"]) if pd.notna(row.get("latitude")) else None,
-                    "lon": float(row["longitude"]) if pd.notna(row.get("longitude")) else None,
-                    "is_public": bool(row.get("is_public", True)),
-                    "has_prek": bool(row.get("has_prek", False)),
-                    "enrollment": (
-                        int(row["total_enrollment"])
-                        if pd.notna(row.get("total_enrollment"))
-                        else None
-                    ),
-                    "ela_prof": (
-                        float(row["ela_proficiency_pct"])
-                        if pd.notna(row.get("ela_proficiency_pct"))
-                        else None
-                    ),
-                    "math_prof": (
-                        float(row["math_proficiency_pct"])
-                        if pd.notna(row.get("math_proficiency_pct"))
-                        else None
-                    ),
-                    "avg_prof": (
-                        float(row["avg_proficiency_pct"])
-                        if pd.notna(row.get("avg_proficiency_pct"))
-                        else None
-                    ),
-                    "grad_rate": (
-                        float(row["graduation_rate"])
-                        if pd.notna(row.get("graduation_rate"))
-                        else None
-                    ),
-                    "frl_gap": (
-                        float(row["frl_proficiency_gap"])
-                        if pd.notna(row.get("frl_proficiency_gap"))
-                        else None
-                    ),
+                    "lat": _float_or_none(row.get("latitude")),
+                    "lon": _float_or_none(row.get("longitude")),
+                    "is_public": _bool_or_default(row.get("is_public"), True),
+                    "has_prek": _bool_or_default(row.get("has_prek"), False),
+                    "enrollment": _int_or_none(row.get("total_enrollment")),
+                    "ela_prof": _float_or_none(row.get("ela_proficiency_pct")),
+                    "math_prof": _float_or_none(row.get("math_proficiency_pct")),
+                    "avg_prof": _float_or_none(row.get("avg_proficiency_pct")),
+                    "grad_rate": _float_or_none(row.get("graduation_rate")),
+                    "frl_gap": _float_or_none(row.get("frl_proficiency_gap")),
                     "quality_tier": row.get("quality_tier"),
-                    "quality_score": (
-                        float(row["quality_score"]) if pd.notna(row.get("quality_score")) else None
-                    ),
-                    "data_year": data_year,
+                    "quality_score": _float_or_none(row.get("quality_score")),
+                    "data_year": int(data_year),
                 }
             )
 
@@ -1215,34 +1241,38 @@ def store_tract_education_accessibility(
         )
 
         rows = []
-        for _, row in df.iterrows():
+        for row in df.to_dict(orient="records"):
             rows.append(
                 {
-                    "tract": row["tract_geoid"],
-                    "fips": row["fips_code"],
-                    "data_year": data_year,
-                    "pop_5_17": int(row.get("school_age_pop_5_17", 0)),
-                    "pop_under_5": int(row.get("school_age_pop_under_5", 0)),
-                    "pop_total": int(row.get("tract_population", 0)),
-                    "schools_in_tract": int(row.get("total_schools_in_tract", 0)),
-                    "has_prek": bool(row.get("has_prek_program", False)),
-                    "schools_15": int(row.get("schools_accessible_15min", 0)),
-                    "schools_30": int(row.get("schools_accessible_30min", 0)),
-                    "hq_15": int(row.get("high_quality_schools_15min", 0)),
-                    "hq_30": int(row.get("high_quality_schools_30min", 0)),
-                    "tq_30": int(row.get("top_quartile_schools_30min", 0)),
-                    "prek_20": int(row.get("prek_programs_accessible_20min", 0)),
-                    "avg_prof": float(row.get("avg_proficiency_accessible_30min", 0)),
-                    "best_prof": float(row.get("best_school_proficiency_15min", 0)),
-                    "choice_diversity": int(row.get("school_choice_diversity", 0)),
-                    "supply_score": float(row.get("school_supply_score", 0)),
-                    "access_score": float(row.get("education_accessibility_score", 0)),
-                    "quality_score": float(row.get("school_quality_score", 0)),
-                    "prek_score": float(row.get("prek_accessibility_score", 0)),
-                    "equity_score": float(row.get("equity_adjusted_score", 0)),
-                    "opportunity_score": float(row.get("education_opportunity_score", 0)),
-                    "nces_year": nces_year,
-                    "acs_year": acs_year,
+                    "tract": _str_or_default(row.get("tract_geoid")),
+                    "fips": _str_or_default(row.get("fips_code")),
+                    "data_year": int(data_year),
+                    "pop_5_17": _int_or_default(row.get("school_age_pop_5_17"), 0),
+                    "pop_under_5": _int_or_default(row.get("school_age_pop_under_5"), 0),
+                    "pop_total": _int_or_default(row.get("tract_population"), 0),
+                    "schools_in_tract": _int_or_default(row.get("total_schools_in_tract"), 0),
+                    "has_prek": _bool_or_default(row.get("has_prek_program"), False),
+                    "schools_15": _int_or_default(row.get("schools_accessible_15min"), 0),
+                    "schools_30": _int_or_default(row.get("schools_accessible_30min"), 0),
+                    "hq_15": _int_or_default(row.get("high_quality_schools_15min"), 0),
+                    "hq_30": _int_or_default(row.get("high_quality_schools_30min"), 0),
+                    "tq_30": _int_or_default(row.get("top_quartile_schools_30min"), 0),
+                    "prek_20": _int_or_default(row.get("prek_programs_accessible_20min"), 0),
+                    "avg_prof": _float_or_default(row.get("avg_proficiency_accessible_30min"), 0.0),
+                    "best_prof": _float_or_default(row.get("best_school_proficiency_15min"), 0.0),
+                    "choice_diversity": _int_or_default(row.get("school_choice_diversity"), 0),
+                    "supply_score": _float_or_default(row.get("school_supply_score"), 0.0),
+                    "access_score": _float_or_default(
+                        row.get("education_accessibility_score"), 0.0
+                    ),
+                    "quality_score": _float_or_default(row.get("school_quality_score"), 0.0),
+                    "prek_score": _float_or_default(row.get("prek_accessibility_score"), 0.0),
+                    "equity_score": _float_or_default(row.get("equity_adjusted_score"), 0.0),
+                    "opportunity_score": _float_or_default(
+                        row.get("education_opportunity_score"), 0.0
+                    ),
+                    "nces_year": int(nces_year),
+                    "acs_year": int(acs_year),
                 }
             )
 
@@ -1346,55 +1376,12 @@ def store_county_education_accessibility(
         """
         )
 
-        rows = []
-        for _, row in df.iterrows():
-            rows.append(
-                {
-                    "fips": row["fips_code"],
-                    "data_year": data_year,
-                    "total_schools": int(row.get("total_schools", 0)),
-                    "schools_with_prek": int(row.get("schools_with_prek", 0)),
-                    "hq_count": int(row.get("high_quality_schools_count", 0)),
-                    "tq_count": int(row.get("top_quartile_schools_count", 0)),
-                    "avg_15": float(row.get("avg_schools_accessible_15min", 0)),
-                    "avg_30": float(row.get("avg_schools_accessible_30min", 0)),
-                    "avg_hq_30": float(row.get("avg_high_quality_accessible_30min", 0)),
-                    "pct_near_hq": float(row.get("pct_pop_near_high_quality", 0)),
-                    "ela_prof": (
-                        float(row["avg_ela_proficiency"])
-                        if pd.notna(row.get("avg_ela_proficiency"))
-                        else None
-                    ),
-                    "math_prof": (
-                        float(row["avg_math_proficiency"])
-                        if pd.notna(row.get("avg_math_proficiency"))
-                        else None
-                    ),
-                    "avg_prof": (
-                        float(row["avg_proficiency"])
-                        if pd.notna(row.get("avg_proficiency"))
-                        else None
-                    ),
-                    "grad_rate": (
-                        float(row["avg_graduation_rate"])
-                        if pd.notna(row.get("avg_graduation_rate"))
-                        else None
-                    ),
-                    "frl_gap": (
-                        float(row["frl_proficiency_gap"])
-                        if pd.notna(row.get("frl_proficiency_gap"))
-                        else None
-                    ),
-                    "supply_score": float(row.get("school_supply_score", 0)),
-                    "access_score": float(row.get("education_accessibility_score", 0)),
-                    "quality_score": float(row.get("school_quality_score", 0)),
-                    "prek_score": float(row.get("prek_accessibility_score", 0)),
-                    "equity_score": float(row.get("equity_score", 0)),
-                    "opportunity_index": float(row.get("education_opportunity_index", 0)),
-                    "nces_year": nces_year,
-                    "acs_year": acs_year,
-                }
-            )
+        rows = _build_county_education_rows(
+            df=df,
+            data_year=data_year,
+            nces_year=nces_year,
+            acs_year=acs_year,
+        )
 
         if use_databricks_backend:
             db.execute(
@@ -1413,6 +1400,41 @@ def store_county_education_accessibility(
         db.commit()
 
     logger.info("✓ County education accessibility stored")
+
+
+def _build_county_education_rows(
+    df: pd.DataFrame, data_year: int, nces_year: int, acs_year: int
+) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "fips": _str_or_default(row.get("fips_code")),
+                "data_year": int(data_year),
+                "total_schools": _int_or_default(row.get("total_schools"), 0),
+                "schools_with_prek": _int_or_default(row.get("schools_with_prek"), 0),
+                "hq_count": _int_or_default(row.get("high_quality_schools_count"), 0),
+                "tq_count": _int_or_default(row.get("top_quartile_schools_count"), 0),
+                "avg_15": _float_or_default(row.get("avg_schools_accessible_15min"), 0.0),
+                "avg_30": _float_or_default(row.get("avg_schools_accessible_30min"), 0.0),
+                "avg_hq_30": _float_or_default(row.get("avg_high_quality_accessible_30min"), 0.0),
+                "pct_near_hq": _float_or_default(row.get("pct_pop_near_high_quality"), 0.0),
+                "ela_prof": _float_or_none(row.get("avg_ela_proficiency")),
+                "math_prof": _float_or_none(row.get("avg_math_proficiency")),
+                "avg_prof": _float_or_none(row.get("avg_proficiency")),
+                "grad_rate": _float_or_none(row.get("avg_graduation_rate")),
+                "frl_gap": _float_or_none(row.get("frl_proficiency_gap")),
+                "supply_score": _float_or_default(row.get("school_supply_score"), 0.0),
+                "access_score": _float_or_default(row.get("education_accessibility_score"), 0.0),
+                "quality_score": _float_or_default(row.get("school_quality_score"), 0.0),
+                "prek_score": _float_or_default(row.get("prek_accessibility_score"), 0.0),
+                "equity_score": _float_or_default(row.get("equity_score"), 0.0),
+                "opportunity_index": _float_or_default(row.get("education_opportunity_index"), 0.0),
+                "nces_year": int(nces_year),
+                "acs_year": int(acs_year),
+            }
+        )
+    return rows
 
 
 # =============================================================================

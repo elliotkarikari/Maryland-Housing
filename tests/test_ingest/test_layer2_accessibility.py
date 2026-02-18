@@ -1,6 +1,12 @@
+from datetime import date
+
+import numpy as np
 import pandas as pd
 
-from src.ingest.layer2_accessibility import _enrich_county_with_general_flows
+from src.ingest.layer2_accessibility import (
+    _build_county_accessibility_rows,
+    _enrich_county_with_general_flows,
+)
 
 
 def test_enrich_county_with_general_flows_blends_accessibility_and_flow_score():
@@ -57,3 +63,39 @@ def test_enrich_county_with_general_flows_falls_back_to_accessibility_only_when_
     assert result.loc[0, "mobility_optionality_index"] == 0.55
     assert result.loc[0, "mobility_optionality_method"] == "v2-accessibility-only"
     assert result.loc[0, "general_inflow_total"] == 0
+
+
+def test_build_county_accessibility_rows_coerces_missing_values():
+    df = pd.DataFrame(
+        {
+            "fips_code": ["24001"],
+            "jobs_accessible_transit_45min": [np.nan],
+            "jobs_accessible_transit_30min": [10],
+            "multimodal_accessibility_score": [0.42],
+            "average_headway_minutes": [np.nan],
+            "acs_flow_year": [np.nan],
+            "general_flow_score": [np.nan],
+            "mobility_optionality_method": [np.nan],
+            "mobility_optionality_index": [np.nan],
+        }
+    )
+
+    rows = _build_county_accessibility_rows(
+        df=df,
+        data_year=2025,
+        gtfs_date=date(2025, 1, 15),
+        osm_date=date(2025, 1, 16),
+        lodes_year=2023,
+        acs_flow_year=2024,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["fips_code"] == "24001"
+    assert row["jobs_transit_45"] == 0
+    assert row["jobs_transit_30"] == 10
+    assert row["avg_headway"] == 999.0
+    assert row["acs_flow_year"] == 2024
+    assert row["general_flow_score"] == 0.0
+    assert row["mobility_method"] == "v2-accessibility-only"
+    assert row["mobility_index"] == 0.0

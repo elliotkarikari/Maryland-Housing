@@ -26,6 +26,7 @@ from src.processing.feature_registry import (
     FeatureDefinition,
     NormMethod,
 )
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -326,6 +327,25 @@ def store_normalized_features(normalized_layers: Dict[str, pd.DataFrame], data_y
     # Ensure data_year column
     merged["data_year"] = data_year
 
+    feature_cols = [col for col in merged.columns if col.endswith("_normalized")]
+    if not feature_cols:
+        logger.warning("No normalized feature columns found to store")
+        return
+
+    insert_sql = text(
+        f"""
+        INSERT INTO {table_name('normalized_features')} (
+            fips_code, data_year, feature_name, normalized_value
+        ) VALUES (
+            :fips_code, :data_year, :feature_name, :normalized_value
+        )
+        ON CONFLICT (fips_code, data_year, feature_name)
+        DO UPDATE SET
+            normalized_value = EXCLUDED.normalized_value,
+            created_at = CURRENT_TIMESTAMP
+    """
+    )
+
     # Store in database
     with get_db() as db:
         # Create normalized_features table if it doesn't exist
@@ -345,43 +365,28 @@ def store_normalized_features(normalized_layers: Dict[str, pd.DataFrame], data_y
         db.execute(create_table_sql)
         db.commit()
 
-        # Insert normalized features (long format for flexibility)
-        insert_count = 0
+        long_df = merged.melt(
+            id_vars=["fips_code", "data_year"],
+            value_vars=feature_cols,
+            var_name="feature_column",
+            value_name="normalized_value",
+        )
+        long_df = long_df[long_df["normalized_value"].notna()].copy()
+        long_df["feature_name"] = long_df["feature_column"].str.replace(
+            "_normalized", "", regex=False
+        )
 
-        for _, row in merged.iterrows():
-            fips_code = row["fips_code"]
+        rows = [
+            {
+                "fips_code": str(row["fips_code"]),
+                "data_year": int(row["data_year"]),
+                "feature_name": str(row["feature_name"]),
+                "normalized_value": float(row["normalized_value"]),
+            }
+            for _, row in long_df.iterrows()
+        ]
 
-            for col in merged.columns:
-                if col.endswith("_normalized"):
-                    feature_name = col.replace("_normalized", "")
-                    normalized_value = row[col]
-
-                    if pd.notna(normalized_value):
-                        insert_sql = text(
-                            f"""
-                            INSERT INTO {table_name('normalized_features')} (
-                                fips_code, data_year, feature_name, normalized_value
-                            ) VALUES (
-                                :fips_code, :data_year, :feature_name, :normalized_value
-                            )
-                            ON CONFLICT (fips_code, data_year, feature_name)
-                            DO UPDATE SET
-                                normalized_value = EXCLUDED.normalized_value,
-                                created_at = CURRENT_TIMESTAMP
-                        """
-                        )
-
-                        db.execute(
-                            insert_sql,
-                            {
-                                "fips_code": str(fips_code),
-                                "data_year": int(data_year),
-                                "feature_name": str(feature_name),
-                                "normalized_value": float(normalized_value),
-                            },
-                        )
-
-                        insert_count += 1
+        insert_count = execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 

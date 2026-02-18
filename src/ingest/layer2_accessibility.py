@@ -49,7 +49,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh, table_name as db_table_name
+from config.database import get_db, log_refresh
+from config.database import table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.db_bulk import execute_batch
@@ -1304,6 +1305,93 @@ def aggregate_to_county(
 # =============================================================================
 
 
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _int_or_default(value: Any, default: int = 0) -> int:
+    if _is_missing(value):
+        return int(default)
+    return int(value)
+
+
+def _float_or_default(value: Any, default: float = 0.0) -> float:
+    if _is_missing(value):
+        return float(default)
+    return float(value)
+
+
+def _str_or_default(value: Any, default: str = "") -> str:
+    if _is_missing(value):
+        return default
+    return str(value)
+
+
+def _build_county_accessibility_rows(
+    df: pd.DataFrame,
+    data_year: int,
+    gtfs_date: date,
+    osm_date: date,
+    lodes_year: int,
+    acs_flow_year: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    default_flow_year = int(acs_flow_year if acs_flow_year is not None else data_year)
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "fips_code": _str_or_default(row.get("fips_code")),
+                "data_year": int(data_year),
+                "jobs_transit_45": _int_or_default(row.get("jobs_accessible_transit_45min"), 0),
+                "jobs_transit_30": _int_or_default(row.get("jobs_accessible_transit_30min"), 0),
+                "jobs_walk_30": _int_or_default(row.get("jobs_accessible_walk_30min"), 0),
+                "jobs_bike_30": _int_or_default(row.get("jobs_accessible_bike_30min"), 0),
+                "jobs_car_30": _int_or_default(row.get("jobs_accessible_car_30min"), 0),
+                "transit_score": _float_or_default(row.get("transit_accessibility_score"), 0.0),
+                "walk_score": _float_or_default(row.get("walk_accessibility_score"), 0.0),
+                "bike_score": _float_or_default(row.get("bike_accessibility_score"), 0.0),
+                "multimodal_score": _float_or_default(
+                    row.get("multimodal_accessibility_score"), 0.0
+                ),
+                "pct_regional": _float_or_default(row.get("pct_regional_jobs_by_transit"), 0.0),
+                "transit_car_ratio": _float_or_default(
+                    row.get("transit_car_accessibility_ratio"), 0.0
+                ),
+                "stop_density": _float_or_default(row.get("transit_stop_density"), 0.0),
+                "frequent_pct": _float_or_default(row.get("frequent_transit_area_pct"), 0.0),
+                "avg_headway": _float_or_default(row.get("average_headway_minutes"), 999.0),
+                "acs_flow_year": _int_or_default(row.get("acs_flow_year"), default_flow_year),
+                "general_nonmovers": _int_or_default(row.get("general_nonmovers"), 0),
+                "general_inflow_total": _int_or_default(row.get("general_inflow_total"), 0),
+                "general_outflow_total": _int_or_default(row.get("general_outflow_total"), 0),
+                "general_net_flow": _int_or_default(row.get("general_net_flow"), 0),
+                "general_inflow_rate": _float_or_default(row.get("general_inflow_rate"), 0.0),
+                "general_outflow_rate": _float_or_default(row.get("general_outflow_rate"), 0.0),
+                "general_net_flow_rate": _float_or_default(row.get("general_net_flow_rate"), 0.0),
+                "general_flow_score": _float_or_default(row.get("general_flow_score"), 0.0),
+                "base_score": _float_or_default(row.get("mobility_optionality_base_score"), 0.0),
+                "mobility_method": _str_or_default(
+                    row.get("mobility_optionality_method"), "v2-accessibility-only"
+                ),
+                "mobility_index": _float_or_default(
+                    row.get(
+                        "mobility_optionality_index", row.get("multimodal_accessibility_score")
+                    ),
+                    0.0,
+                ),
+                "gtfs_date": gtfs_date,
+                "osm_date": osm_date,
+                "lodes_year": int(lodes_year),
+            }
+        )
+    return rows
+
+
 def store_tract_accessibility(
     df: pd.DataFrame, data_year: int, gtfs_date: date, osm_date: date, lodes_year: int
 ):
@@ -1360,32 +1448,38 @@ def store_tract_accessibility(
         )
 
         rows = []
-        for _, row in df.iterrows():
+        for row in df.to_dict(orient="records"):
             rows.append(
                 {
-                    "tract_geoid": row["tract_geoid"],
-                    "fips_code": row["fips_code"],
-                    "data_year": data_year,
-                    "jobs_transit_45": int(row.get("jobs_transit_45", 0)),
-                    "jobs_transit_30": int(row.get("jobs_transit_30", 0)),
-                    "jobs_walk_30": int(row.get("jobs_walk_30", 0)),
-                    "jobs_bike_30": int(row.get("jobs_bike_30", 0)),
-                    "jobs_car_30": int(row.get("jobs_car_30", 0)),
-                    "transit_45_score": float(row.get("transit_45_score", 0)),
-                    "walk_30_score": float(row.get("walk_30_score", 0)),
-                    "bike_30_score": float(row.get("bike_30_score", 0)),
-                    "multimodal_accessibility_score": float(
-                        row.get("multimodal_accessibility_score", 0)
+                    "tract_geoid": _str_or_default(row.get("tract_geoid")),
+                    "fips_code": _str_or_default(row.get("fips_code")),
+                    "data_year": int(data_year),
+                    "jobs_transit_45": _int_or_default(row.get("jobs_transit_45"), 0),
+                    "jobs_transit_30": _int_or_default(row.get("jobs_transit_30"), 0),
+                    "jobs_walk_30": _int_or_default(row.get("jobs_walk_30"), 0),
+                    "jobs_bike_30": _int_or_default(row.get("jobs_bike_30"), 0),
+                    "jobs_car_30": _int_or_default(row.get("jobs_car_30"), 0),
+                    "transit_45_score": _float_or_default(row.get("transit_45_score"), 0.0),
+                    "walk_30_score": _float_or_default(row.get("walk_30_score"), 0.0),
+                    "bike_30_score": _float_or_default(row.get("bike_30_score"), 0.0),
+                    "multimodal_accessibility_score": _float_or_default(
+                        row.get("multimodal_accessibility_score"), 0.0
                     ),
-                    "pct_regional_jobs_transit": float(row.get("pct_regional_jobs_transit", 0)),
-                    "transit_car_ratio": float(row.get("transit_car_ratio", 0)),
-                    "transit_stop_density": float(row.get("transit_stop_density", 0)),
-                    "frequent_transit_area_pct": float(row.get("frequent_transit_area_pct", 0)),
-                    "average_headway_minutes": float(row.get("average_headway_minutes", 999)),
-                    "tract_population": int(row.get("tract_population", 0)),
+                    "pct_regional_jobs_transit": _float_or_default(
+                        row.get("pct_regional_jobs_transit"), 0.0
+                    ),
+                    "transit_car_ratio": _float_or_default(row.get("transit_car_ratio"), 0.0),
+                    "transit_stop_density": _float_or_default(row.get("transit_stop_density"), 0.0),
+                    "frequent_transit_area_pct": _float_or_default(
+                        row.get("frequent_transit_area_pct"), 0.0
+                    ),
+                    "average_headway_minutes": _float_or_default(
+                        row.get("average_headway_minutes"), 999.0
+                    ),
+                    "tract_population": _int_or_default(row.get("tract_population"), 0),
                     "gtfs_date": gtfs_date,
                     "osm_date": osm_date,
-                    "lodes_year": lodes_year,
+                    "lodes_year": int(lodes_year),
                 }
             )
 
@@ -1550,12 +1644,12 @@ def store_acs_flow_rows_raw(flow_df: pd.DataFrame, flow_year: int) -> int:
             return int(value)
 
         rows = []
-        for _, row in flow_df.iterrows():
+        for row in flow_df.to_dict(orient="records"):
             rows.append(
                 {
-                    "fips_code": str(row.get("fips_code", "")),
-                    "geoid2": str(row.get("geoid2", "")),
-                    "sumlev2": str(row.get("sumlev2", "")),
+                    "fips_code": _str_or_default(row.get("fips_code")),
+                    "geoid2": _str_or_default(row.get("geoid2")),
+                    "sumlev2": _str_or_default(row.get("sumlev2")),
                     "movedin": _int_or_none(row.get("movedin")),
                     "movedout": _int_or_none(row.get("movedout")),
                     "nonmovers": _int_or_none(row.get("nonmovers")),
@@ -1638,20 +1732,22 @@ def store_county_general_flows(flow_summary: pd.DataFrame, flow_year: int) -> in
             """
         )
         rows = []
-        for _, row in flow_summary.iterrows():
+        for row in flow_summary.to_dict(orient="records"):
             rows.append(
                 {
-                    "fips_code": str(row.get("fips_code", "")),
+                    "fips_code": _str_or_default(row.get("fips_code")),
                     "acs_flow_year": int(flow_year),
-                    "general_nonmovers": int(row.get("general_nonmovers", 0)),
-                    "general_inflow_total": int(row.get("general_inflow_total", 0)),
-                    "general_outflow_total": int(row.get("general_outflow_total", 0)),
-                    "general_net_flow": int(row.get("general_net_flow", 0)),
-                    "general_inflow_rate": float(row.get("general_inflow_rate", 0)),
-                    "general_outflow_rate": float(row.get("general_outflow_rate", 0)),
-                    "general_net_flow_rate": float(row.get("general_net_flow_rate", 0)),
-                    "general_flow_score": float(row.get("general_flow_score", 0)),
-                    "mobility_flow_method": str(
+                    "general_nonmovers": _int_or_default(row.get("general_nonmovers"), 0),
+                    "general_inflow_total": _int_or_default(row.get("general_inflow_total"), 0),
+                    "general_outflow_total": _int_or_default(row.get("general_outflow_total"), 0),
+                    "general_net_flow": _int_or_default(row.get("general_net_flow"), 0),
+                    "general_inflow_rate": _float_or_default(row.get("general_inflow_rate"), 0.0),
+                    "general_outflow_rate": _float_or_default(row.get("general_outflow_rate"), 0.0),
+                    "general_net_flow_rate": _float_or_default(
+                        row.get("general_net_flow_rate"), 0.0
+                    ),
+                    "general_flow_score": _float_or_default(row.get("general_flow_score"), 0.0),
+                    "mobility_flow_method": _str_or_default(
                         row.get("mobility_flow_method", "v2-accessibility+acs-inflow")
                     ),
                     "updated_at": datetime.utcnow(),
@@ -1833,54 +1929,14 @@ def store_county_accessibility(
             """
         )
 
-        rows = []
-        for _, row in df.iterrows():
-            rows.append(
-                {
-                    "fips_code": row["fips_code"],
-                    "data_year": data_year,
-                    "jobs_transit_45": int(row.get("jobs_accessible_transit_45min", 0)),
-                    "jobs_transit_30": int(row.get("jobs_accessible_transit_30min", 0)),
-                    "jobs_walk_30": int(row.get("jobs_accessible_walk_30min", 0)),
-                    "jobs_bike_30": int(row.get("jobs_accessible_bike_30min", 0)),
-                    "jobs_car_30": int(row.get("jobs_accessible_car_30min", 0)),
-                    "transit_score": float(row.get("transit_accessibility_score", 0)),
-                    "walk_score": float(row.get("walk_accessibility_score", 0)),
-                    "bike_score": float(row.get("bike_accessibility_score", 0)),
-                    "multimodal_score": float(row.get("multimodal_accessibility_score", 0)),
-                    "pct_regional": float(row.get("pct_regional_jobs_by_transit", 0)),
-                    "transit_car_ratio": float(row.get("transit_car_accessibility_ratio", 0)),
-                    "stop_density": float(row.get("transit_stop_density", 0)),
-                    "frequent_pct": float(row.get("frequent_transit_area_pct", 0)),
-                    "avg_headway": float(row.get("average_headway_minutes", 999)),
-                    "acs_flow_year": (
-                        int(row.get("acs_flow_year"))
-                        if pd.notna(row.get("acs_flow_year"))
-                        else int(acs_flow_year if acs_flow_year is not None else data_year)
-                    ),
-                    "general_nonmovers": int(row.get("general_nonmovers", 0)),
-                    "general_inflow_total": int(row.get("general_inflow_total", 0)),
-                    "general_outflow_total": int(row.get("general_outflow_total", 0)),
-                    "general_net_flow": int(row.get("general_net_flow", 0)),
-                    "general_inflow_rate": float(row.get("general_inflow_rate", 0)),
-                    "general_outflow_rate": float(row.get("general_outflow_rate", 0)),
-                    "general_net_flow_rate": float(row.get("general_net_flow_rate", 0)),
-                    "general_flow_score": float(row.get("general_flow_score", 0)),
-                    "base_score": float(row.get("mobility_optionality_base_score", 0)),
-                    "mobility_method": str(
-                        row.get("mobility_optionality_method", "v2-accessibility-only")
-                    ),
-                    "mobility_index": float(
-                        row.get(
-                            "mobility_optionality_index",
-                            row.get("multimodal_accessibility_score", 0),
-                        )
-                    ),
-                    "gtfs_date": gtfs_date,
-                    "osm_date": osm_date,
-                    "lodes_year": lodes_year,
-                }
-            )
+        rows = _build_county_accessibility_rows(
+            df=df,
+            data_year=data_year,
+            gtfs_date=gtfs_date,
+            osm_date=osm_date,
+            lodes_year=lodes_year,
+            acs_flow_year=acs_flow_year,
+        )
 
         if use_databricks_backend:
             db.execute(

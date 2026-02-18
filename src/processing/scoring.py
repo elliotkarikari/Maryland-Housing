@@ -22,6 +22,7 @@ from src.processing.feature_registry import (
     LAYER_DEFINITIONS,
     get_primary_features,
 )
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -66,30 +67,21 @@ def calculate_layer_score(
     else:
         weights = {col: 1.0 for col in available_cols}
 
-    # Calculate weighted average
-    scores = []
-    coverage = []
+    values_df = df[available_cols].apply(pd.to_numeric, errors="coerce")
+    values_np = values_df.to_numpy(dtype=float)
+    weight_vector = np.array([weights[col] for col in available_cols], dtype=float)
 
-    for _, row in df.iterrows():
-        values = []
-        wts = []
+    valid_mask = ~np.isnan(values_np)
+    weighted_sum = np.where(valid_mask, values_np * weight_vector, 0.0).sum(axis=1)
+    weight_sum = (valid_mask * weight_vector).sum(axis=1)
 
-        for col in available_cols:
-            val = row[col]
-            if pd.notna(val):
-                values.append(val)
-                wts.append(weights[col])
-
-        if values:
-            # Weighted average
-            score = np.average(values, weights=wts)
-            cov = len(values) / len(available_cols)  # Feature coverage
-        else:
-            score = np.nan
-            cov = 0.0
-
-        scores.append(score)
-        coverage.append(cov)
+    scores = np.divide(
+        weighted_sum,
+        weight_sum,
+        out=np.full(len(values_df), np.nan, dtype=float),
+        where=weight_sum > 0,
+    )
+    coverage = valid_mask.sum(axis=1) / len(available_cols)
 
     return pd.Series(scores, index=df.index), pd.Series(coverage, index=df.index)
 
@@ -200,12 +192,46 @@ def store_layer_scores(layer_scores_df: pd.DataFrame, data_year: int):
     """
     logger.info(f"Storing layer scores for {len(layer_scores_df)} counties")
 
-    with get_db() as db:
-        for _, row in layer_scores_df.iterrows():
-            # Extract scores
-            scores = {
-                "fips_code": row["fips_code"],
-                "data_year": data_year,
+    sql = text(
+        f"""
+        INSERT INTO {table_name('layer_scores')} (
+            fips_code, data_year,
+            employment_gravity_score, mobility_optionality_score,
+            school_trajectory_score, housing_elasticity_score,
+            demographic_momentum_score, risk_drag_score,
+            composite_raw, composite_normalized
+        ) VALUES (
+            :fips_code, :data_year,
+            :employment_gravity_score, :mobility_optionality_score,
+            :school_trajectory_score, :housing_elasticity_score,
+            :demographic_momentum_score, :risk_drag_score,
+            :composite_raw, :composite_normalized
+        )
+        ON CONFLICT (fips_code, data_year)
+        DO UPDATE SET
+            employment_gravity_score = EXCLUDED.employment_gravity_score,
+            mobility_optionality_score = EXCLUDED.mobility_optionality_score,
+            school_trajectory_score = EXCLUDED.school_trajectory_score,
+            housing_elasticity_score = EXCLUDED.housing_elasticity_score,
+            demographic_momentum_score = EXCLUDED.demographic_momentum_score,
+            risk_drag_score = EXCLUDED.risk_drag_score,
+            composite_raw = EXCLUDED.composite_raw,
+            composite_normalized = EXCLUDED.composite_normalized,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    )
+
+    rows = []
+    for row in layer_scores_df.to_dict(orient="records"):
+        fips_code = row.get("fips_code")
+        rows.append(
+            {
+                "fips_code": (
+                    None
+                    if pd.isna(fips_code)
+                    else fips_code if isinstance(fips_code, str) else str(int(fips_code))
+                ),
+                "data_year": int(data_year),
                 "employment_gravity_score": row.get("employment_gravity_score"),
                 "mobility_optionality_score": row.get("mobility_optionality_score"),
                 "school_trajectory_score": row.get("school_trajectory_score"),
@@ -215,51 +241,10 @@ def store_layer_scores(layer_scores_df: pd.DataFrame, data_year: int):
                 "composite_raw": row.get("composite_raw"),
                 "composite_normalized": row.get("composite_normalized"),
             }
+        )
 
-            # Convert NaN to None and ensure proper types for SQL
-            scores = {
-                k: (
-                    None
-                    if pd.isna(v)
-                    else (
-                        str(int(v))
-                        if k == "fips_code"
-                        else int(v) if k == "data_year" else float(v)
-                    )
-                )
-                for k, v in scores.items()
-            }
-
-            sql = text(
-                f"""
-                INSERT INTO {table_name('layer_scores')} (
-                    fips_code, data_year,
-                    employment_gravity_score, mobility_optionality_score,
-                    school_trajectory_score, housing_elasticity_score,
-                    demographic_momentum_score, risk_drag_score,
-                    composite_raw, composite_normalized
-                ) VALUES (
-                    :fips_code, :data_year,
-                    :employment_gravity_score, :mobility_optionality_score,
-                    :school_trajectory_score, :housing_elasticity_score,
-                    :demographic_momentum_score, :risk_drag_score,
-                    :composite_raw, :composite_normalized
-                )
-                ON CONFLICT (fips_code, data_year)
-                DO UPDATE SET
-                    employment_gravity_score = EXCLUDED.employment_gravity_score,
-                    mobility_optionality_score = EXCLUDED.mobility_optionality_score,
-                    school_trajectory_score = EXCLUDED.school_trajectory_score,
-                    housing_elasticity_score = EXCLUDED.housing_elasticity_score,
-                    demographic_momentum_score = EXCLUDED.demographic_momentum_score,
-                    risk_drag_score = EXCLUDED.risk_drag_score,
-                    composite_raw = EXCLUDED.composite_raw,
-                    composite_normalized = EXCLUDED.composite_normalized,
-                    updated_at = CURRENT_TIMESTAMP
-            """
-            )
-
-            db.execute(sql, scores)
+    with get_db() as db:
+        execute_batch(db, sql, rows, chunk_size=1000)
 
         db.commit()
 
