@@ -17,6 +17,7 @@
 - [x] Bit 3 (slice I): optimize layer6 storage row materialization (`src/ingest/layer6_risk_vulnerability.py`) with reusable row-builder helper
 - [x] Bit 3 (slice J): optimize export explainability row pass (`src/export/geojson_export.py`) with record-based builder helper
 - [x] Bit 3 (slice K): optimize remaining Layer5 compute loops (`src/ingest/layer5_demographics.py`, `src/ingest/layer5_demographic_equity.py`) with vectorized year-anchored/join-based calculations
-- [ ] Bit 3: simplify ingest write paths (replace highest-cost row-by-row inserts)
+- [x] Bit 3: simplify ingest write paths (replace highest-cost row-by-row inserts)
 - [x] Bit 4 (slice A): accelerate CI/dev cycle time with workflow concurrency cancellation + archive/process-only path ignores + `make test-fast`
-- [ ] Bit 4: automate performance regression checks for ingest/API hot paths
+- [x] Bit 4: automate performance regression checks for ingest/API hot paths
+- [x] Bit 5: weekly whole-codebase automation run (quality + perf regression + tests)
