@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,6 +10,7 @@ from src.processing.multiyear_classification import (
     classify_directional_status,
     compute_composite_score,
     determine_final_grouping,
+    store_final_synthesis,
 )
 
 
@@ -95,3 +98,57 @@ def test_compute_composite_score_with_risk_penalty():
 )
 def test_determine_final_grouping(directional, confidence, reasons, expected):
     assert determine_final_grouping(directional, confidence, reasons, 0.5) == expected
+
+
+def test_store_final_synthesis_uses_batched_execute(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.executions = []
+            self.commit_calls = 0
+
+        def execute(self, sql, params=None):
+            self.executions.append((sql, params))
+
+        def commit(self):
+            self.commit_calls += 1
+
+    fake_db = FakeDB()
+
+    @contextmanager
+    def fake_get_db():
+        yield fake_db
+
+    monkeypatch.setattr("src.processing.multiyear_classification.get_db", fake_get_db)
+
+    df = pd.DataFrame(
+        {
+            "geoid": ["24001", "24003"],
+            "current_as_of_year": [2025, 2025],
+            "final_grouping": ["emerging_tailwinds", "high_uncertainty"],
+            "directional_status": ["improving", "stable"],
+            "confidence_level": ["strong", "fragile"],
+            "uncertainty_reasons": [[], ["sparse_coverage", "some_layers_sparse"]],
+            "composite_score": [0.74, np.nan],
+            "risk_drag_score": [0.2, np.nan],
+            "employment_gravity_score": [0.8, 0.3],
+            "mobility_optionality_score": [0.7, 0.2],
+            "school_trajectory_score": [0.75, 0.25],
+            "housing_elasticity_score": [0.7, 0.2],
+            "demographic_momentum_score": [0.6, 0.2],
+        }
+    )
+
+    store_final_synthesis(df)
+
+    assert fake_db.commit_calls == 1
+    assert len(fake_db.executions) == 2
+    _, delete_params = fake_db.executions[0]
+    assert delete_params is None
+
+    _, insert_params = fake_db.executions[1]
+    assert isinstance(insert_params, list)
+    assert len(insert_params) == 2
+    assert insert_params[0]["uncertainty_level"] == "low"
+    assert insert_params[1]["uncertainty_level"] == "high"
+    assert insert_params[1]["composite_score"] is None
+    assert insert_params[0]["classification_version"] == "v2.0-multiyear"

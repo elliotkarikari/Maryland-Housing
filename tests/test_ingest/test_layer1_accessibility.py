@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -7,6 +10,8 @@ from src.ingest.layer1_economic_accessibility import (
     compute_economic_accessibility,
     compute_sector_diversity,
     fetch_lodes_od_county_flows,
+    store_county_economic_opportunity,
+    store_tract_economic_opportunity,
 )
 
 
@@ -175,3 +180,105 @@ def test_resolve_table_name_allows_qualified_databricks_identifiers():
         == "maryland_atlas.bronze.layer1_lodes_od_raw"
     )
     assert _resolve_table_name("bronze.layer1_lodes_od_raw;DROP TABLE x") is None
+
+
+def test_store_tract_economic_opportunity_uses_batched_execute(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.executions = []
+            self.commit_calls = 0
+
+        def execute(self, sql, params=None):
+            self.executions.append((sql, params))
+
+        def commit(self):
+            self.commit_calls += 1
+
+    fake_db = FakeDB()
+
+    @contextmanager
+    def fake_get_db():
+        yield fake_db
+
+    monkeypatch.setattr("src.ingest.layer1_economic_accessibility.get_db", fake_get_db)
+
+    df = pd.DataFrame(
+        {
+            "tract_geoid": ["24001000100", "24001000200"],
+            "fips_code": ["24001", "24001"],
+            "total_jobs": [100, 120],
+            "economic_accessibility_score": [0.5, None],
+        }
+    )
+
+    store_tract_economic_opportunity(df, data_year=2024, lodes_year=2022, acs_year=2022)
+
+    assert fake_db.commit_calls == 1
+    assert len(fake_db.executions) == 2
+    _, insert_params = fake_db.executions[1]
+    assert isinstance(insert_params, list)
+    assert len(insert_params) == 2
+    assert insert_params[0]["econ_score"] == 0.5
+    assert insert_params[1]["econ_score"] is None
+
+
+def test_store_county_economic_opportunity_uses_batched_execute(monkeypatch):
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeDB:
+        def __init__(self):
+            self.executions = []
+            self.commit_calls = 0
+
+        def execute(self, sql, params=None):
+            self.executions.append((sql, params))
+            statement = str(sql)
+            if "SELECT fips_code" in statement:
+                return FakeResult([])
+            return FakeResult([])
+
+        def commit(self):
+            self.commit_calls += 1
+
+    fake_db = FakeDB()
+
+    @contextmanager
+    def fake_get_db():
+        yield fake_db
+
+    monkeypatch.setattr("src.ingest.layer1_economic_accessibility.get_db", fake_get_db)
+    monkeypatch.setattr(
+        "src.ingest.layer1_economic_accessibility.settings.DATA_BACKEND", "postgres"
+    )
+
+    df = pd.DataFrame(
+        {
+            "fips_code": ["24001"],
+            "total_jobs": [200],
+            "high_wage_jobs": [100],
+            "economic_accessibility_score": [0.6],
+            "sector_diversity_entropy": [2.0],
+            "stable_sector_share": [0.5],
+            "qwi_net_job_growth_score": [0.4],
+        }
+    )
+
+    store_county_economic_opportunity(df, data_year=2024, lodes_year=2022, acs_year=2022)
+
+    assert fake_db.commit_calls == 1
+    assert len(fake_db.executions) == 3
+    _, insert_params = fake_db.executions[1]
+    assert isinstance(insert_params, list)
+    assert insert_params[0]["fips_code"] == "24001"
+
+    _, update_params = fake_db.executions[2]
+    assert isinstance(update_params, list)
+    assert len(update_params) == 1
+    assert update_params[0]["econ_score"] == pytest.approx(0.6)
+    expected_local_strength = 0.7 * (2.0 / np.log2(20)) + 0.3 * 0.5
+    assert update_params[0]["local_strength"] == pytest.approx(expected_local_strength)
