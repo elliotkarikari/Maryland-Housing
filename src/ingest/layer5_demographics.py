@@ -8,17 +8,19 @@ Signals Produced:
 - Household formation rates
 """
 
-import sys
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from datetime import datetime
-from sqlalchemy import text
 import argparse
-from typing import Optional
-import requests
 import re
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 from urllib.parse import urljoin, urlparse
+
+import numpy as np
+import pandas as pd
+import requests
+from sqlalchemy import text
+
 try:
     from scipy.stats import theilslopes
 except Exception:  # pragma: no cover - optional dependency
@@ -29,9 +31,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
-from src.utils.data_sources import fetch_census_data, download_file
+from config.settings import MD_COUNTY_FIPS, get_settings
+from src.utils.data_sources import download_file, fetch_census_data
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -89,7 +92,9 @@ def _download_irs_flow(year_range: str, flow: str) -> Path:
     return target
 
 
-def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str) -> Optional[Path]:
+def _resolve_data_path(
+    local_path: Optional[str], url: Optional[str], cache_dir: Path, filename: str
+) -> Optional[Path]:
     if local_path:
         path = Path(local_path)
         if path.exists():
@@ -109,29 +114,31 @@ def _resolve_data_path(local_path: Optional[str], url: Optional[str], cache_dir:
 
 def _read_census_crosswalk(path: Path) -> pd.DataFrame:
     try:
-        df = pd.read_csv(path, sep='|', dtype=str, encoding='utf-8-sig', low_memory=False)
+        df = pd.read_csv(path, sep="|", dtype=str, encoding="utf-8-sig", low_memory=False)
     except Exception as e:
         logger.warning(f"Failed to read Census crosswalk {path}: {e}")
         return pd.DataFrame()
 
     df = _normalize_columns(df)
-    if 'geoid_zcta5_20' not in df.columns or 'geoid_county_20' not in df.columns:
+    if "geoid_zcta5_20" not in df.columns or "geoid_county_20" not in df.columns:
         logger.warning("Census crosswalk missing expected GEOID columns")
         return pd.DataFrame()
 
-    df = df[['geoid_zcta5_20', 'geoid_county_20', 'arealand_part']].copy()
-    df = df.rename(columns={
-        'geoid_zcta5_20': 'zip',
-        'geoid_county_20': 'county_fips',
-        'arealand_part': 'res_ratio'
-    })
-    df['zip'] = df['zip'].astype(str).str.zfill(5)
-    df['county_fips'] = df['county_fips'].astype(str).str.zfill(5)
-    df['res_ratio'] = pd.to_numeric(df['res_ratio'], errors='coerce').fillna(0)
-    total = df.groupby('zip')['res_ratio'].transform('sum')
-    df['res_ratio'] = df['res_ratio'] / total.replace({0: pd.NA})
-    df['res_ratio'] = df['res_ratio'].fillna(0)
-    return df[['zip', 'county_fips', 'res_ratio']]
+    df = df[["geoid_zcta5_20", "geoid_county_20", "arealand_part"]].copy()
+    df = df.rename(
+        columns={
+            "geoid_zcta5_20": "zip",
+            "geoid_county_20": "county_fips",
+            "arealand_part": "res_ratio",
+        }
+    )
+    df["zip"] = df["zip"].astype(str).str.zfill(5)
+    df["county_fips"] = df["county_fips"].astype(str).str.zfill(5)
+    df["res_ratio"] = pd.to_numeric(df["res_ratio"], errors="coerce").fillna(0)
+    total = df.groupby("zip")["res_ratio"].transform("sum")
+    df["res_ratio"] = df["res_ratio"] / total.replace({0: pd.NA})
+    df["res_ratio"] = df["res_ratio"].fillna(0)
+    return df[["zip", "county_fips", "res_ratio"]]
 
 
 def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
@@ -139,11 +146,13 @@ def _load_zip_crosswalk(zip_codes: list[str]) -> pd.DataFrame:
         try:
             path = Path(settings.USPS_ZIP_COUNTY_CROSSWALK_PATH)
             if path.exists():
-                if path.suffix.lower() in {'.txt', '.dat'}:
+                if path.suffix.lower() in {".txt", ".dat"}:
                     return _read_census_crosswalk(path)
                 return pd.read_csv(path, dtype=str, low_memory=False)
         except Exception as e:
-            logger.warning(f"Failed to read ZIP crosswalk {settings.USPS_ZIP_COUNTY_CROSSWALK_PATH}: {e}")
+            logger.warning(
+                f"Failed to read ZIP crosswalk {settings.USPS_ZIP_COUNTY_CROSSWALK_PATH}: {e}"
+            )
             return pd.DataFrame()
 
     if settings.CENSUS_ZIP_COUNTY_CROSSWALK_URL:
@@ -176,7 +185,7 @@ def _extract_low_vacancy_link(html_path: Path, base_url: str) -> Optional[str]:
     except Exception:
         return None
 
-    matches = re.findall(r'href=[\"\\\']([^\"\\\']+\\.(?:xlsx?|csv))', html, flags=re.IGNORECASE)
+    matches = re.findall(r"href=[\"\\\']([^\"\\\']+\\.(?:xlsx?|csv))", html, flags=re.IGNORECASE)
     if not matches:
         return None
 
@@ -196,7 +205,7 @@ def fetch_low_vacancy_counties() -> pd.DataFrame:
         settings.LOW_VACANCY_COUNTIES_PATH,
         settings.LOW_VACANCY_COUNTIES_URL,
         LOW_VACANCY_CACHE_DIR,
-        "low_vacancy_counties.xlsx"
+        "low_vacancy_counties.xlsx",
     )
 
     if source_path is None:
@@ -243,89 +252,106 @@ def fetch_low_vacancy_counties() -> pd.DataFrame:
 
     fy_year = _parse_low_vacancy_year(Path(source_path)) or datetime.utcnow().year
 
-    df['fips_code'] = pd.to_numeric(df[fips_col], errors='coerce')
-    df['fips_code'] = df['fips_code'].dropna().astype(int).astype(str).str.zfill(5)
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    df["fips_code"] = pd.to_numeric(df[fips_col], errors="coerce")
+    df["fips_code"] = df["fips_code"].dropna().astype(int).astype(str).str.zfill(5)
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
     if df.empty:
         return pd.DataFrame()
 
-    df['low_vacancy_units'] = pd.to_numeric(df[units_col], errors='coerce') if units_col else pd.NA
-    df['low_vacancy_occupied_units'] = pd.to_numeric(df[occupied_col], errors='coerce') if occupied_col else pd.NA
-    df['low_vacancy_percent_occupied'] = pd.to_numeric(df[percent_col], errors='coerce') if percent_col else pd.NA
-    df['low_vacancy_fy'] = fy_year
-    df['low_vacancy_county_flag'] = True
-    df['source_url'] = settings.LOW_VACANCY_COUNTIES_URL or str(source_path)
-    df['fetch_date'] = datetime.utcnow().date().isoformat()
-    df['is_real'] = True
+    df["low_vacancy_units"] = pd.to_numeric(df[units_col], errors="coerce") if units_col else pd.NA
+    df["low_vacancy_occupied_units"] = (
+        pd.to_numeric(df[occupied_col], errors="coerce") if occupied_col else pd.NA
+    )
+    df["low_vacancy_percent_occupied"] = (
+        pd.to_numeric(df[percent_col], errors="coerce") if percent_col else pd.NA
+    )
+    df["low_vacancy_fy"] = fy_year
+    df["low_vacancy_county_flag"] = True
+    df["source_url"] = settings.LOW_VACANCY_COUNTIES_URL or str(source_path)
+    df["fetch_date"] = datetime.utcnow().date().isoformat()
+    df["is_real"] = True
 
-    return df[[
-        'fips_code', 'low_vacancy_county_flag', 'low_vacancy_units',
-        'low_vacancy_occupied_units', 'low_vacancy_percent_occupied', 'low_vacancy_fy',
-        'source_url', 'fetch_date', 'is_real'
-    ]].drop_duplicates()
+    return df[
+        [
+            "fips_code",
+            "low_vacancy_county_flag",
+            "low_vacancy_units",
+            "low_vacancy_occupied_units",
+            "low_vacancy_percent_occupied",
+            "low_vacancy_fy",
+            "source_url",
+            "fetch_date",
+            "is_real",
+        ]
+    ].drop_duplicates()
 
 
 def merge_low_vacancy_counts(combined: pd.DataFrame, low_vacancy_df: pd.DataFrame) -> pd.DataFrame:
     if low_vacancy_df.empty:
-        combined['low_vacancy_county_flag'] = pd.NA
-        combined['low_vacancy_units'] = pd.NA
-        combined['low_vacancy_occupied_units'] = pd.NA
-        combined['low_vacancy_percent_occupied'] = pd.NA
-        combined['low_vacancy_fy'] = pd.NA
+        combined["low_vacancy_county_flag"] = pd.NA
+        combined["low_vacancy_units"] = pd.NA
+        combined["low_vacancy_occupied_units"] = pd.NA
+        combined["low_vacancy_percent_occupied"] = pd.NA
+        combined["low_vacancy_fy"] = pd.NA
         return combined
 
-    low_vacancy_df = low_vacancy_df.drop(columns=[
-        col for col in ['source_url', 'fetch_date', 'is_real'] if col in low_vacancy_df.columns
-    ])
+    low_vacancy_df = low_vacancy_df.drop(
+        columns=[
+            col for col in ["source_url", "fetch_date", "is_real"] if col in low_vacancy_df.columns
+        ]
+    )
 
     merged = combined.merge(
         low_vacancy_df,
-        left_on=['fips_code', 'data_year'],
-        right_on=['fips_code', 'low_vacancy_fy'],
-        how='left'
+        left_on=["fips_code", "data_year"],
+        right_on=["fips_code", "low_vacancy_fy"],
+        how="left",
     )
 
-    missing_vacancy = merged['vacancy_rate'].isna()
+    missing_vacancy = merged["vacancy_rate"].isna()
     if missing_vacancy.any():
-        percent = merged['low_vacancy_percent_occupied']
+        percent = merged["low_vacancy_percent_occupied"]
         derived_rate = (1 - (percent / 100)).clip(lower=0, upper=1)
-        derived_vacant = merged['low_vacancy_units'] - merged['low_vacancy_occupied_units']
+        derived_vacant = merged["low_vacancy_units"] - merged["low_vacancy_occupied_units"]
 
-        merged.loc[missing_vacancy, 'vacancy_rate'] = derived_rate
-        merged.loc[missing_vacancy, 'total_addresses'] = merged.loc[missing_vacancy, 'low_vacancy_units']
-        merged.loc[missing_vacancy, 'vacant_addresses'] = derived_vacant
-        merged.loc[missing_vacancy, 'vacancy_source'] = 'lowvactpv'
+        merged.loc[missing_vacancy, "vacancy_rate"] = derived_rate
+        merged.loc[missing_vacancy, "total_addresses"] = merged.loc[
+            missing_vacancy, "low_vacancy_units"
+        ]
+        merged.loc[missing_vacancy, "vacant_addresses"] = derived_vacant
+        merged.loc[missing_vacancy, "vacancy_source"] = "lowvactpv"
 
     return merged
 
 
 def apply_vacancy_predictions(combined: pd.DataFrame) -> pd.DataFrame:
     combined = combined.copy()
-    combined['vacancy_rate_pred'] = pd.NA
-    combined['vacancy_predicted'] = False
-    combined['vacancy_pred_method'] = pd.NA
-    combined['vacancy_pred_years'] = pd.NA
+    combined["vacancy_rate_pred"] = pd.NA
+    combined["vacancy_predicted"] = False
+    combined["vacancy_pred_method"] = pd.NA
+    combined["vacancy_pred_years"] = pd.NA
 
     target_year = settings.PREDICT_TO_YEAR
     min_years = settings.PREDICTION_MIN_YEARS
     max_extrap = settings.PREDICTION_MAX_EXTRAP_YEARS
 
-    for fips in combined['fips_code'].unique():
-        sub = combined[combined['fips_code'] == fips].copy()
-        history = sub[sub['vacancy_rate'].notna()]
+    for fips in combined["fips_code"].unique():
+        sub_mask = combined["fips_code"] == fips
+        sub = combined.loc[sub_mask]
+        history = sub[sub["vacancy_rate"].notna()]
         if len(history) < min_years:
             continue
 
-        years = history['data_year'].astype(float).values
-        rates = history['vacancy_rate'].astype(float).values
+        years = history["data_year"].astype(float).values
+        rates = history["vacancy_rate"].astype(float).values
 
         try:
             if theilslopes is not None:
                 slope, intercept, *_ = theilslopes(rates, years)
-                method = 'theil_sen'
+                method = "theil_sen"
             else:
                 slope, intercept = np.polyfit(years, rates, 1)
-                method = 'linear_trend'
+                method = "linear_trend"
         except Exception:
             continue
 
@@ -334,22 +360,83 @@ def apply_vacancy_predictions(combined: pd.DataFrame) -> pd.DataFrame:
             continue
 
         end_year = min(target_year, max_year + max_extrap)
-        for idx, row in sub.iterrows():
-            if pd.notna(row.get('vacancy_rate')):
-                continue
-            year = float(row['data_year'])
-            if year <= max_year or year > end_year:
-                continue
-            pred = float(slope * year + intercept)
-            pred = float(max(0.0, min(1.0, pred)))
-            combined.loc[idx, 'vacancy_rate_pred'] = pred
-            combined.loc[idx, 'vacancy_predicted'] = True
-            combined.loc[idx, 'vacancy_pred_method'] = method
-            combined.loc[idx, 'vacancy_pred_years'] = int(year - max_year)
-            if pd.isna(combined.loc[idx, 'vacancy_source']):
-                combined.loc[idx, 'vacancy_source'] = 'predicted'
+        year_series = combined["data_year"].astype(float)
+        prediction_mask = (
+            sub_mask
+            & combined["vacancy_rate"].isna()
+            & (year_series > max_year)
+            & (year_series <= end_year)
+        )
+        if not prediction_mask.any():
+            continue
+
+        predict_years = year_series.loc[prediction_mask]
+        predictions = (slope * predict_years + intercept).clip(lower=0.0, upper=1.0).astype(float)
+        combined.loc[prediction_mask, "vacancy_rate_pred"] = predictions
+        combined.loc[prediction_mask, "vacancy_predicted"] = True
+        combined.loc[prediction_mask, "vacancy_pred_method"] = method
+        combined.loc[prediction_mask, "vacancy_pred_years"] = (predict_years - max_year).astype(int)
+        missing_source_mask = prediction_mask & combined["vacancy_source"].isna()
+        combined.loc[missing_source_mask, "vacancy_source"] = "predicted"
 
     return combined
+
+
+def _apply_momentum_features(combined: pd.DataFrame) -> pd.DataFrame:
+    combined = combined.copy()
+
+    pop_lookup = combined[["fips_code", "data_year", "pop_age_25_44"]].rename(
+        columns={"data_year": "lookup_year", "pop_age_25_44": "pop_age_25_44_baseline"}
+    )
+    household_lookup = combined[["fips_code", "data_year", "households_total"]].rename(
+        columns={"data_year": "lookup_year", "households_total": "households_total_baseline"}
+    )
+
+    combined["baseline_year"] = combined["data_year"] - 2
+    combined["prior_year"] = combined["data_year"] - 1
+    combined = combined.merge(
+        pop_lookup,
+        left_on=["fips_code", "baseline_year"],
+        right_on=["fips_code", "lookup_year"],
+        how="left",
+    ).drop(columns=["lookup_year"])
+    combined = combined.merge(
+        household_lookup,
+        left_on=["fips_code", "prior_year"],
+        right_on=["fips_code", "lookup_year"],
+        how="left",
+    ).drop(columns=["lookup_year"])
+
+    pop_baseline = combined["pop_age_25_44_baseline"]
+    pop_current = combined["pop_age_25_44"]
+    pop_valid = pop_baseline.notna() & pop_current.notna() & (pop_baseline != 0)
+    combined["working_age_momentum"] = pd.NA
+    combined.loc[pop_valid, "working_age_momentum"] = (
+        (pop_current.loc[pop_valid] - pop_baseline.loc[pop_valid])
+        / pop_baseline.loc[pop_valid]
+        * 100
+    )
+
+    household_baseline = combined["households_total_baseline"]
+    household_current = combined["households_total"]
+    household_valid = (
+        household_baseline.notna() & household_current.notna() & (household_baseline != 0)
+    )
+    combined["household_formation_change"] = pd.NA
+    combined.loc[household_valid, "household_formation_change"] = (
+        (household_current.loc[household_valid] - household_baseline.loc[household_valid])
+        / household_baseline.loc[household_valid]
+        * 100
+    )
+
+    return combined.drop(
+        columns=[
+            "baseline_year",
+            "prior_year",
+            "pop_age_25_44_baseline",
+            "households_total_baseline",
+        ]
+    )
 
 
 def _fetch_crosswalk_from_api(zip_codes: list[str]) -> pd.DataFrame:
@@ -405,10 +492,7 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
         vacancy_url = None
 
     source_path = _resolve_data_path(
-        settings.USPS_VACANCY_DATA_PATH,
-        vacancy_url,
-        CACHE_DIR,
-        "usps_vacancy.csv"
+        settings.USPS_VACANCY_DATA_PATH, vacancy_url, CACHE_DIR, "usps_vacancy.csv"
     )
 
     if source_path is None:
@@ -427,7 +511,7 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
     year_col = _find_col(columns, ["year", "yr", "time"])
     data_year = max(target_years) if target_years else datetime.utcnow().year
     if year_col:
-        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        df[year_col] = pd.to_numeric(df[year_col], errors="coerce")
         if (df[year_col] == data_year).any():
             df = df[df[year_col] == data_year]
         elif df[year_col].notna().any():
@@ -442,12 +526,12 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
 
     total_col = total_col
     vacant_col = vacant_col
-    df[total_col] = pd.to_numeric(df[total_col], errors='coerce')
-    df[vacant_col] = pd.to_numeric(df[vacant_col], errors='coerce')
+    df[total_col] = pd.to_numeric(df[total_col], errors="coerce")
+    df[vacant_col] = pd.to_numeric(df[vacant_col], errors="coerce")
 
     fips_col = _find_col(columns, ["fips", "fips_code", "county_fips", "geoid"])
     if fips_col:
-        df['fips_code'] = df[fips_col].astype(str).str.zfill(5)
+        df["fips_code"] = df[fips_col].astype(str).str.zfill(5)
     else:
         zip_col = _find_col(columns, ["zip", "zipcode", "zip5"])
         if not zip_col:
@@ -456,8 +540,12 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
 
         crosswalk = _load_zip_crosswalk(df[zip_col].astype(str).str.zfill(5).unique().tolist())
         if crosswalk is None or crosswalk.empty:
-            if settings.HUD_USER_API_TOKEN and (settings.USPS_ZIP_COUNTY_CROSSWALK_URL or settings.HUD_USPS_API_URL):
-                crosswalk = _fetch_crosswalk_from_api(df[zip_col].astype(str).str.zfill(5).unique().tolist())
+            if settings.HUD_USER_API_TOKEN and (
+                settings.USPS_ZIP_COUNTY_CROSSWALK_URL or settings.HUD_USPS_API_URL
+            ):
+                crosswalk = _fetch_crosswalk_from_api(
+                    df[zip_col].astype(str).str.zfill(5).unique().tolist()
+                )
             if crosswalk is None or crosswalk.empty:
                 logger.warning("USPS ZIP→county crosswalk not configured; skipping USPS enrichment")
                 return pd.DataFrame()
@@ -479,52 +567,53 @@ def fetch_usps_vacancy_by_county(target_years: list[int]) -> pd.DataFrame:
         crosswalk[cw_fips] = crosswalk[cw_fips].astype(str).str.zfill(5)
 
         df[zip_col] = df[zip_col].astype(str).str.zfill(5)
-        df = df.merge(crosswalk[[cw_zip, cw_fips] + ([ratio_col] if ratio_col else [])],
-                      left_on=zip_col, right_on=cw_zip, how='left')
+        df = df.merge(
+            crosswalk[[cw_zip, cw_fips] + ([ratio_col] if ratio_col else [])],
+            left_on=zip_col,
+            right_on=cw_zip,
+            how="left",
+        )
 
-        df['fips_code'] = df[cw_fips]
+        df["fips_code"] = df[cw_fips]
         if ratio_col:
-            df['zip_weight'] = pd.to_numeric(df[ratio_col], errors='coerce')
+            df["zip_weight"] = pd.to_numeric(df[ratio_col], errors="coerce")
         else:
-            df['zip_weight'] = 1.0
-        df['zip_weight'] = df['zip_weight'].fillna(1.0)
+            df["zip_weight"] = 1.0
+        df["zip_weight"] = df["zip_weight"].fillna(1.0)
 
-        df[total_col] = df[total_col] * df['zip_weight']
-        df[vacant_col] = df[vacant_col] * df['zip_weight']
+        df[total_col] = df[total_col] * df["zip_weight"]
+        df[vacant_col] = df[vacant_col] * df["zip_weight"]
 
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
     if df.empty:
         logger.warning("USPS vacancy data contains no Maryland counties after filtering")
         return pd.DataFrame()
 
-    agg = df.groupby('fips_code', as_index=False)[[total_col, vacant_col]].sum(min_count=1)
-    agg = agg.rename(columns={
-        total_col: 'total_addresses',
-        vacant_col: 'vacant_addresses'
-    })
-    agg['vacancy_rate'] = np.where(
-        agg['total_addresses'] > 0,
-        agg['vacant_addresses'] / agg['total_addresses'],
-        pd.NA
+    agg = df.groupby("fips_code", as_index=False)[[total_col, vacant_col]].sum(min_count=1)
+    agg = agg.rename(columns={total_col: "total_addresses", vacant_col: "vacant_addresses"})
+    agg["vacancy_rate"] = np.where(
+        agg["total_addresses"] > 0, agg["vacant_addresses"] / agg["total_addresses"], pd.NA
     )
-    agg['data_year'] = data_year
-    agg['source_url'] = vacancy_url or str(source_path)
-    agg['fetch_date'] = datetime.utcnow().date().isoformat()
-    agg['is_real'] = True
+    agg["data_year"] = data_year
+    agg["source_url"] = vacancy_url or str(source_path)
+    agg["fetch_date"] = datetime.utcnow().date().isoformat()
+    agg["is_real"] = True
     return agg
 
 
 def merge_usps_vacancy(combined: pd.DataFrame, usps_df: pd.DataFrame) -> pd.DataFrame:
     if usps_df.empty:
-        combined['total_addresses'] = pd.NA
-        combined['vacant_addresses'] = pd.NA
-        combined['vacancy_rate'] = pd.NA
-        combined['vacancy_source'] = pd.NA
+        combined["total_addresses"] = pd.NA
+        combined["vacant_addresses"] = pd.NA
+        combined["vacancy_rate"] = pd.NA
+        combined["vacancy_source"] = pd.NA
         return combined
 
-    merged = combined.merge(usps_df, on=['fips_code', 'data_year'], how='left')
-    merged['vacancy_source'] = merged['vacancy_source'] if 'vacancy_source' in merged.columns else pd.NA
-    merged.loc[merged['vacancy_rate'].notna(), 'vacancy_source'] = 'usps'
+    merged = combined.merge(usps_df, on=["fips_code", "data_year"], how="left")
+    merged["vacancy_source"] = (
+        merged["vacancy_source"] if "vacancy_source" in merged.columns else pd.NA
+    )
+    merged.loc[merged["vacancy_rate"].notna(), "vacancy_source"] = "usps"
     return merged
 
 
@@ -563,13 +652,13 @@ def _aggregate_irs_flow(df: pd.DataFrame, flow: str) -> pd.DataFrame:
     if other_col:
         df = df[df[other_col].astype(str).str.zfill(3) != "000"]
 
-    df['fips_code'] = df[state_col] + df[county_col]
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    df["fips_code"] = df[state_col] + df[county_col]
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
 
-    df[n1_col] = pd.to_numeric(df[n1_col], errors='coerce')
-    df[n2_col] = pd.to_numeric(df[n2_col], errors='coerce')
+    df[n1_col] = pd.to_numeric(df[n1_col], errors="coerce")
+    df[n2_col] = pd.to_numeric(df[n2_col], errors="coerce")
 
-    agg = df.groupby('fips_code', as_index=False)[[n1_col, n2_col]].sum()
+    agg = df.groupby("fips_code", as_index=False)[[n1_col, n2_col]].sum()
     agg = agg.rename(columns={n1_col: f"{flow}_households", n2_col: f"{flow}_exemptions"})
     return agg
 
@@ -581,16 +670,16 @@ def fetch_irs_migration_by_year() -> dict[int, pd.DataFrame]:
         try:
             inflow = _aggregate_irs_flow(_load_irs_flow(year_range, "inflow"), "inflow")
             outflow = _aggregate_irs_flow(_load_irs_flow(year_range, "outflow"), "outflow")
-            df = inflow.merge(outflow, on='fips_code', how='outer')
+            df = inflow.merge(outflow, on="fips_code", how="outer")
 
             data_year = 2000 + int(year_range[2:])
-            df['data_year'] = data_year
-            df['source_url'] = (
+            df["data_year"] = data_year
+            df["source_url"] = (
                 f"https://www.irs.gov/pub/irs-soi/countyinflow{year_range}.csv; "
                 f"https://www.irs.gov/pub/irs-soi/countyoutflow{year_range}.csv"
             )
-            df['fetch_date'] = datetime.utcnow().date().isoformat()
-            df['is_real'] = True
+            df["fetch_date"] = datetime.utcnow().date().isoformat()
+            df["is_real"] = True
             results[data_year] = df
             logger.info(f"Loaded IRS migration data for {year_range} ({data_year})")
         except Exception as e:
@@ -602,24 +691,24 @@ def fetch_irs_migration_by_year() -> dict[int, pd.DataFrame]:
 def fetch_acs_demographic_data(data_year: int) -> pd.DataFrame:
     logger.info(f"Fetching ACS demographic data for {data_year}")
     df = fetch_census_data(
-        dataset='acs/acs5',
+        dataset="acs/acs5",
         variables=list(ACS_DEMOGRAPHIC_VARIABLES.keys()),
-        geography='county:*',
-        state='24',
-        year=data_year
+        geography="county:*",
+        state="24",
+        year=data_year,
     )
 
     if df.empty:
         return pd.DataFrame()
 
-    df['fips_code'] = '24' + df['county'].str.zfill(3)
+    df["fips_code"] = "24" + df["county"].str.zfill(3)
     for acs_var, col_name in ACS_DEMOGRAPHIC_VARIABLES.items():
         if acs_var in df.columns:
-            df[col_name] = pd.to_numeric(df[acs_var], errors='coerce')
+            df[col_name] = pd.to_numeric(df[acs_var], errors="coerce")
 
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
-    cols_to_keep = ['fips_code'] + list(ACS_DEMOGRAPHIC_VARIABLES.values())
-    for col in ['source_url', 'fetch_date', 'is_real']:
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
+    cols_to_keep = ["fips_code"] + list(ACS_DEMOGRAPHIC_VARIABLES.values())
+    for col in ["source_url", "fetch_date", "is_real"]:
         if col in df.columns:
             cols_to_keep.append(col)
     return df[[c for c in cols_to_keep if c in df.columns]]
@@ -631,13 +720,19 @@ def calculate_demographic_indicators(data_year: int = 2023) -> pd.DataFrame:
     if acs_df.empty:
         return pd.DataFrame()
 
-    acs_df['data_year'] = data_year
+    acs_df["data_year"] = data_year
 
-    acs_df['pop_age_25_44'] = (
-        acs_df['pop_m_25_29'] + acs_df['pop_m_30_34'] + acs_df['pop_m_35_39'] + acs_df['pop_m_40_44'] +
-        acs_df['pop_f_25_29'] + acs_df['pop_f_30_34'] + acs_df['pop_f_35_39'] + acs_df['pop_f_40_44']
+    acs_df["pop_age_25_44"] = (
+        acs_df["pop_m_25_29"]
+        + acs_df["pop_m_30_34"]
+        + acs_df["pop_m_35_39"]
+        + acs_df["pop_m_40_44"]
+        + acs_df["pop_f_25_29"]
+        + acs_df["pop_f_30_34"]
+        + acs_df["pop_f_35_39"]
+        + acs_df["pop_f_40_44"]
     )
-    acs_df['pop_age_25_44_pct'] = acs_df['pop_age_25_44'] / acs_df['pop_total']
+    acs_df["pop_age_25_44_pct"] = acs_df["pop_age_25_44"] / acs_df["pop_total"]
 
     return acs_df
 
@@ -647,13 +742,14 @@ def store_demographic_data(df: pd.DataFrame):
     logger.info(f"Storing {len(df)} demographic records")
 
     with get_db() as db:
-        years = df['data_year'].unique().tolist()
+        years = df["data_year"].unique().tolist()
         db.execute(
             text("DELETE FROM layer5_demographic_momentum WHERE data_year = ANY(:years)"),
-            {"years": years}
+            {"years": years},
         )
 
-        insert_sql = text("""
+        insert_sql = text(
+            """
             INSERT INTO layer5_demographic_momentum (
                 fips_code, data_year,
                 pop_total, pop_age_25_44, pop_age_25_44_pct,
@@ -679,11 +775,11 @@ def store_demographic_data(df: pd.DataFrame):
                 :family_household_inflow_rate, :working_age_momentum,
                 :household_formation_change, :demographic_momentum_score
             )
-        """)
+        """
+        )
 
-        for _, row in df.iterrows():
-            row_dict = {k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()}
-            db.execute(insert_sql, row_dict)
+        rows = df.to_dict(orient="records")
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
@@ -697,9 +793,13 @@ def main():
         logger.info("LAYER 5: DEMOGRAPHIC MOMENTUM INGESTION")
         logger.info("=" * 60)
 
-        parser = argparse.ArgumentParser(description='Ingest Layer 5 Demographic data')
-        parser.add_argument('--year', type=int, help='Latest ACS year to fetch (default: latest)')
-        parser.add_argument('--single-year', action='store_true', help='Fetch only single year (default: multi-year)')
+        parser = argparse.ArgumentParser(description="Ingest Layer 5 Demographic data")
+        parser.add_argument("--year", type=int, help="Latest ACS year to fetch (default: latest)")
+        parser.add_argument(
+            "--single-year",
+            action="store_true",
+            help="Fetch only single year (default: multi-year)",
+        )
         args = parser.parse_args()
 
         current_year = datetime.utcnow().year
@@ -726,21 +826,29 @@ def main():
 
             irs_df = irs_by_year.get(year)
             if irs_df is not None and not irs_df.empty:
-                merged = acs_df.merge(irs_df, on=['fips_code', 'data_year'], how='left')
+                merged = acs_df.merge(irs_df, on=["fips_code", "data_year"], how="left")
             else:
                 merged = acs_df.copy()
-                merged['inflow_households'] = pd.NA
-                merged['outflow_households'] = pd.NA
-                merged['inflow_exemptions'] = pd.NA
-                merged['outflow_exemptions'] = pd.NA
+                merged["inflow_households"] = pd.NA
+                merged["outflow_households"] = pd.NA
+                merged["inflow_exemptions"] = pd.NA
+                merged["outflow_exemptions"] = pd.NA
 
-            merged['net_migration_households'] = merged['inflow_households'] - merged['outflow_households']
-            merged['net_migration_persons'] = merged['inflow_exemptions'] - merged['outflow_exemptions']
+            merged["net_migration_households"] = (
+                merged["inflow_households"] - merged["outflow_households"]
+            )
+            merged["net_migration_persons"] = (
+                merged["inflow_exemptions"] - merged["outflow_exemptions"]
+            )
 
-            merged['family_household_inflow_rate'] = pd.NA
-            if 'households_family_with_children' in merged.columns:
-                merged['family_household_inflow_rate'] = merged['inflow_households'] / merged['households_family_with_children']
-                merged.loc[merged['households_family_with_children'] == 0, 'family_household_inflow_rate'] = pd.NA
+            merged["family_household_inflow_rate"] = pd.NA
+            if "households_family_with_children" in merged.columns:
+                merged["family_household_inflow_rate"] = (
+                    merged["inflow_households"] / merged["households_family_with_children"]
+                )
+                merged.loc[
+                    merged["households_family_with_children"] == 0, "family_household_inflow_rate"
+                ] = pd.NA
 
             all_years.append(merged)
 
@@ -751,55 +859,35 @@ def main():
                 data_source="ACS+IRS",
                 status="failed",
                 error_message="No ACS/IRS records produced",
-                metadata={"years_requested": years_to_fetch}
+                metadata={"years_requested": years_to_fetch},
             )
             return
 
         combined = pd.concat(all_years, ignore_index=True)
 
         # Working-age momentum (3-year change) and household formation change (YoY)
-        combined['working_age_momentum'] = pd.NA
-        combined['household_formation_change'] = pd.NA
-
-        for fips in combined['fips_code'].unique():
-            sub = combined[combined['fips_code'] == fips].copy()
-            year_to_pop = {row['data_year']: row['pop_age_25_44'] for _, row in sub.iterrows()}
-            year_to_households = {row['data_year']: row['households_total'] for _, row in sub.iterrows()}
-
-            for idx, row in sub.iterrows():
-                year = row['data_year']
-                baseline_year = year - 2
-                if baseline_year in year_to_pop:
-                    baseline = year_to_pop[baseline_year]
-                    current = row['pop_age_25_44']
-                    if pd.notna(baseline) and baseline != 0 and pd.notna(current):
-                        combined.loc[idx, 'working_age_momentum'] = (current - baseline) / baseline * 100
-
-                prior_year = year - 1
-                if prior_year in year_to_households:
-                    baseline = year_to_households[prior_year]
-                    current = row['households_total']
-                    if pd.notna(baseline) and baseline != 0 and pd.notna(current):
-                        combined.loc[idx, 'household_formation_change'] = (current - baseline) / baseline * 100
+        combined = _apply_momentum_features(combined)
 
         # Composite demographic momentum score (percentile of available signals)
-        combined['demographic_momentum_score'] = pd.NA
-        for year in combined['data_year'].unique():
-            year_mask = combined['data_year'] == year
+        combined["demographic_momentum_score"] = pd.NA
+        for year in combined["data_year"].unique():
+            year_mask = combined["data_year"] == year
             sub = combined.loc[year_mask].copy()
 
             components = []
-            if sub['net_migration_households'].notna().sum() >= 3:
-                components.append(sub['net_migration_households'].rank(pct=True))
-            if sub['working_age_momentum'].notna().sum() >= 3:
-                components.append(sub['working_age_momentum'].rank(pct=True))
-            if sub['household_formation_change'].notna().sum() >= 3:
-                components.append(sub['household_formation_change'].rank(pct=True))
-            if sub['pop_age_25_44_pct'].notna().sum() >= 3:
-                components.append(sub['pop_age_25_44_pct'].rank(pct=True))
+            if sub["net_migration_households"].notna().sum() >= 3:
+                components.append(sub["net_migration_households"].rank(pct=True))
+            if sub["working_age_momentum"].notna().sum() >= 3:
+                components.append(sub["working_age_momentum"].rank(pct=True))
+            if sub["household_formation_change"].notna().sum() >= 3:
+                components.append(sub["household_formation_change"].rank(pct=True))
+            if sub["pop_age_25_44_pct"].notna().sum() >= 3:
+                components.append(sub["pop_age_25_44_pct"].rank(pct=True))
 
             if components:
-                combined.loc[year_mask, 'demographic_momentum_score'] = pd.concat(components, axis=1).mean(axis=1)
+                combined.loc[year_mask, "demographic_momentum_score"] = pd.concat(
+                    components, axis=1
+                ).mean(axis=1)
 
         # USPS vacancy (if configured)
         usps_df = fetch_usps_vacancy_by_county(years_to_fetch)
@@ -817,7 +905,7 @@ def main():
             status="success",
             records_processed=len(combined),
             records_inserted=len(combined),
-            metadata={"years": sorted(combined['data_year'].unique().tolist())}
+            metadata={"years": sorted(combined["data_year"].unique().tolist())},
         )
 
         logger.info("✓ Layer 5 ingestion complete")
@@ -828,7 +916,7 @@ def main():
             layer_name="layer5_demographic_momentum",
             data_source="ACS+IRS",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
         raise
 

@@ -3,8 +3,8 @@ import sys
 import pandas as pd
 import pytest
 
-import src.run_pipeline as run_pipeline
 import src.run_multiyear_pipeline as run_multiyear
+import src.run_pipeline as run_pipeline
 
 
 def test_run_pipeline_export_only(monkeypatch):
@@ -112,7 +112,8 @@ def test_run_multiyear_pipeline_skip_flags(monkeypatch):
     monkeypatch.setattr(
         run_multiyear,
         "compute_all_layer_scores",
-        lambda **kwargs: calls.__setitem__("scores", calls["scores"] + 1) or pd.DataFrame({"geoid": ["24001"]}),
+        lambda **kwargs: calls.__setitem__("scores", calls["scores"] + 1)
+        or pd.DataFrame({"geoid": ["24001"]}),
     )
     monkeypatch.setattr(
         run_multiyear,
@@ -132,7 +133,9 @@ def test_run_multiyear_pipeline_skip_flags(monkeypatch):
         lambda df: calls.__setitem__("store", calls["store"] + 1),
     )
 
-    assert run_multiyear.run_pipeline(as_of_year=2025, skip_timeseries=True, skip_scoring=True) is True
+    assert (
+        run_multiyear.run_pipeline(as_of_year=2025, skip_timeseries=True, skip_scoring=True) is True
+    )
     assert calls["timeseries"] == 0
     assert calls["scores"] == 0
     assert calls["store"] == 1
@@ -140,7 +143,11 @@ def test_run_multiyear_pipeline_skip_flags(monkeypatch):
 
 def test_run_multiyear_pipeline_no_classifications(monkeypatch):
     monkeypatch.setattr(run_multiyear, "compute_all_timeseries_features", lambda **kwargs: 5)
-    monkeypatch.setattr(run_multiyear, "compute_all_layer_scores", lambda **kwargs: pd.DataFrame({"geoid": ["24001"]}))
+    monkeypatch.setattr(
+        run_multiyear,
+        "compute_all_layer_scores",
+        lambda **kwargs: pd.DataFrame({"geoid": ["24001"]}),
+    )
     monkeypatch.setattr(run_multiyear, "classify_all_counties", lambda **kwargs: pd.DataFrame())
 
     assert run_multiyear.run_pipeline(as_of_year=2025) is False

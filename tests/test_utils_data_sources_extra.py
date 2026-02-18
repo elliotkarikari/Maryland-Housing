@@ -9,12 +9,22 @@ import src.utils.data_sources as ds
 
 
 class DummyResponse:
-    def __init__(self, *, status_code=200, text="", content=b"", json_data=None, ok=True):
+    def __init__(
+        self,
+        *,
+        status_code=200,
+        text="",
+        content=b"",
+        json_data=None,
+        ok=True,
+        url="https://example.com",
+    ):
         self.status_code = status_code
         self.text = text
         self.content = content
         self._json_data = json_data
         self.ok = ok
+        self.url = url
         self.headers = {"content-length": str(len(content))}
 
     def raise_for_status(self):
@@ -93,9 +103,15 @@ def test_discover_ejscreen_urls_parses_listing(monkeypatch):
 def test_fetch_epa_ejscreen_success(monkeypatch):
     csv_bytes = b"ID,VAL\n24001,1\n11001,2\n"
 
-    monkeypatch.setattr(ds, "_candidate_ejscreen_urls", lambda base, year: ["https://example.com/file.csv"])
+    monkeypatch.setattr(
+        ds, "_candidate_ejscreen_urls", lambda base, year: ["https://example.com/file.csv"]
+    )
     monkeypatch.setattr(ds, "_discover_ejscreen_urls", lambda base, year: [])
-    monkeypatch.setattr(ds.requests, "get", lambda url, timeout=120: DummyResponse(status_code=200, content=csv_bytes))
+    monkeypatch.setattr(
+        ds.requests,
+        "get",
+        lambda url, timeout=120: DummyResponse(status_code=200, content=csv_bytes),
+    )
 
     df = ds.fetch_epa_ejscreen(year=2023, lookback_years=0)
     assert df["ID"].tolist() == ["24001"]
@@ -146,7 +162,9 @@ def test_fetch_lodes_wac_success(monkeypatch):
     monkeypatch.setattr(pd, "read_csv", fake_read_csv)
 
     df = ds.fetch_lodes_wac(state="md", year=2021, job_type="JT00")
-    assert df.equals(expected)
+    assert df[["w_geocode", "C000"]].equals(expected)
+    assert df["is_real"].all()
+    assert "source_url" in df.columns
 
 
 def test_download_file_success(monkeypatch, tmp_path):

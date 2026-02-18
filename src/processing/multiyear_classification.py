@@ -8,14 +8,16 @@ Implements:
 - Final Synthesis Grouping: 5 categories with multi-year reasoning
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple
-from sqlalchemy import text
 import json
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
+from sqlalchemy import text
+
+from config.database import get_db, log_refresh, table_name
 from config.settings import get_settings
-from config.database import get_db, log_refresh
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -50,7 +52,8 @@ def load_layer_summary_scores(as_of_year: int = 2025) -> pd.DataFrame:
     logger.info(f"Loading layer summary scores for {as_of_year}")
 
     with get_db() as db:
-        query = text("""
+        query = text(
+            f"""
             SELECT
                 geoid,
                 layer_name,
@@ -60,40 +63,49 @@ def load_layer_summary_scores(as_of_year: int = 2025) -> pd.DataFrame:
                 has_stability,
                 coverage_years,
                 missingness_penalty
-            FROM layer_summary_scores
+            FROM {table_name('layer_summary_scores')}
             WHERE as_of_year = :as_of_year
             ORDER BY geoid, layer_name
-        """)
+        """
+        )
 
-        result = db.execute(query, {"as_of_year": as_of_year})
-        rows = result.fetchall()
+        query_result = db.execute(query, {"as_of_year": as_of_year})
+        rows = query_result.fetchall()
 
     if not rows:
         logger.warning(f"No layer summary scores found for {as_of_year}")
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows, columns=[
-        'geoid', 'layer_name', 'layer_overall_score',
-        'layer_momentum_score', 'has_momentum', 'has_stability',
-        'coverage_years', 'missingness_penalty'
-    ])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "geoid",
+            "layer_name",
+            "layer_overall_score",
+            "layer_momentum_score",
+            "has_momentum",
+            "has_stability",
+            "coverage_years",
+            "missingness_penalty",
+        ],
+    )
 
     # Convert Decimal to float for all numeric columns
-    numeric_cols = ['layer_overall_score', 'layer_momentum_score', 'missingness_penalty']
+    numeric_cols = ["layer_overall_score", "layer_momentum_score", "missingness_penalty"]
     for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     logger.info(f"Loaded {len(df)} layer score records")
 
     # Pivot to wide format (one row per geoid, columns for each layer)
-    pivot_overall = df.pivot(index='geoid', columns='layer_name', values='layer_overall_score')
-    pivot_overall.columns = [f'{col}_score' for col in pivot_overall.columns]
+    pivot_overall = df.pivot(index="geoid", columns="layer_name", values="layer_overall_score")
+    pivot_overall.columns = [f"{col}_score" for col in pivot_overall.columns]
 
-    pivot_momentum = df.pivot(index='geoid', columns='layer_name', values='layer_momentum_score')
-    pivot_momentum.columns = [f'{col}_momentum' for col in pivot_momentum.columns]
+    pivot_momentum = df.pivot(index="geoid", columns="layer_name", values="layer_momentum_score")
+    pivot_momentum.columns = [f"{col}_momentum" for col in pivot_momentum.columns]
 
-    pivot_coverage = df.pivot(index='geoid', columns='layer_name', values='coverage_years')
-    pivot_coverage.columns = [f'{col}_coverage' for col in pivot_coverage.columns]
+    pivot_coverage = df.pivot(index="geoid", columns="layer_name", values="coverage_years")
+    pivot_coverage.columns = [f"{col}_coverage" for col in pivot_coverage.columns]
 
     # Combine
     result = pivot_overall.join(pivot_momentum).join(pivot_coverage)
@@ -116,30 +128,30 @@ def classify_directional_status(row: pd.Series) -> str:
     """
     # Extract layer overall scores
     layer_scores = {
-        'employment': row.get('employment_gravity_score'),
-        'mobility': row.get('mobility_optionality_score'),
-        'schools': row.get('school_trajectory_score'),
-        'housing': row.get('housing_elasticity_score'),
-        'demographics': row.get('demographic_momentum_score'),
-        'risk': row.get('risk_drag_score')
+        "employment": row.get("employment_gravity_score"),
+        "mobility": row.get("mobility_optionality_score"),
+        "schools": row.get("school_trajectory_score"),
+        "housing": row.get("housing_elasticity_score"),
+        "demographics": row.get("demographic_momentum_score"),
+        "risk": row.get("risk_drag_score"),
     }
 
     # Extract momentum scores (if available)
     momentum_scores = {
-        'employment': row.get('employment_gravity_momentum'),
-        'mobility': row.get('mobility_optionality_momentum'),
-        'schools': row.get('school_trajectory_momentum'),
-        'housing': row.get('housing_elasticity_momentum'),
-        'demographics': row.get('demographic_momentum_momentum'),
+        "employment": row.get("employment_gravity_momentum"),
+        "mobility": row.get("mobility_optionality_momentum"),
+        "schools": row.get("school_trajectory_momentum"),
+        "housing": row.get("housing_elasticity_momentum"),
+        "demographics": row.get("demographic_momentum_momentum"),
     }
 
     # Count valid scores
-    valid_scores = {k: v for k, v in layer_scores.items() if pd.notna(v) and k != 'risk'}
+    valid_scores = {k: v for k, v in layer_scores.items() if pd.notna(v) and k != "risk"}
     valid_momentum = {k: v for k, v in momentum_scores.items() if pd.notna(v)}
 
     if len(valid_scores) < 3:
         # Insufficient data defaults to stable with high uncertainty
-        return 'stable'
+        return "stable"
 
     # IMPROVING: Multiple strong signals + positive momentum (if available)
     high_scores = [v for v in valid_scores.values() if v >= THRESHOLD_IMPROVING_HIGH]
@@ -153,25 +165,30 @@ def classify_directional_status(row: pd.Series) -> str:
         # Strong level scores
         if has_positive_momentum_evidence or len(valid_momentum) == 0:
             # Either has positive momentum OR no momentum data available (rely on level)
-            return 'improving'
+            return "improving"
 
     # AT RISK: Multiple weak signals OR severe risk drag
-    risk_score = layer_scores.get('risk')
-    severe_risk = pd.notna(risk_score) and risk_score >= THRESHOLD_RISK_DRAG_SEVERE
+    risk_raw = layer_scores.get("risk")
+    risk_score: Optional[float] = None
+    if risk_raw is not None and pd.notna(risk_raw):
+        risk_score = float(risk_raw)
+    severe_risk = risk_score is not None and risk_score >= THRESHOLD_RISK_DRAG_SEVERE
 
     # Check for negative momentum
-    negative_momentum = [v for v in valid_momentum.values() if v < (1 - MOMENTUM_POSITIVE_THRESHOLD)]
+    negative_momentum = [
+        v for v in valid_momentum.values() if v < (1 - MOMENTUM_POSITIVE_THRESHOLD)
+    ]
     has_negative_momentum = len(negative_momentum) >= 2
 
     if len(low_scores) >= THRESHOLD_AT_RISK_COUNT or (severe_risk and len(low_scores) >= 1):
-        return 'at_risk'
+        return "at_risk"
 
     if has_negative_momentum:
         # Negative momentum trend despite OK levels
-        return 'at_risk'
+        return "at_risk"
 
     # STABLE: Everything else
-    return 'stable'
+    return "stable"
 
 
 def classify_confidence_level(row: pd.Series) -> Tuple[str, List[str]]:
@@ -185,11 +202,11 @@ def classify_confidence_level(row: pd.Series) -> Tuple[str, List[str]]:
         Tuple of (confidence_level, uncertainty_reasons)
     """
     # Check coverage across layers
-    coverage_cols = [col for col in row.index if col.endswith('_coverage')]
+    coverage_cols = [col for col in row.index if col.endswith("_coverage")]
     coverages = [row[col] for col in coverage_cols if pd.notna(row[col])]
 
     if not coverages:
-        return 'fragile', ['no_coverage_data']
+        return "fragile", ["no_coverage_data"]
 
     avg_coverage = np.mean(coverages)
     min_coverage = np.min(coverages)
@@ -198,18 +215,18 @@ def classify_confidence_level(row: pd.Series) -> Tuple[str, List[str]]:
 
     # STRONG: Mostly full coverage, few missing years
     if avg_coverage >= COVERAGE_STRONG and min_coverage >= COVERAGE_CONDITIONAL:
-        return 'strong', []
+        return "strong", []
 
     # FRAGILE: Sparse data overall
     if avg_coverage < COVERAGE_CONDITIONAL:
-        uncertainty_reasons.append('sparse_coverage')
-        return 'fragile', uncertainty_reasons
+        uncertainty_reasons.append("sparse_coverage")
+        return "fragile", uncertainty_reasons
 
     # CONDITIONAL: Partial coverage
     if min_coverage < COVERAGE_CONDITIONAL:
-        uncertainty_reasons.append('some_layers_sparse')
+        uncertainty_reasons.append("some_layers_sparse")
 
-    return 'conditional', uncertainty_reasons
+    return "conditional", uncertainty_reasons
 
 
 def compute_composite_score(row: pd.Series) -> float:
@@ -224,9 +241,14 @@ def compute_composite_score(row: pd.Series) -> float:
     """
     # Get layer scores (excluding risk)
     layer_scores = []
-    for layer in ['employment_gravity', 'mobility_optionality', 'school_trajectory',
-                  'housing_elasticity', 'demographic_momentum']:
-        score = row.get(f'{layer}_score')
+    for layer in [
+        "employment_gravity",
+        "mobility_optionality",
+        "school_trajectory",
+        "housing_elasticity",
+        "demographic_momentum",
+    ]:
+        score = row.get(f"{layer}_score")
         if pd.notna(score):
             layer_scores.append(score)
 
@@ -237,7 +259,7 @@ def compute_composite_score(row: pd.Series) -> float:
     composite_raw = np.mean(layer_scores)
 
     # Apply risk drag as multiplicative penalty
-    risk_score = row.get('risk_drag_score')
+    risk_score = row.get("risk_drag_score")
     if pd.notna(risk_score):
         # Risk drag reduces ceiling with a floor to prevent over-penalization
         risk_score = min(max(float(risk_score), 0.0), 1.0)
@@ -250,10 +272,7 @@ def compute_composite_score(row: pd.Series) -> float:
 
 
 def determine_final_grouping(
-    directional: str,
-    confidence: str,
-    uncertainty_reasons: List[str],
-    composite_score: float
+    directional: str, confidence: str, uncertainty_reasons: List[str], composite_score: float
 ) -> str:
     """
     Determine final synthesis grouping.
@@ -268,29 +287,29 @@ def determine_final_grouping(
         Final grouping name
     """
     # HIGH UNCERTAINTY takes precedence
-    if confidence == 'fragile' or len(uncertainty_reasons) >= 2:
-        return 'high_uncertainty'
+    if confidence == "fragile" or len(uncertainty_reasons) >= 2:
+        return "high_uncertainty"
 
     # AT RISK / HEADWINDS
-    if directional == 'at_risk':
-        return 'at_risk_headwinds'
+    if directional == "at_risk":
+        return "at_risk_headwinds"
 
     # IMPROVING path
-    if directional == 'improving':
-        if confidence == 'strong':
-            return 'emerging_tailwinds'
+    if directional == "improving":
+        if confidence == "strong":
+            return "emerging_tailwinds"
         else:
-            return 'conditional_growth'
+            return "conditional_growth"
 
     # STABLE path
     # Distinguish "stable constrained" (consistent but low upside) from volatile
-    if directional == 'stable':
+    if directional == "stable":
         # If composite score is low-mid and confidence conditional
         # → stable but constrained
-        return 'stable_constrained'
+        return "stable_constrained"
 
     # Default fallback
-    return 'high_uncertainty'
+    return "high_uncertainty"
 
 
 def classify_all_counties(as_of_year: int = 2025) -> pd.DataFrame:
@@ -316,35 +335,34 @@ def classify_all_counties(as_of_year: int = 2025) -> pd.DataFrame:
         return df
 
     # Classify each county
-    df['directional_status'] = df.apply(classify_directional_status, axis=1)
-    df[['confidence_level', 'uncertainty_reasons']] = df.apply(
-        lambda row: pd.Series(classify_confidence_level(row)),
-        axis=1
+    df["directional_status"] = df.apply(classify_directional_status, axis=1)
+    df[["confidence_level", "uncertainty_reasons"]] = df.apply(
+        lambda row: pd.Series(classify_confidence_level(row)), axis=1
     )
-    df['composite_score'] = df.apply(compute_composite_score, axis=1)
-    df['final_grouping'] = df.apply(
+    df["composite_score"] = df.apply(compute_composite_score, axis=1)
+    df["final_grouping"] = df.apply(
         lambda row: determine_final_grouping(
-            row['directional_status'],
-            row['confidence_level'],
-            row['uncertainty_reasons'],
-            row['composite_score']
+            row["directional_status"],
+            row["confidence_level"],
+            row["uncertainty_reasons"],
+            row["composite_score"],
         ),
-        axis=1
+        axis=1,
     )
 
     # Add as_of_year
-    df['current_as_of_year'] = as_of_year
+    df["current_as_of_year"] = as_of_year
 
     # Log distribution
     logger.info("\nClassification distribution:")
     logger.info(f"  Directional status:")
-    for status in ['improving', 'stable', 'at_risk']:
-        count = (df['directional_status'] == status).sum()
+    for status in ["improving", "stable", "at_risk"]:
+        count = (df["directional_status"] == status).sum()
         logger.info(f"    {status}: {count} counties")
 
     logger.info(f"\n  Final synthesis grouping:")
-    for grouping in df['final_grouping'].unique():
-        count = (df['final_grouping'] == grouping).sum()
+    for grouping in df["final_grouping"].unique():
+        count = (df["final_grouping"] == grouping).sum()
         logger.info(f"    {grouping}: {count} counties")
 
     return df
@@ -361,11 +379,12 @@ def store_final_synthesis(df: pd.DataFrame):
 
     with get_db() as db:
         # Delete existing records
-        db.execute(text("DELETE FROM final_synthesis_current"))
+        db.execute(text(f"DELETE FROM {table_name('final_synthesis_current')}"))
 
         # Insert new records
-        insert_sql = text("""
-            INSERT INTO final_synthesis_current (
+        insert_sql = text(
+            f"""
+            INSERT INTO {table_name('final_synthesis_current')} (
                 geoid, current_as_of_year,
                 final_grouping, directional_status, confidence_level,
                 uncertainty_level, uncertainty_reasons,
@@ -384,38 +403,72 @@ def store_final_synthesis(df: pd.DataFrame):
                 :demographic_momentum_score, :risk_drag_score,
                 :classification_version
             )
-        """)
+        """
+        )
 
+        rows = []
         for _, row in df.iterrows():
             # Determine uncertainty level from reasons
-            n_reasons = len(row['uncertainty_reasons'])
+            n_reasons = len(row["uncertainty_reasons"])
             if n_reasons == 0:
-                uncertainty_level = 'low'
+                uncertainty_level = "low"
             elif n_reasons == 1:
-                uncertainty_level = 'medium'
+                uncertainty_level = "medium"
             else:
-                uncertainty_level = 'high'
+                uncertainty_level = "high"
 
             row_dict = {
-                'geoid': row['geoid'],
-                'current_as_of_year': int(row['current_as_of_year']),
-                'final_grouping': row['final_grouping'],
-                'directional_status': row['directional_status'],
-                'confidence_level': row['confidence_level'],
-                'uncertainty_level': uncertainty_level,
-                'uncertainty_reasons': json.dumps(row['uncertainty_reasons']),
-                'composite_score': float(row['composite_score']) if pd.notna(row['composite_score']) else None,
-                'risk_drag_applied': float(row.get('risk_drag_score', 0)) if pd.notna(row.get('risk_drag_score')) else None,
-                'employment_gravity_score': float(row.get('employment_gravity_score')) if pd.notna(row.get('employment_gravity_score')) else None,
-                'mobility_optionality_score': float(row.get('mobility_optionality_score')) if pd.notna(row.get('mobility_optionality_score')) else None,
-                'school_trajectory_score': float(row.get('school_trajectory_score')) if pd.notna(row.get('school_trajectory_score')) else None,
-                'housing_elasticity_score': float(row.get('housing_elasticity_score')) if pd.notna(row.get('housing_elasticity_score')) else None,
-                'demographic_momentum_score': float(row.get('demographic_momentum_score')) if pd.notna(row.get('demographic_momentum_score')) else None,
-                'risk_drag_score': float(row.get('risk_drag_score')) if pd.notna(row.get('risk_drag_score')) else None,
-                'classification_version': 'v2.0-multiyear'
+                "geoid": row["geoid"],
+                "current_as_of_year": int(row["current_as_of_year"]),
+                "final_grouping": row["final_grouping"],
+                "directional_status": row["directional_status"],
+                "confidence_level": row["confidence_level"],
+                "uncertainty_level": uncertainty_level,
+                "uncertainty_reasons": json.dumps(row["uncertainty_reasons"]),
+                "composite_score": (
+                    float(row["composite_score"]) if pd.notna(row["composite_score"]) else None
+                ),
+                "risk_drag_applied": (
+                    float(row.get("risk_drag_score", 0))
+                    if pd.notna(row.get("risk_drag_score"))
+                    else None
+                ),
+                "employment_gravity_score": (
+                    float(row.get("employment_gravity_score"))
+                    if pd.notna(row.get("employment_gravity_score"))
+                    else None
+                ),
+                "mobility_optionality_score": (
+                    float(row.get("mobility_optionality_score"))
+                    if pd.notna(row.get("mobility_optionality_score"))
+                    else None
+                ),
+                "school_trajectory_score": (
+                    float(row.get("school_trajectory_score"))
+                    if pd.notna(row.get("school_trajectory_score"))
+                    else None
+                ),
+                "housing_elasticity_score": (
+                    float(row.get("housing_elasticity_score"))
+                    if pd.notna(row.get("housing_elasticity_score"))
+                    else None
+                ),
+                "demographic_momentum_score": (
+                    float(row.get("demographic_momentum_score"))
+                    if pd.notna(row.get("demographic_momentum_score"))
+                    else None
+                ),
+                "risk_drag_score": (
+                    float(row.get("risk_drag_score"))
+                    if pd.notna(row.get("risk_drag_score"))
+                    else None
+                ),
+                "classification_version": "v2.0-multiyear",
             }
 
-            db.execute(insert_sql, row_dict)
+            rows.append(row_dict)
+
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
@@ -437,7 +490,7 @@ def main():
                 status="success",
                 records_processed=len(df),
                 records_inserted=len(df),
-                metadata={"classification_version": "v2.0-multiyear"}
+                metadata={"classification_version": "v2.0-multiyear"},
             )
 
             logger.info("=" * 70)
@@ -450,7 +503,7 @@ def main():
             layer_name="final_synthesis_current",
             data_source="layer_summary_scores",
             status="error",
-            error_message=str(e)
+            error_message=str(e),
         )
         raise
 

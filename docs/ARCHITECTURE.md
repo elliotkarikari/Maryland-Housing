@@ -3,7 +3,7 @@
 **Maryland Growth & Family Viability Atlas**
 
 **Version:** 2.0
-**Last Updated:** 2026-01-30
+**Last Updated:** 2026-02-16
 
 ---
 
@@ -61,7 +61,7 @@ The Maryland Viability Atlas is a **multi-layer spatial analytics system** that 
                                     │
                                     ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                       PostgreSQL + PostGIS                               │
+│   Databricks SQL Warehouse (primary) + PostgreSQL/PostGIS (fallback)    │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
 │  │  Raw Layer Data  │  │  Timeseries      │  │  Synthesis &         │   │
 │  │  (layer1_*, etc) │  │  Features        │  │  Classifications     │   │
@@ -81,10 +81,10 @@ The Maryland Viability Atlas is a **multi-layer spatial analytics system** that 
                                     │
                                     ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                           OUTPUT LAYER                                   │
+│                        API + OUTPUT LAYER                                │
 │  ┌─────────────────────────┐         ┌─────────────────────────────┐    │
-│  │    GeoJSON Export       │         │     FastAPI REST API        │    │
-│  │  (exports/*.geojson)    │         │    (src/api/main.py)        │    │
+│  │  Optional GeoJSON       │         │     FastAPI REST API        │    │
+│  │  snapshots (exports/)   │         │ live county feed from DB    │    │
 │  └─────────────────────────┘         └─────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -122,7 +122,7 @@ Each analytical layer has a dedicated ingestion module:
 - Fetch data from external APIs
 - Handle rate limiting and retries
 - Transform raw data to normalized format
-- Store in PostgreSQL with versioning
+- Store in Databricks SQL tables (Postgres fallback supported)
 - Manage local caching
 
 ### 2. Processing Layer
@@ -139,17 +139,19 @@ Each analytical layer has a dedicated ingestion module:
 | `scoring.py` | Legacy single-year scoring |
 | `classification.py` | Legacy classification logic |
 
-### 3. Export Layer
+### 3. Export Layer (Optional Artifacts)
 
 **Location:** `src/export/`
 
 | Module | Purpose |
 |--------|---------|
-| `geojson_export.py` | Generate map-ready GeoJSON files |
+| `geojson_export.py` | Generate optional map snapshot GeoJSON files |
 
-**Output Files:**
-- `exports/md_counties_latest.geojson` - Always the most recent
-- `exports/md_counties_YYYYMMDD.geojson` - Versioned snapshots
+**Primary map runtime source:** `GET /api/v1/layers/counties/latest` (live DB-backed feed)
+
+**Optional output files:**
+- `exports/md_counties_latest.geojson` - Latest snapshot artifact
+- `exports/md_counties_YYYYMMDD.geojson` - Versioned archive snapshots
 
 ### 4. API Layer
 
@@ -158,7 +160,7 @@ Each analytical layer has a dedicated ingestion module:
 | Module | Purpose |
 |--------|---------|
 | `main.py` | FastAPI application initialization |
-| `routes.py` | Endpoint definitions and handlers |
+| `routes.py` | Endpoint definitions, metadata registry loading, and capabilities endpoint |
 
 ### 5. Configuration Layer
 
@@ -166,8 +168,8 @@ Each analytical layer has a dedicated ingestion module:
 
 | Module | Purpose |
 |--------|---------|
-| `settings.py` | Pydantic-based configuration management |
-| `database.py` | SQLAlchemy + PostGIS connection management |
+| `settings.py` | Pydantic-based configuration management (CORS + year/runtime policy) |
+| `database.py` | SQLAlchemy backend routing (Databricks primary, Postgres fallback) |
 
 ### 6. Frontend Layer
 
@@ -176,7 +178,8 @@ Each analytical layer has a dedicated ingestion module:
 | File | Purpose |
 |------|---------|
 | `index.html` | Main UI structure |
-| `map.js` | Mapbox GL JS logic |
+| `map.js` | Mapbox GL JS orchestration and UI event wiring |
+| `modules/capabilities.js` | Runtime capability loader for feature gating |
 | `serve.py` | Development server with CORS |
 
 ---
@@ -193,7 +196,7 @@ Each analytical layer has a dedicated ingestion module:
 │  External API ──▶ Fetch ──▶ Transform ──▶ Validate ──▶ Store            │
 │                      │                                    │             │
 │                      ▼                                    ▼             │
-│                   Cache                            PostgreSQL           │
+│                   Cache                    Databricks/Postgres          │
 │              (data/cache/)                   (layer*_* tables)          │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -251,16 +254,29 @@ Each analytical layer has a dedicated ingestion module:
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ STAGE 5: EXPORT                                                         │
+│ STAGE 5: LIVE MAP FEED + OPTIONAL EXPORT                                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  Classifications + County Boundaries ──▶ GeoJSON Generation             │
+│  County Boundaries + Layer/Synthesis Tables ──▶ API GeoJSON Assembly    │
 │          │                                       │                      │
 │          ▼                                       ▼                      │
-│     pygris TIGER/Line              exports/md_counties_*.geojson        │
+│       md_counties + layer*_*          /api/v1/layers/counties/latest    │
+│     (final_synthesis preferred, progressive fallback supported)          │
+│                               Optional: exports/md_counties_*.geojson   │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Canonical V2 Runtime Flow
+
+1. `make db-migrate` (executes all numbered SQL migrations with `scripts/run_sql_migrations.py`)
+2. `make ingest-all` (layers 1-6 + policy persistence ingestion)
+3. `make pipeline` (multi-year features, scoring, classification, optional export)
+4. `make serve` + `make frontend` (API + UI runtime)
+
+Map runtime note:
+- Map/feed endpoints remain available during partial ingest by deriving county properties from latest layer tables when `final_synthesis_current` is sparse.
+- Layer 1 fallback reads `economic_opportunity_index_effective` first, with explicit fallback ordering to observed then predicted fields to avoid null propagation in latest-year modeled windows.
 
 ---
 
@@ -273,7 +289,7 @@ maryland-housing/
 │   ├── api/                          # FastAPI application
 │   │   ├── __init__.py
 │   │   ├── main.py                   # App initialization, middleware
-│   │   └── routes.py                 # Endpoint definitions (~670 LOC)
+│   │   └── routes.py                 # Endpoint definitions + metadata APIs
 │   │
 │   ├── ingest/                       # Data ingestion pipelines
 │   │   ├── __init__.py
@@ -302,7 +318,9 @@ maryland-housing/
 │   ├── utils/                        # Shared utilities
 │   │   ├── __init__.py
 │   │   ├── logging.py                # Logging configuration
-│   │   └── data_sources.py           # Data source metadata
+│   │   ├── data_sources.py           # Data source metadata helpers
+│   │   ├── db_bulk.py                # Shared batched DB writes
+│   │   └── year_policy.py            # Central year selection rules
 │   │
 │   ├── ai/                           # Optional AI subsystem
 │   │   ├── pipeline/                 # AI extraction pipeline
@@ -318,18 +336,29 @@ maryland-housing/
 │
 ├── frontend/                         # Web UI
 │   ├── index.html                    # Main HTML
-│   ├── map.js                        # Mapbox GL JS logic (~450 LOC)
+│   ├── map.js                        # Mapbox GL JS app orchestration
+│   ├── modules/
+│   │   └── capabilities.js           # Runtime feature capability loader
 │   ├── serve.py                      # Development server
 │   └── README.md                     # Frontend documentation
 │
-├── migrations/                       # Database schema evolution
+├── migrations/                       # Database schema evolution (numeric, append-only)
 │   ├── 006_layer2_accessibility_overhaul.sql
 │   ├── 007_layer1_economic_accessibility_overhaul.sql
 │   ├── 008_layer1_economic_opportunity_index.sql
 │   ├── 009_layer4_housing_affordability_overhaul.sql
 │   ├── 010_layer3_education_accessibility_overhaul.sql
 │   ├── 011_layer5_demographic_equity_overhaul.sql
-│   └── 012_layer6_risk_vulnerability_overhaul.sql
+│   ├── 012_layer6_risk_vulnerability_overhaul.sql
+│   ├── 013_layer1_qwi_layer4_hud_additions.sql
+│   ├── 014_layer5_low_vacancy_prediction.sql
+│   ├── 015_layer1_prediction.sql
+│   ├── 016_layer2_prediction.sql
+│   ├── 017_layer3_prediction.sql
+│   ├── 018_layer4_prediction.sql
+│   ├── 019_layer6_prediction.sql
+│   ├── 020_layer5_prediction.sql
+│   └── 021_layer3_school_directory_id_length.sql
 │
 ├── data/                             # Data storage
 │   ├── cache/                        # Downloaded data cache (gitignored)
@@ -381,6 +410,19 @@ maryland-housing/
 
 ## Database Schema
 
+### Databricks Medallion Layout
+
+Within catalog `maryland_atlas`, the operational schema layout is:
+
+- `bronze`: raw landed source tables (for example `layer1_lodes_od_raw`)
+- `silver`: refined intermediate datasets (tract-level and source-harmonized tables)
+- `gold`: API-serving and scoring/pipeline runtime tables
+
+Current runtime default is `DATABRICKS_SCHEMA=gold`, so unqualified table reads/writes
+resolve to gold for API + pipeline continuity.
+Routing rule for new tables: unknown/new pull tables default to bronze unless explicitly
+mapped to silver/gold.
+
 ### Core Tables
 
 #### Layer Data Tables (Versioned by Year)
@@ -391,13 +433,22 @@ CREATE TABLE layer1_employment_gravity (
     fips_code VARCHAR(5),
     data_year INTEGER,
     economic_opportunity_index FLOAT,
+    economic_opportunity_index_pred FLOAT,
+    economic_opportunity_index_effective FLOAT,
+    economic_opportunity_index_predicted BOOLEAN,
     employment_diversification_score FLOAT,
     sector_diversity_entropy FLOAT,
     federal_awards_volatility FLOAT,
     high_wage_jobs INTEGER,
     mid_wage_jobs INTEGER,
     low_wage_jobs INTEGER,
+    high_wage_jobs_accessible_45min INTEGER,  -- frontier diagnostic (county max)
+    high_wage_jobs_accessible_45min_weighted_mean FLOAT,  -- primary county accessibility
+    high_wage_jobs_accessible_45min_weighted_median FLOAT,
+    total_jobs_accessible_45min_weighted_mean FLOAT,
+    total_jobs_accessible_45min_weighted_median FLOAT,
     economic_accessibility_score FLOAT,
+    accessibility_method VARCHAR(40),  -- network_od_drive_transit | haversine_proxy
     created_at TIMESTAMP DEFAULT NOW(),
     PRIMARY KEY (fips_code, data_year)
 );
@@ -646,8 +697,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_origins=_parse_cors_allow_origins(settings.CORS_ALLOW_ORIGINS),
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 ```
@@ -658,13 +709,15 @@ app.add_middleware(
 
 | Endpoint | Response Model | Purpose |
 |----------|---------------|---------|
-| `GET /layers/counties/latest` | GeoJSON | Latest county data |
+| `GET /layers/counties/latest` | GeoJSON | Live county data from Databricks tables (`final_synthesis_current` preferred; latest-layer fallback with Layer 1 effective-score precedence) |
 | `GET /layers/counties/{version}` | GeoJSON | Versioned snapshot |
-| `GET /areas/{fips}` | AreaDetail | County detail |
+| `GET /areas/{fips}` | AreaDetail | County detail (live + progressive fallback) |
 | `GET /areas/{fips}/layers/{layer}` | LayerDetail | Layer breakdown |
 | `GET /metadata/refresh` | RefreshStatus | Data refresh audit |
 | `GET /metadata/sources` | DataSource[] | Source documentation |
+| `GET /metadata/capabilities` | CapabilitiesResponse | Runtime feature and year policy flags |
 | `GET /metadata/classifications` | dict | Threshold definitions |
+| `POST /chat` | ChatResponse | Ask Atlas AI response (gated by runtime capability) |
 | `GET /counties` | County[] | County list |
 | `GET /health` | HealthStatus | Health check |
 
@@ -725,6 +778,11 @@ frontend/
     ├── addLayers()     # Map layer configuration
     ├── setupHandlers() # Click/hover events
     └── showDetail()    # Panel population
+└── modules/
+    └── capabilities.js
+        ├── loadCapabilities()   # Fetches /api/v1/metadata/capabilities
+        ├── isChatEnabled()      # Determines Ask Atlas visibility
+        └── getYearPolicy()      # Exposes runtime year policy for diagnostics
 ```
 
 ### Data Flow
@@ -771,6 +829,14 @@ MAPBOX_ACCESS_TOKEN=pk.your_token
 BLS_API_KEY=your_bls_key
 OPENAI_API_KEY=sk-your_key
 AI_ENABLED=false
+CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+ATLAS_API_BASE_URL=
+LODES_LATEST_YEAR=2022
+LODES_LAG_YEARS=2
+ACS_LATEST_YEAR=2024
+ACS_GEOGRAPHY_MAX_YEAR=2022
+NCES_OBSERVED_MAX_YEAR=2024
+PREDICT_TO_YEAR=2025
 SENTRY_DSN=https://...
 ENVIRONMENT=development|production
 LOG_LEVEL=DEBUG|INFO|WARNING|ERROR
@@ -785,29 +851,29 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
-    database_url: str
+    DATABASE_URL: str
 
     # API Keys
-    census_api_key: str
-    mapbox_access_token: str
-    bls_api_key: str = ""
+    CENSUS_API_KEY: str
+    MAPBOX_ACCESS_TOKEN: str
+    BLS_API_KEY: str | None = None
 
     # Classification Thresholds
-    threshold_improving_high: float = 0.6
-    threshold_improving_low: float = 0.3
-    threshold_at_risk_low: float = 0.3
-    threshold_at_risk_count: int = 2
+    THRESHOLD_IMPROVING_HIGH: float = 0.6
+    THRESHOLD_IMPROVING_LOW: float = 0.3
+    THRESHOLD_AT_RISK_LOW: float = 0.3
+    THRESHOLD_AT_RISK_COUNT: int = 2
 
-    # Coverage Requirements
-    coverage_strong: int = 5
-    coverage_conditional: int = 3
+    # Runtime policy
+    CORS_ALLOW_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+    LODES_LATEST_YEAR: int = 2022
+    LODES_LAG_YEARS: int = 2
+    ACS_LATEST_YEAR: int = 2024
+    ACS_GEOGRAPHY_MAX_YEAR: int = 2022
+    NCES_OBSERVED_MAX_YEAR: int = 2024
+    PREDICT_TO_YEAR: int = 2025
 
-    # Reference Years
-    lehd_latest_year: int = 2022
-    acs_latest_year: int = 2023
-
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 ```
 
 ---
@@ -821,8 +887,8 @@ class Settings(BaseSettings):
 │                          Railway                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────┐     ┌─────────────────────────────────┐   │
-│  │  PostgreSQL     │     │  FastAPI Service                │   │
-│  │  + PostGIS      │◀───▶│  (from Procfile)                │   │
+│  │  Databricks SQL │     │  FastAPI Service                │   │
+│  │  Warehouse      │◀───▶│  (from Procfile)                │   │
 │  │                 │     │  uvicorn src.api.main:app       │   │
 │  └─────────────────┘     └─────────────────────────────────┘   │
 │                                     │                           │
@@ -858,8 +924,8 @@ class Settings(BaseSettings):
 
 **Checks:**
 1. Database connectivity
-2. PostGIS extension availability
-3. GeoJSON export file presence
+2. County boundary availability in `md_counties`
+3. Live county feed readiness
 
 ---
 
@@ -892,5 +958,5 @@ class Settings(BaseSettings):
 
 ---
 
-**Last updated:** 2026-01-30
+**Last updated:** 2026-02-15
 **Maintainer:** Maryland Viability Atlas Team

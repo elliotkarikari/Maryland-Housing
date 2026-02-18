@@ -3,21 +3,26 @@ Maryland Viability Atlas - FastAPI Application
 Read-only API for serving map data and metadata
 """
 
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy.orm import Session
-from typing import Optional
 import os
 
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+
+from config.database import get_db, table_name, test_connection
 from config.settings import get_settings
-from config.database import get_db_session, test_connection
-from src.api.routes import router
 from src.api.chat_routes import router as chat_router
+from src.api.routes import router
 from src.utils.logging import setup_logging
 
 settings = get_settings()
 logger = setup_logging("api")
+
+
+def _parse_cors_allow_origins(raw: str) -> list[str]:
+    origins = [origin.strip() for origin in (raw or "").split(",") if origin.strip()]
+    return origins or ["http://localhost:3000", "http://127.0.0.1:3000"]
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -25,13 +30,13 @@ app = FastAPI(
     version=settings.API_VERSION,
     description=settings.API_DESCRIPTION,
     docs_url="/docs" if settings.DEBUG else None,  # Disable in production
-    redoc_url="/redoc" if settings.DEBUG else None
+    redoc_url="/redoc" if settings.DEBUG else None,
 )
 
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure properly in production
+    allow_origins=_parse_cors_allow_origins(settings.CORS_ALLOW_ORIGINS),
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
@@ -47,11 +52,7 @@ async def startup_event():
     """Run on application startup"""
     logger.info(f"Starting {settings.API_TITLE} v{settings.API_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
-
-    # Test database connection
-    if not test_connection():
-        logger.error("Database connection failed on startup")
-        # Don't raise - allow app to start but health check will fail
+    logger.info("Startup DB check deferred to /health to avoid blocking app boot")
 
 
 @app.on_event("shutdown")
@@ -76,8 +77,9 @@ async def root():
             "area_detail": "/api/v1/areas/{geoid}",
             "chat": "/api/v1/chat",
             "data_sources": "/api/v1/metadata/sources",
-            "latest_refresh": "/api/v1/metadata/refresh"
-        }
+            "capabilities": "/api/v1/metadata/capabilities",
+            "latest_refresh": "/api/v1/metadata/refresh",
+        },
     }
 
 
@@ -88,18 +90,30 @@ async def health_check():
     """
     try:
         db_healthy = test_connection()
+        counties_count = 0
 
-        # Check if latest GeoJSON exists
+        if db_healthy:
+            with get_db() as db:
+                counties_count = int(
+                    db.execute(text(f"SELECT COUNT(*) FROM {table_name('md_counties')}")).scalar()
+                    or 0
+                )
+
+        counties_available = counties_count > 0
+
+        # Legacy export presence is informational only (no longer required for healthy state).
         geojson_path = os.path.join(settings.EXPORT_DIR, "md_counties_latest.geojson")
         geojson_exists = os.path.exists(geojson_path)
 
-        status = "healthy" if (db_healthy and geojson_exists) else "degraded"
+        status = "healthy" if (db_healthy and counties_available) else "degraded"
 
         return {
             "status": status,
             "database": "connected" if db_healthy else "disconnected",
+            "county_boundaries": "available" if counties_available else "missing",
+            "county_count": counties_count,
             "geojson_export": "available" if geojson_exists else "missing",
-            "environment": settings.ENVIRONMENT
+            "environment": settings.ENVIRONMENT,
         }
 
     except Exception as e:
@@ -115,5 +129,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=settings.DEBUG,
-        log_level=settings.LOG_LEVEL.lower()
+        log_level=settings.LOG_LEVEL.lower(),
     )

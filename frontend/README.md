@@ -45,6 +45,13 @@ API URL expected by frontend:
 - default: `http://<current-host>:8000/api/v1`
 - override: set `window.ATLAS_API_BASE_URL` before loading `map.js`
 
+### Live Data Source Model
+
+- County layer source is **API-first only**: `GET /api/v1/layers/counties/latest`
+- No static `frontend/md_counties_latest.geojson` fallback is required.
+- Frontend retries county-feed requests with backoff and auto-recovers when API becomes reachable.
+- County detail source is `GET /api/v1/areas/{geoid}` and now supports progressive Databricks-backed fallback when `final_synthesis_current` is not yet populated.
+
 ## UI Behavior
 
 ### Bivariate Coloring
@@ -134,6 +141,8 @@ Verify API is running and reachable:
 
 ```bash
 curl -I http://localhost:8000/health
+curl -I http://localhost:8000/api/v1/layers/counties/latest
+curl -I http://localhost:8000/api/v1/areas/24031
 ```
 
 ### Chat fails with OpenAI errors

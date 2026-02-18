@@ -22,8 +22,7 @@ Get the Maryland Viability Atlas running locally in under 15 minutes.
 | Requirement | Version | Get It |
 |-------------|---------|--------|
 | Python | 3.12+ | [python.org](https://www.python.org/downloads/) |
-| PostgreSQL | 15+ | [postgresql.org](https://www.postgresql.org/download/) |
-| PostGIS | 3.3+ | [postgis.net](https://postgis.net/install/) |
+| Databricks SQL Warehouse | - | [databricks.com](https://www.databricks.com/) |
 | Census API Key | - | [api.census.gov](https://api.census.gov/data/key_signup.html) (free) |
 | Mapbox Token | - | [mapbox.com](https://account.mapbox.com/auth/signup/) (free tier) |
 
@@ -31,6 +30,7 @@ Get the Maryland Viability Atlas running locally in under 15 minutes.
 
 | Requirement | Purpose |
 |-------------|---------|
+| PostgreSQL + PostGIS | Local fallback backend (`DATA_BACKEND=postgres`) |
 | BLS API Key | Higher rate limits for employment data |
 | OpenAI API Key | AI-powered CIP document extraction |
 | Docker | Container-based development |
@@ -74,9 +74,15 @@ Edit `.env` with your credentials:
 
 ```bash
 # Required
+DATA_BACKEND=databricks
+DATABRICKS_SERVER_HOSTNAME=adb-xxxx.azuredatabricks.net
+DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/xxxx
+DATABRICKS_ACCESS_TOKEN=dapi_xxxx
+DATABRICKS_CATALOG=maryland_atlas
+DATABRICKS_SCHEMA=gold
+
+# Optional postgres fallback (used only when DATA_BACKEND=postgres)
 DATABASE_URL=postgresql://localhost/maryland_atlas
-# Or with credentials:
-# DATABASE_URL=postgresql://user:password@localhost:5432/maryland_atlas
 
 CENSUS_API_KEY=your_census_key_here
 MAPBOX_ACCESS_TOKEN=pk.your_mapbox_token_here
@@ -89,9 +95,28 @@ AI_ENABLED=false
 # Environment settings
 ENVIRONMENT=development
 LOG_LEVEL=INFO
+CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+ATLAS_API_BASE_URL=
+
+# Year/runtime policy (keep aligned with available source vintages)
+LODES_LATEST_YEAR=2022
+LODES_LAG_YEARS=2
+ACS_LATEST_YEAR=2024
+ACS_GEOGRAPHY_MAX_YEAR=2022
+NCES_OBSERVED_MAX_YEAR=2024
+PREDICT_TO_YEAR=2025
 ```
 
-### Step 4: Initialize Database
+If your existing Databricks objects are still in `maryland_atlas.default`, run a one-time reorganization:
+
+```bash
+set -a; source .env; set +a
+./scripts/reorganize_databricks_medallion.py --apply --layout layered --skip-existing-target
+```
+
+### Step 4: Initialize Database (Postgres Fallback Only)
+
+Skip this step for Databricks-backed ingest (`DATA_BACKEND=databricks`).
 
 ```bash
 # Create database
@@ -122,7 +147,7 @@ Verification complete
 make ingest-all
 ```
 
-This runs all 6 layer ingestion pipelines sequentially. Each layer fetches real data from government APIs.
+This runs all 6 layer ingestion pipelines sequentially. By default, writes go to Databricks (`DATA_BACKEND=databricks`).
 
 | Layer | Data Source | Expected Time |
 |-------|-------------|---------------|
@@ -154,7 +179,8 @@ make pipeline
 1. **Timeseries Features** - Computes level, momentum, stability across years
 2. **Multi-Year Scoring** - Normalizes and aggregates layer scores
 3. **Multi-Year Classification** - Generates directional status + confidence
-4. **GeoJSON Export** - Creates map-ready output files
+4. **API-Ready Synthesis** - Populates `final_synthesis_current` for highest-quality map/detail output
+5. **GeoJSON Export (optional artifact)** - Creates versioned snapshots for archival/offline use
 
 **Expected output:**
 ```
@@ -162,7 +188,7 @@ Running multi-year pipeline and export...
 Computing timeseries features... 24 counties processed
 Running multi-year scoring... done
 Running classification... done
-Exporting GeoJSON... exports/md_counties_latest.geojson created
+Exporting GeoJSON... exports/md_counties_latest.geojson created (optional artifact)
 Pipeline complete
 ```
 
@@ -178,6 +204,7 @@ make serve
 - API Base: http://localhost:8000
 - Interactive Docs: http://localhost:8000/docs
 - Health Check: http://localhost:8000/health
+- Runtime Capabilities: http://localhost:8000/api/v1/metadata/capabilities
 
 #### Frontend Server (separate terminal)
 
@@ -287,22 +314,22 @@ python -c "from config.database import test_connection; test_connection()"
 # 2. API health
 curl http://localhost:8000/health
 
-# 3. GeoJSON export exists
-ls -la exports/md_counties_*.geojson
+# 3. Live county feed responds
+curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | length'
+# Expected: 24
 ```
 
 ### Data Verification
 
 ```bash
-# Check county count
-psql $DATABASE_URL -c "SELECT COUNT(DISTINCT fips_code) FROM layer1_employment_gravity;"
-# Expected: 24
+# Check Databricks/Postgres layer coverage through SQLAlchemy (works for both backends)
+.venv/bin/python -c "from config.database import engine; from sqlalchemy import text; c=engine.connect(); print('l1_count=', c.execute(text('SELECT COUNT(*) FROM layer1_employment_gravity')).scalar()); print('final_synthesis_current=', c.execute(text('SELECT COUNT(*) FROM final_synthesis_current')).scalar()); c.close()"
 
-# Check layer data
-psql $DATABASE_URL -c "SELECT fips_code, data_year, economic_opportunity_index FROM layer1_employment_gravity LIMIT 5;"
+# Check Layer 1 observed vs modeled continuity coverage by year
+.venv/bin/python -c "from config.database import engine; from sqlalchemy import text; c=engine.connect(); rows=c.execute(text(\"SELECT data_year, COUNT(*) AS counties, SUM(CASE WHEN economic_opportunity_index IS NOT NULL THEN 1 ELSE 0 END) AS observed_non_null, SUM(CASE WHEN economic_opportunity_index_pred IS NOT NULL THEN 1 ELSE 0 END) AS pred_non_null, SUM(CASE WHEN economic_opportunity_index_effective IS NOT NULL THEN 1 ELSE 0 END) AS effective_non_null FROM layer1_employment_gravity GROUP BY data_year ORDER BY data_year DESC\")).fetchall(); [print(dict(r._mapping)) for r in rows]; c.close()"
 
-# Check classifications
-psql $DATABASE_URL -c "SELECT fips_code, synthesis_grouping, directional_class, confidence_class FROM final_synthesis_current LIMIT 5;"
+# Check a sample county detail (should return 200 for valid FIPS even before full synthesis)
+curl -i http://localhost:8000/api/v1/areas/24031 | head -n 20
 ```
 
 ### API Verification
@@ -317,16 +344,24 @@ curl http://localhost:8000/api/v1/areas/24031 | jq
 # Get latest GeoJSON
 curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | length'
 # Expected: 24
+
+# Verify Layer 1 map score coverage from live feed (effective-score fallback path)
+curl http://localhost:8000/api/v1/layers/counties/latest | jq '[.features[].properties.employment_gravity_score | select(. != null)] | length'
+# Expected: 24 once Layer 1 rows exist for all counties, even if final_synthesis_current is empty
+
+# Check runtime capabilities and year policy
+curl http://localhost:8000/api/v1/metadata/capabilities | jq
+# Use chat_enabled/ai_enabled to verify Ask Atlas UI should be visible
 ```
 
 ### Success Checklist
 
 - [ ] Virtual environment activated
 - [ ] `.env` file configured with API keys
-- [ ] PostGIS extensions enabled
-- [ ] Database schema initialized (24 counties)
+- [ ] Databricks credentials configured (or PostGIS enabled for fallback mode)
+- [ ] County boundaries present in backend (`md_counties` = 24)
 - [ ] At least Layer 1 data ingested
-- [ ] Pipeline completed (GeoJSON exists)
+- [ ] Live county feed returns 24 features
 - [ ] API responds to `/health`
 - [ ] API returns county data at `/api/v1/areas/24031`
 - [ ] Frontend loads map at `http://localhost:3000`
@@ -423,9 +458,11 @@ curl -I https://api.bls.gov/
 psql $DATABASE_URL -c "SELECT DISTINCT data_year FROM layer1_employment_gravity ORDER BY data_year;"
 ```
 
-**Fix:** Run ingestion for multiple years or use `--year` flag:
+**Fix:** Run ingestion for multiple years, then run pipeline with policy defaults:
 ```bash
-python src/run_pipeline.py --year 2024
+python src/run_pipeline.py
+# or explicitly pin as-of year:
+python src/run_pipeline.py --year 2025
 ```
 
 #### "Export failed - GeoJSON empty"
@@ -442,6 +479,8 @@ python -m src.run_multiyear_pipeline
 python -m src.export.geojson_export
 ```
 
+**Note:** The map does not depend on exported files. Even if export fails, the frontend can still render from the live Databricks API feed.
+
 #### "Timeseries features require 3+ years"
 
 V2 requires multi-year data for momentum/stability calculations. With limited data:
@@ -453,7 +492,7 @@ V2 requires multi-year data for momentum/stability calculations. With limited da
 #### "Map doesn't load"
 
 1. Check API server is running on port 8000
-2. Verify GeoJSON file exists: `ls exports/md_counties_latest.geojson`
+2. Verify live feed endpoint responds: `curl -I http://localhost:8000/api/v1/layers/counties/latest`
 3. Check browser console (F12) for errors
 4. Verify CORS is not blocking requests
 
@@ -470,6 +509,15 @@ Run more layer ingestions to improve coverage.
 1. Check API is accessible
 2. Look for CORS errors in browser console
 3. Verify county FIPS exists in database
+
+#### "Ask Atlas chat is hidden or disabled"
+
+1. Check capabilities endpoint:
+   ```bash
+   curl http://localhost:8000/api/v1/metadata/capabilities | jq
+   ```
+2. Confirm `AI_ENABLED=true` and `OPENAI_API_KEY` are set if chat should be enabled.
+3. If capabilities report `chat_enabled=false`, frontend hiding is expected behavior.
 
 ### Logs
 
@@ -498,7 +546,9 @@ tail -f /var/log/postgresql/postgresql-15-main.log
    ```bash
    make ingest-layer2
    make ingest-layer3
-   # ... etc
+   make ingest-layer4
+   make ingest-layer5
+   make ingest-layer6
    make pipeline
    ```
 
@@ -553,4 +603,4 @@ python src/run_pipeline.py
 
 ---
 
-**Last updated:** 2026-01-30
+**Last updated:** 2026-02-15

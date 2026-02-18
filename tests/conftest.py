@@ -2,9 +2,19 @@
 Pytest configuration and shared fixtures for Maryland Housing Atlas tests.
 """
 
-import pytest
+import os
+from typing import Any, Dict
+
 import pandas as pd
-from typing import Dict, Any
+import pytest
+
+# Keep tests backend-stable regardless of developer .env runtime backend.
+os.environ.setdefault("DATA_BACKEND", "postgres")
+# Required app settings for import-time config validation in CI.
+# These defaults avoid coupling tests to developer/runner secrets.
+os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+os.environ.setdefault("MAPBOX_ACCESS_TOKEN", "test-mapbox-token")
+os.environ.setdefault("CENSUS_API_KEY", "test-census-key")
 
 
 # Sample Maryland county FIPS codes for testing
@@ -26,18 +36,20 @@ def sample_fips_codes() -> list:
 @pytest.fixture
 def sample_county_data() -> pd.DataFrame:
     """Generate sample county data for testing."""
-    return pd.DataFrame({
-        "fips_code": SAMPLE_FIPS_CODES,
-        "county_name": [
-            "Montgomery County",
-            "Prince George's County",
-            "Anne Arundel County",
-            "Baltimore County",
-            "Baltimore City",
-        ],
-        "population": [1062061, 967201, 588261, 854535, 585708],
-        "data_year": [2023] * 5,
-    })
+    return pd.DataFrame(
+        {
+            "fips_code": SAMPLE_FIPS_CODES,
+            "county_name": [
+                "Montgomery County",
+                "Prince George's County",
+                "Anne Arundel County",
+                "Baltimore County",
+                "Baltimore City",
+            ],
+            "population": [1062061, 967201, 588261, 854535, 585708],
+            "data_year": [2023] * 5,
+        }
+    )
 
 
 @pytest.fixture

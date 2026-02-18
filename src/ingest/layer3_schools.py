@@ -14,26 +14,26 @@ Note: Capital investment and capacity strain require CIP data and remain NULL.
 Enforces MAX 5-year lookback from current date (January 29, 2026).
 """
 
+import argparse
+import re
 import sys
 import zipfile
-import re
-import argparse
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
-import pandas as pd
 import numpy as np
-from sqlalchemy import text
+import pandas as pd
 import requests
+from sqlalchemy import text
 
 # Ensure project root is on sys.path when running as a script
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from config.settings import get_settings, MD_COUNTY_FIPS
 from config.database import get_db, log_refresh
+from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
 from src.utils.logging import get_logger
 
@@ -53,8 +53,15 @@ def _normalize_name(name: str) -> str:
     if not isinstance(name, str):
         return ""
     n = name.lower()
-    for token in ["public schools", "public school system", "public school",
-                  "school district", "county", "city", "board of education"]:
+    for token in [
+        "public schools",
+        "public school system",
+        "public school",
+        "school district",
+        "county",
+        "city",
+        "board of education",
+    ]:
         n = n.replace(token, " ")
     n = n.replace("'", " ").replace("-", " ")
     n = " ".join(n.split())
@@ -133,8 +140,8 @@ def _download_membership_file(year: int) -> Path:
 
 def _read_membership_zip(zip_path: Path) -> pd.DataFrame:
     """Read membership data from ZIP file with encoding fallback"""
-    with zipfile.ZipFile(zip_path, 'r') as zf:
-        candidates = [n for n in zf.namelist() if n.lower().endswith(('.csv', '.txt'))]
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        candidates = [n for n in zf.namelist() if n.lower().endswith((".csv", ".txt"))]
         if not candidates:
             raise RuntimeError(f"No data file found in {zip_path.name}")
 
@@ -143,7 +150,7 @@ def _read_membership_zip(zip_path: Path) -> pd.DataFrame:
         data_name = preferred[0] if preferred else candidates[0]
 
         # Try multiple encodings (NCES files vary)
-        encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+        encodings_to_try = ["utf-8", "latin-1", "cp1252", "iso-8859-1"]
         df = None
 
         for encoding in encodings_to_try:
@@ -163,13 +170,13 @@ def _read_membership_zip(zip_path: Path) -> pd.DataFrame:
 
 def _filter_md_lea(df: pd.DataFrame) -> pd.DataFrame:
     """Filter for Maryland LEAs only"""
-    state_cols = [c for c in df.columns if c.upper() in ['ST', 'STABBR', 'STATE', 'STATE_ABBR']]
+    state_cols = [c for c in df.columns if c.upper() in ["ST", "STABBR", "STATE", "STATE_ABBR"]]
     if state_cols:
-        df = df[df[state_cols[0]].astype(str).str.upper() == 'MD'].copy()
+        df = df[df[state_cols[0]].astype(str).str.upper() == "MD"].copy()
 
-    fips_cols = [c for c in df.columns if c.upper() in ['FIPST', 'ST_FIPS', 'STATE_FIPS']]
+    fips_cols = [c for c in df.columns if c.upper() in ["FIPST", "ST_FIPS", "STATE_FIPS"]]
     if fips_cols:
-        df = df[df[fips_cols[0]].astype(str).str.zfill(2) == '24'].copy()
+        df = df[df[fips_cols[0]].astype(str).str.zfill(2) == "24"].copy()
 
     return df
 
@@ -184,35 +191,47 @@ def _extract_total_enrollment(df: pd.DataFrame) -> pd.Series:
     - Grade sums (if individual grades present)
     """
     # Common total membership fields
-    total_fields = ['MEMBER', 'TOTAL', 'TOTMEM', 'TOTAL_STUDENTS',
-                   'ENROLLMENT', 'TOTAL_ENROLLMENT', 'MEMBERSHIP']
+    total_fields = [
+        "MEMBER",
+        "TOTAL",
+        "TOTMEM",
+        "TOTAL_STUDENTS",
+        "ENROLLMENT",
+        "TOTAL_ENROLLMENT",
+        "MEMBERSHIP",
+    ]
 
     for field in total_fields:
         matching = [c for c in df.columns if c.upper() == field.upper()]
         if matching:
             logger.info(f"Using {matching[0]} field for total enrollment")
-            return pd.to_numeric(df[matching[0]], errors='coerce').fillna(0)
+            return pd.to_numeric(df[matching[0]], errors="coerce").fillna(0)
 
     # Try summing individual grade fields (PK-12)
-    grade_fields = [c for c in df.columns if re.match(r'^(G|GRADE)?(PK|KG|0[1-9]|1[0-2])$', c.upper())]
+    grade_fields = [
+        c for c in df.columns if re.match(r"^(G|GRADE)?(PK|KG|0[1-9]|1[0-2])$", c.upper())
+    ]
     if grade_fields:
         logger.info(f"Computing total from {len(grade_fields)} grade fields")
-        grade_totals = df[grade_fields].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1)
+        grade_totals = df[grade_fields].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
         return grade_totals
 
     # Fallback: use any numeric column with "total" or "member" in name
-    total_cols = [c for c in df.columns if 'total' in c.lower() or 'member' in c.lower()]
+    total_cols = [c for c in df.columns if "total" in c.lower() or "member" in c.lower()]
     if total_cols:
         logger.warning(f"Using fallback column: {total_cols[0]}")
-        return pd.to_numeric(df[total_cols[0]], errors='coerce').fillna(0)
+        return pd.to_numeric(df[total_cols[0]], errors="coerce").fillna(0)
 
     raise RuntimeError("No enrollment/membership fields found in data")
 
 
 def _map_lea_to_county(df: pd.DataFrame) -> pd.DataFrame:
     """Map LEAs to Maryland counties using name matching"""
-    name_cols = [c for c in df.columns if c.lower() in ['lea_name', 'leaid_name', 'name',
-                                                         'agency_name', 'lea', 'leanm']]
+    name_cols = [
+        c
+        for c in df.columns
+        if c.lower() in ["lea_name", "leaid_name", "name", "agency_name", "lea", "leanm"]
+    ]
     if not name_cols:
         return df
 
@@ -221,18 +240,18 @@ def _map_lea_to_county(df: pd.DataFrame) -> pd.DataFrame:
 
     def map_name(name: str) -> str:
         n = _normalize_name(name)
-        if 'baltimore city' in n:
-            return '24510'
-        if 'baltimore county' in n or 'baltimore co' in n:
-            return '24005'
+        if "baltimore city" in n:
+            return "24510"
+        if "baltimore county" in n or "baltimore co" in n:
+            return "24005"
         for county_norm, fips in county_map.items():
             if county_norm and county_norm in n:
                 return fips
         return ""
 
     df = df.copy()
-    df['fips_code'] = df[name_col].apply(map_name)
-    df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+    df["fips_code"] = df[name_col].apply(map_name)
+    df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
     return df
 
 
@@ -276,23 +295,23 @@ def _build_enrollment_timeseries(latest_year: Optional[int] = None) -> pd.DataFr
         # Try county code mapping first
         cols = {c.lower(): c for c in df.columns}
         county_col = None
-        for cand in ['conum', 'county', 'county_code', 'cnty', 'lea_county']:
+        for cand in ["conum", "county", "county_code", "cnty", "lea_county"]:
             if cand in cols:
                 county_col = cols[cand]
                 break
 
         if county_col:
             # Direct county code mapping
-            state_col = cols.get('fipst') or cols.get('st_fips')
+            state_col = cols.get("fipst") or cols.get("st_fips")
             if state_col:
-                df['state_fips'] = df[state_col].astype(str).str.zfill(2)
+                df["state_fips"] = df[state_col].astype(str).str.zfill(2)
             else:
-                df['state_fips'] = '24'
+                df["state_fips"] = "24"
 
-            df = df[df['state_fips'] == '24'].copy()
+            df = df[df["state_fips"] == "24"].copy()
             df[county_col] = df[county_col].astype(str).str.zfill(3)
-            df['fips_code'] = df['state_fips'] + df[county_col]
-            df = df[df['fips_code'].isin(MD_COUNTY_FIPS.keys())]
+            df["fips_code"] = df["state_fips"] + df[county_col]
+            df = df[df["fips_code"].isin(MD_COUNTY_FIPS.keys())]
         else:
             # Fall back to name matching
             df = _map_lea_to_county(df)
@@ -303,14 +322,13 @@ def _build_enrollment_timeseries(latest_year: Optional[int] = None) -> pd.DataFr
 
         # Extract total enrollment
         enrollment = _extract_total_enrollment(df)
-        df['total_enrollment'] = enrollment
+        df["total_enrollment"] = enrollment
 
         # Aggregate to county level
-        agg = df.groupby('fips_code', as_index=False).agg(
-            total_enrollment=('total_enrollment', 'sum'),
-            schools_total=('fips_code', 'size')
+        agg = df.groupby("fips_code", as_index=False).agg(
+            total_enrollment=("total_enrollment", "sum"), schools_total=("fips_code", "size")
         )
-        agg['data_year'] = year
+        agg["data_year"] = year
         records.append(agg)
 
         logger.info(f"✓ Loaded {len(agg)} counties for year {year}")
@@ -339,39 +357,41 @@ def calculate_school_indicators(latest_year: Optional[int] = None) -> pd.DataFra
         return pd.DataFrame()
 
     # Compute 3-year enrollment change
-    df = df.sort_values(['fips_code', 'data_year'])
+    df = df.sort_values(["fips_code", "data_year"])
 
     def compute_3yr_change(group):
-        group = group.sort_values('data_year')
+        group = group.sort_values("data_year")
 
         for idx, row in group.iterrows():
-            year = row['data_year']
+            year = row["data_year"]
             baseline_year = year - 3
 
-            baseline_rows = group[group['data_year'] == baseline_year]
+            baseline_rows = group[group["data_year"] == baseline_year]
             if not baseline_rows.empty:
-                baseline_val = baseline_rows.iloc[0]['total_enrollment']
-                current_val = row['total_enrollment']
+                baseline_val = baseline_rows.iloc[0]["total_enrollment"]
+                current_val = row["total_enrollment"]
 
                 if baseline_val > 0:
                     pct_change = ((current_val - baseline_val) / baseline_val) * 100
-                    group.loc[idx, 'enrollment_3yr_change_pct'] = pct_change
+                    group.loc[idx, "enrollment_3yr_change_pct"] = pct_change
 
         return group
 
-    df = df.groupby('fips_code', group_keys=False).apply(compute_3yr_change)
+    df = df.groupby("fips_code", group_keys=False).apply(compute_3yr_change)
 
     # Compute enrollment momentum score (percentile rank within each year)
     def compute_momentum_score(year_group):
-        if 'enrollment_3yr_change_pct' in year_group.columns:
-            year_group['enrollment_momentum_score'] = year_group['enrollment_3yr_change_pct'].rank(pct=True)
+        if "enrollment_3yr_change_pct" in year_group.columns:
+            year_group["enrollment_momentum_score"] = year_group["enrollment_3yr_change_pct"].rank(
+                pct=True
+            )
         return year_group
 
-    df = df.groupby('data_year', group_keys=False).apply(compute_momentum_score)
+    df = df.groupby("data_year", group_keys=False).apply(compute_momentum_score)
 
     # Add NULL columns for unimplemented indicators
-    df['capital_investment_score'] = None
-    df['capacity_strain_indicator'] = None
+    df["capital_investment_score"] = None
+    df["capacity_strain_indicator"] = None
 
     return df
 
@@ -387,7 +407,8 @@ def store_school_data(df: pd.DataFrame):
         # Insert new records
         for _, row in df.iterrows():
             db.execute(
-                text("""
+                text(
+                    """
                     INSERT INTO layer3_school_trajectory (
                         fips_code, data_year, total_enrollment, schools_total,
                         enrollment_3yr_change_pct, enrollment_momentum_score,
@@ -397,17 +418,32 @@ def store_school_data(df: pd.DataFrame):
                         :enrollment_3yr_change_pct, :enrollment_momentum_score,
                         :capital_investment_score, :capacity_strain_indicator
                     )
-                """),
+                """
+                ),
                 {
-                    'fips_code': row['fips_code'],
-                    'data_year': int(row['data_year']),
-                    'total_enrollment': float(row['total_enrollment']) if pd.notna(row['total_enrollment']) else None,
-                    'schools_total': int(row['schools_total']) if pd.notna(row['schools_total']) else None,
-                    'enrollment_3yr_change_pct': float(row['enrollment_3yr_change_pct']) if pd.notna(row.get('enrollment_3yr_change_pct')) else None,
-                    'enrollment_momentum_score': float(row['enrollment_momentum_score']) if pd.notna(row.get('enrollment_momentum_score')) else None,
-                    'capital_investment_score': None,
-                    'capacity_strain_indicator': None,
-                }
+                    "fips_code": row["fips_code"],
+                    "data_year": int(row["data_year"]),
+                    "total_enrollment": (
+                        float(row["total_enrollment"])
+                        if pd.notna(row["total_enrollment"])
+                        else None
+                    ),
+                    "schools_total": (
+                        int(row["schools_total"]) if pd.notna(row["schools_total"]) else None
+                    ),
+                    "enrollment_3yr_change_pct": (
+                        float(row["enrollment_3yr_change_pct"])
+                        if pd.notna(row.get("enrollment_3yr_change_pct"))
+                        else None
+                    ),
+                    "enrollment_momentum_score": (
+                        float(row["enrollment_momentum_score"])
+                        if pd.notna(row.get("enrollment_momentum_score"))
+                        else None
+                    ),
+                    "capital_investment_score": None,
+                    "capacity_strain_indicator": None,
+                },
             )
 
         db.commit()
@@ -422,14 +458,20 @@ def main():
         logger.info("LAYER 3: SCHOOL TRAJECTORY INGESTION")
         logger.info("=" * 60)
 
-        parser = argparse.ArgumentParser(description='Ingest Layer 3 School Trajectory data')
-        parser.add_argument('--year', type=int, default=2025,
-                          help='Latest school year to fetch (default: 2025, max: 2025)')
+        parser = argparse.ArgumentParser(description="Ingest Layer 3 School Trajectory data")
+        parser.add_argument(
+            "--year",
+            type=int,
+            default=2025,
+            help="Latest school year to fetch (default: 2025, max: 2025)",
+        )
         args = parser.parse_args()
 
         # Enforce max year cap (5-year lookback from Jan 2026)
         year = min(args.year, 2025)
-        logger.info(f"Fetching data for school year ending {year} (last 5 years: {year-4} to {year})")
+        logger.info(
+            f"Fetching data for school year ending {year} (last 5 years: {year-4} to {year})"
+        )
 
         df = calculate_school_indicators(latest_year=year)
 
@@ -445,7 +487,7 @@ def main():
 
         store_school_data(df)
 
-        years_loaded = sorted(df['data_year'].unique().tolist())
+        years_loaded = sorted(df["data_year"].unique().tolist())
         log_refresh(
             layer_name="layer3_school_trajectory",
             data_source="NCES CCD Student Membership (052 series)",
@@ -455,8 +497,8 @@ def main():
             metadata={
                 "years": years_loaded,
                 "latest_year": year,
-                "counties": len(df['fips_code'].unique())
-            }
+                "counties": len(df["fips_code"].unique()),
+            },
         )
 
         logger.info("=" * 60)
@@ -471,7 +513,7 @@ def main():
             layer_name="layer3_school_trajectory",
             data_source="NCES CCD Student Membership (052 series)",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
         raise
 

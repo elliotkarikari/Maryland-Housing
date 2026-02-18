@@ -11,7 +11,7 @@ from pathlib import Path
 import json
 
 # Configuration
-PORT = 3000
+PORT = int(os.getenv("FRONTEND_PORT", os.getenv("PORT", "3000")))
 FRONTEND_DIR = Path(__file__).parent
 PROJECT_ROOT = FRONTEND_DIR.parent
 DOTENV_PATH = PROJECT_ROOT / ".env"
@@ -88,10 +88,17 @@ class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+
+class ReusableTCPServer(socketserver.TCPServer):
+    """TCP server configured to allow immediate port reuse after restart."""
+
+    allow_reuse_address = True
+
+
 def main():
     os.chdir(FRONTEND_DIR)
 
-    with socketserver.TCPServer(("", PORT), CORSRequestHandler) as httpd:
+    with ReusableTCPServer(("", PORT), CORSRequestHandler) as httpd:
         print(f"""
 ╔════════════════════════════════════════════════════════════╗
 ║  Maryland Growth & Family Viability Atlas                 ║

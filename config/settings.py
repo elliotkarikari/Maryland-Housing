@@ -3,10 +3,11 @@ Maryland Viability Atlas - Application Settings
 Manages environment variables and configuration using Pydantic
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
 from functools import lru_cache
 from typing import Optional
-import os
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -47,6 +48,21 @@ class Settings(BaseSettings):
     API_TITLE: str = "Maryland Growth & Family Viability Atlas API"
     API_VERSION: str = "1.0.0"
     API_DESCRIPTION: str = "Spatial analytics API for Maryland directional growth signals"
+    CORS_ALLOW_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    # Data backend routing
+    # databricks = primary ingestion backend
+    # postgres = local/legacy fallback
+    DATA_BACKEND: str = "databricks"
+    DATABRICKS_SQLALCHEMY_URL: Optional[str] = None
+    DATABRICKS_SERVER_HOSTNAME: Optional[str] = None
+    DATABRICKS_HTTP_PATH: Optional[str] = None
+    DATABRICKS_ACCESS_TOKEN: Optional[str] = None
+    DATABRICKS_CATALOG: str = "hive_metastore"
+    DATABRICKS_SCHEMA: str = "gold"
+    DATABRICKS_BRONZE_SCHEMA: str = "bronze"
+    DATABRICKS_SILVER_SCHEMA: str = "silver"
+    DATABRICKS_GOLD_SCHEMA: str = "gold"
 
     # Rate limiting (requests per minute)
     CENSUS_API_RATE_LIMIT: int = 8  # Conservative: 500/day = ~8/min
@@ -59,11 +75,17 @@ class Settings(BaseSettings):
     USASPENDING_API_URL: str = "https://api.usaspending.gov/api/v2"
     CENSUS_API_BASE_URL: str = "https://api.census.gov/data"
     FEMA_NFHL_URL: str = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer"
-    FEMA_NFHL_URL_FALLBACK: str = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
-    FEMA_NFHL_FEATURE_URL: str = "https://services.arcgis.com/2gdL2gxYNFY2TOUb/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/FeatureServer/0"
+    FEMA_NFHL_URL_FALLBACK: str = (
+        "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer"
+    )
+    FEMA_NFHL_FEATURE_URL: str = (
+        "https://services.arcgis.com/2gdL2gxYNFY2TOUb/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/FeatureServer/0"
+    )
     FEMA_SKIP_NFHL: bool = True
     EPA_EJSCREEN_URL: str = "https://gaftp.epa.gov/EJSCREEN"
-    EPA_EJSCREEN_ZENODO_URL: Optional[str] = "https://zenodo.org/records/14767363/files/2023.zip?download=1"
+    EPA_EJSCREEN_ZENODO_URL: Optional[str] = (
+        "https://zenodo.org/records/14767363/files/2023.zip?download=1"
+    )
     NOAA_SLR_DATA_URL: Optional[str] = None
     NOAA_SLR_VECTOR_URLS: Optional[str] = (
         "https://coast.noaa.gov/slrdata/Sea_Level_Rise_Vectors/MD/MD_East_slr_final_dist_HalfFoot.zip;"
@@ -91,6 +113,10 @@ class Settings(BaseSettings):
     CENSUS_QWI_DATA_URL: Optional[str] = None
     CENSUS_QWI_DATA_PATH: Optional[str] = None
     CENSUS_QWI_DATASET: str = "timeseries/qwi/sa"
+    LODES_OD_DATA_URL: Optional[str] = None
+    LODES_OD_DATA_PATH: Optional[str] = None
+    LODES_OD_CHUNK_SIZE: int = 500000
+    LODES_OD_TABLE: str = "bronze.layer1_lodes_od_raw"
 
     # Maryland state FIPS code
     MD_STATE_FIPS: str = "24"
@@ -98,12 +124,27 @@ class Settings(BaseSettings):
     # Data years (current defaults - will be dynamic in production)
     LODES_LATEST_YEAR: int = 2022
     ACS_LATEST_YEAR: int = 2024
+    ACS_GEOGRAPHY_MAX_YEAR: int = 2022
+    NCES_OBSERVED_MAX_YEAR: int = 2024
+    LODES_LAG_YEARS: int = 2
 
     # Prediction alignment settings
     PREDICT_TO_YEAR: int = 2025
     PREDICTION_MIN_YEARS: int = 3
     PREDICTION_MAX_EXTRAP_YEARS: int = 2
     USE_EFFECTIVE_VALUES: bool = False
+
+    # Layer 1 accessibility configuration
+    # auto: try network OD (r5py), fallback to proxy
+    # network: require network OD
+    # proxy: use haversine proxy
+    LAYER1_ACCESSIBILITY_MODE: str = "auto"
+    LAYER1_THRESHOLD_30_MINUTES: int = 30
+    LAYER1_THRESHOLD_45_MINUTES: int = 45
+    LAYER1_PROXY_DISTANCE_30_KM: float = 20.0
+    LAYER1_PROXY_DISTANCE_45_KM: float = 35.0
+    LAYER1_NETWORK_DEPARTURE_HOUR: int = 8
+    LAYER1_NETWORK_DEPARTURE_MINUTE: int = 0
 
     # File storage
     EXPORT_DIR: str = "exports"
@@ -112,7 +153,7 @@ class Settings(BaseSettings):
     # Classification thresholds (directional status)
     THRESHOLD_IMPROVING_MIN_LAYERS: int = 3  # Layers above high threshold
     THRESHOLD_IMPROVING_HIGH: float = 0.6  # High performance threshold
-    THRESHOLD_IMPROVING_LOW: float = 0.3   # Minimum acceptable (none below this)
+    THRESHOLD_IMPROVING_LOW: float = 0.3  # Minimum acceptable (none below this)
 
     THRESHOLD_AT_RISK_COUNT: int = 2  # Layers below low threshold
     THRESHOLD_AT_RISK_LOW: float = 0.3
@@ -133,10 +174,7 @@ class Settings(BaseSettings):
     AI_ENABLED: bool = False  # Set True if API key available
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=True,
-        extra="ignore"
+        env_file=".env", env_file_encoding="utf-8", case_sensitive=True, extra="ignore"
     )
 
     def __init__(self, **kwargs):
@@ -180,7 +218,7 @@ MD_COUNTY_FIPS = {
     "24043": "Washington County",
     "24045": "Wicomico County",
     "24047": "Worcester County",
-    "24510": "Baltimore City"
+    "24510": "Baltimore City",
 }
 
 # NAICS sector codes for LODES CNS (Census Nomenclature System)
@@ -204,7 +242,7 @@ LODES_SECTOR_CODES = {
     "CNS17": "Arts, Entertainment, and Recreation",
     "CNS18": "Accommodation and Food Services",
     "CNS19": "Other Services (except Public Administration)",
-    "CNS20": "Public Administration"
+    "CNS20": "Public Administration",
 }
 
 # Stable sectors for employment gravity calculation

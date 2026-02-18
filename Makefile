@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate ingest-all process pipeline export serve frontend test lint clean agent-lightning claude-help claude-list claude-run claude-exec claude-new
+.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all process pipeline export serve frontend test test-fast lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -7,6 +7,7 @@ else
 PYTHON := .venv/bin/python
 endif
 PIP := $(PYTHON) -m pip
+DATA_BACKEND ?= databricks
 
 help:
 	@echo "Maryland Viability Atlas - Available Commands"
@@ -15,20 +16,23 @@ help:
 	@echo "  make init-db        - Initialize database with migrations"
 	@echo "  make db-setup       - Initialize PostgreSQL/PostGIS database"
 	@echo "  make db-migrate     - Run database migrations"
+	@echo "  make databricks-medallion - Reorganize Databricks default schema into gold"
 	@echo "  make ingest-all     - Run all data ingestion pipelines"
 	@echo "  make ingest-layer1  - Ingest Economic Opportunity (v2) data"
 	@echo "  make ingest-layer2  - Ingest Mobility Accessibility (v2) data"
-	@echo "  make ingest-layer3  - Ingest School System data"
-	@echo "  make ingest-layer4  - Ingest Housing Elasticity data"
-	@echo "  make ingest-layer5  - Ingest Demographic Momentum data"
-	@echo "  make ingest-layer6  - Ingest Risk Drag data"
+	@echo "  make ingest-layer3  - Ingest Education Accessibility (v2) data"
+	@echo "  make ingest-layer4  - Ingest Housing Affordability (v2) data"
+	@echo "  make ingest-layer5  - Ingest Demographic Equity (v2) data"
+	@echo "  make ingest-layer6  - Ingest Risk Vulnerability (v2) data"
+	@echo "  make layer1-sensitivity - Run Layer 1 accessibility threshold sensitivity report"
 	@echo "  make process        - Run multi-year scoring + classification"
 	@echo "  make pipeline       - Run V2 pipeline + GeoJSON export"
 	@echo "  make export         - Generate GeoJSON outputs (V2)"
-	@echo "  make serve          - Start FastAPI development server"
-	@echo "  make test           - Run test suite"
-	@echo "  make clean          - Remove temporary files"
-	@echo "  make agent-lightning - Start Agent Lightning pilot container"
+		@echo "  make serve          - Start FastAPI development server"
+		@echo "  make test           - Run test suite"
+		@echo "  make test-fast      - Run fast-fail test pass for quick iteration"
+		@echo "  make clean          - Remove temporary files"
+		@echo "  make agent-lightning - Start Agent Lightning pilot container"
 	@echo ""
 	@echo "Claude Prompt Management:"
 	@echo "  make claude-list    - List all available prompts"
@@ -52,47 +56,54 @@ db-setup:
 	psql $(DATABASE_URL) -f data/schemas/schema_timeseries.sql
 
 db-migrate:
-	alembic upgrade head
+	$(PYTHON) scripts/run_sql_migrations.py
+
+databricks-medallion:
+	@echo "Reorganizing Databricks objects to bronze/silver/gold schemas..."
+	set -a; . ./.env; set +a; $(PYTHON) scripts/reorganize_databricks_medallion.py --apply --layout layered --skip-existing-target
 
 ingest-all:
 	@echo "Running all data ingestion pipelines..."
-	$(PYTHON) -m src.ingest.layer1_economic_accessibility
-	$(PYTHON) -m src.ingest.layer2_accessibility
-	$(PYTHON) -m src.ingest.layer3_schools
-	$(PYTHON) -m src.ingest.layer4_housing
-	$(PYTHON) -m src.ingest.layer5_demographics
-	$(PYTHON) -m src.ingest.layer6_risk
-	$(PYTHON) -m src.ingest.policy_persistence
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer1_economic_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer2_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer3_education_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer4_housing_affordability
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer5_demographic_equity
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer6_risk_vulnerability
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.policy_persistence
 
 ingest-layer1:
-	$(PYTHON) -m src.ingest.layer1_economic_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer1_economic_accessibility
 
 ingest-layer2:
-	$(PYTHON) -m src.ingest.layer2_accessibility
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer2_accessibility
 
 ingest-layer3:
-	$(PYTHON) -m src.ingest.layer3_schools
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer3_education_accessibility
 
 ingest-layer4:
-	$(PYTHON) -m src.ingest.layer4_housing
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer4_housing_affordability
 
 ingest-layer5:
-	$(PYTHON) -m src.ingest.layer5_demographics
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer5_demographic_equity
 
 ingest-layer6:
-	$(PYTHON) -m src.ingest.layer6_risk
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer6_risk_vulnerability
+
+layer1-sensitivity:
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) scripts/layer1_accessibility_sensitivity.py
 
 process:
 	@echo "Running multi-year scoring and classification..."
-	$(PYTHON) -m src.run_multiyear_pipeline
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.run_multiyear_pipeline
 
 pipeline:
 	@echo "Running multi-year pipeline and export..."
-	$(PYTHON) src/run_pipeline.py
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) src/run_pipeline.py
 
 export:
 	@echo "Generating GeoJSON outputs..."
-	$(PYTHON) -m src.export.geojson_export
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.export.geojson_export
 
 serve:
 	$(PYTHON) -m uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
@@ -113,6 +124,9 @@ format:
 
 test:
 	$(PYTHON) -m pytest tests/ -v --cov=src
+
+test-fast:
+	$(PYTHON) -m pytest tests/ -q --maxfail=1
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

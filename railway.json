@@ -27,7 +27,7 @@
     {
       "name": "monthly-pipeline-run",
       "schedule": "0 2 1 * *",
-      "command": "python src/run_pipeline.py --year 2025"
+      "command": "python src/run_pipeline.py"
     },
     {
       "name": "daily-export-refresh",

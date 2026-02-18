@@ -9,13 +9,13 @@ Rules:
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Tuple, List
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from config.database import get_db
+from config.database import get_db, table_name as db_table_name
 from config.settings import get_settings
 from src.utils.logging import get_logger
 
@@ -28,7 +28,9 @@ except Exception:  # pragma: no cover - optional dependency
     theilslopes = None
 
 
-def _fit_trend(years: np.ndarray, values: np.ndarray, method: str = "theil_sen") -> Tuple[float, float]:
+def _fit_trend(
+    years: np.ndarray, values: np.ndarray, method: str = "theil_sen"
+) -> Tuple[float, float]:
     if method == "theil_sen" and theilslopes is not None:
         slope, intercept, *_ = theilslopes(values, years)
         return float(slope), float(intercept)
@@ -45,7 +47,7 @@ def _predict_series(
     min_years: int = 3,
     max_extrap: int = 2,
     method: str = "theil_sen",
-    clip: Optional[Tuple[float, float]] = None
+    clip: Optional[Tuple[float, float]] = None,
 ) -> List[Tuple[int, float, int]]:
     if len(years) < min_years:
         return []
@@ -81,7 +83,7 @@ def apply_predictions_to_table(
     method: str = "theil_sen",
     clip: Optional[Tuple[float, float]] = None,
     source_label: str = "predicted",
-    use_effective: Optional[bool] = None
+    use_effective: Optional[bool] = None,
 ) -> int:
     """
     Predict missing years for a metric and upsert into the table as *_pred columns.
@@ -91,6 +93,7 @@ def apply_predictions_to_table(
     min_years = min_years if min_years is not None else settings.PREDICTION_MIN_YEARS
     max_extrap = max_extrap if max_extrap is not None else settings.PREDICTION_MAX_EXTRAP_YEARS
     use_effective = use_effective if use_effective is not None else settings.USE_EFFECTIVE_VALUES
+    table_ref = db_table_name(table)
 
     pred_col = f"{metric_col}_pred"
     pred_flag_col = f"{metric_col}_predicted"
@@ -98,14 +101,19 @@ def apply_predictions_to_table(
     pred_years_col = f"{metric_col}_pred_years"
     source_col = f"{metric_col}_source"
     effective_col = f"{metric_col}_effective"
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
 
     with get_db() as db:
-        result = db.execute(text(f"""
+        result = db.execute(
+            text(
+                f"""
             SELECT {fips_col} AS fips_code, {year_col} AS data_year, {metric_col} AS value
-            FROM {table}
+            FROM {table_ref}
             WHERE {metric_col} IS NOT NULL
             ORDER BY {fips_col}, {year_col}
-        """))
+        """
+            )
+        )
         rows = result.fetchall()
 
         if not rows:
@@ -128,49 +136,92 @@ def apply_predictions_to_table(
                 min_years=min_years,
                 max_extrap=max_extrap,
                 method=method,
-                clip=clip
+                clip=clip,
             )
 
             for pred_year, pred_value, pred_years in predictions:
-                db.execute(text(f"""
-                    INSERT INTO {table} (
-                        {fips_col}, {year_col},
-                        {pred_col}, {pred_flag_col},
-                        {pred_method_col}, {pred_years_col},
-                        {source_col}{',' + effective_col if use_effective else ''}
-                    ) VALUES (
-                        :fips_code, :data_year,
-                        :pred_value, TRUE,
-                        :pred_method, :pred_years,
-                        :source_label{',' + ':effective_value' if use_effective else ''}
-                    )
-                    ON CONFLICT ({fips_col}, {year_col})
-                    DO UPDATE SET
-                        {pred_col} = EXCLUDED.{pred_col},
-                        {pred_flag_col} = EXCLUDED.{pred_flag_col},
-                        {pred_method_col} = EXCLUDED.{pred_method_col},
-                        {pred_years_col} = EXCLUDED.{pred_years_col},
-                        {source_col} = EXCLUDED.{source_col}
-                        {',' + f'{effective_col} = COALESCE({table}.{metric_col}, EXCLUDED.{pred_col})' if use_effective else ''}
-                """), {
+                params = {
                     "fips_code": fips_code,
                     "data_year": int(pred_year),
                     "pred_value": float(pred_value),
                     "pred_method": method,
                     "pred_years": int(pred_years),
                     "source_label": source_label,
-                    "effective_value": float(pred_value) if use_effective else None
-                })
+                    "effective_value": float(pred_value) if use_effective else None,
+                }
+
+                if use_databricks_backend:
+                    db.execute(
+                        text(
+                            f"""
+                        INSERT INTO {table_ref} ({fips_col}, {year_col})
+                        SELECT :fips_code, :data_year
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM {table_ref}
+                            WHERE {fips_col} = :fips_code AND {year_col} = :data_year
+                        )
+                        """
+                        ),
+                        params,
+                    )
+                    db.execute(
+                        text(
+                            f"""
+                        UPDATE {table_ref}
+                        SET
+                            {pred_col} = :pred_value,
+                            {pred_flag_col} = TRUE,
+                            {pred_method_col} = :pred_method,
+                            {pred_years_col} = :pred_years,
+                            {source_col} = :source_label
+                            {',' + f'{effective_col} = COALESCE({metric_col}, :pred_value)' if use_effective else ''}
+                        WHERE {fips_col} = :fips_code AND {year_col} = :data_year
+                        """
+                        ),
+                        params,
+                    )
+                else:
+                    db.execute(
+                        text(
+                            f"""
+                        INSERT INTO {table_ref} (
+                            {fips_col}, {year_col},
+                            {pred_col}, {pred_flag_col},
+                            {pred_method_col}, {pred_years_col},
+                            {source_col}{',' + effective_col if use_effective else ''}
+                        ) VALUES (
+                            :fips_code, :data_year,
+                            :pred_value, TRUE,
+                            :pred_method, :pred_years,
+                            :source_label{',' + ':effective_value' if use_effective else ''}
+                        )
+                        ON CONFLICT ({fips_col}, {year_col})
+                        DO UPDATE SET
+                            {pred_col} = EXCLUDED.{pred_col},
+                            {pred_flag_col} = EXCLUDED.{pred_flag_col},
+                            {pred_method_col} = EXCLUDED.{pred_method_col},
+                            {pred_years_col} = EXCLUDED.{pred_years_col},
+                            {source_col} = EXCLUDED.{source_col}
+                            {',' + f'{effective_col} = COALESCE({table_ref}.{metric_col}, EXCLUDED.{pred_col})' if use_effective else ''}
+                    """
+                        ),
+                        params,
+                    )
                 inserted += 1
 
         if use_effective:
-            db.execute(text(f"""
-                UPDATE {table}
+            db.execute(
+                text(
+                    f"""
+                UPDATE {table_ref}
                 SET {effective_col} = COALESCE({metric_col}, {pred_col})
                 WHERE {year_col} <= :target_year
-            """), {"target_year": int(target_year)})
+            """
+                ),
+                {"target_year": int(target_year)},
+            )
 
         db.commit()
 
-    logger.info(f"Applied predictions for {table}.{metric_col}: {inserted} rows")
+    logger.info(f"Applied predictions for {table_ref}.{metric_col}: {inserted} rows")
     return inserted

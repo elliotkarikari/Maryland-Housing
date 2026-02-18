@@ -8,19 +8,21 @@ Uses OpenAI API for structured document extraction with:
 - Automatic retry logic
 """
 
-from typing import Type, Dict, Any, Optional, List
-from pydantic import BaseModel, ValidationError as PydanticValidationError
 import json
 import time
+from typing import Any, Dict, List, Optional, Type
 
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
+
+from config.settings import get_settings
 from src.ai.providers.base import (
     AIProvider,
     AIProviderError,
-    ValidationError,
     CostLimitExceededError,
-    RateLimitError
+    RateLimitError,
+    ValidationError,
 )
-from config.settings import get_settings
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,32 +40,21 @@ class OpenAIProvider(AIProvider):
     PRICING = {
         "gpt-5.1-mini": {
             "input": 0.00015 / 1000,  # keep aligned with lightweight mini-tier estimate
-            "output": 0.00060 / 1000
+            "output": 0.00060 / 1000,
         },
         "gpt-4o-mini": {
             "input": 0.00015 / 1000,  # $0.15 per 1M input tokens
-            "output": 0.00060 / 1000  # $0.60 per 1M output tokens
+            "output": 0.00060 / 1000,  # $0.60 per 1M output tokens
         },
         "gpt-4-turbo-preview": {
-            "input": 0.01 / 1000,   # $0.01 per 1K input tokens
-            "output": 0.03 / 1000   # $0.03 per 1K output tokens
+            "input": 0.01 / 1000,  # $0.01 per 1K input tokens
+            "output": 0.03 / 1000,  # $0.03 per 1K output tokens
         },
-        "gpt-4": {
-            "input": 0.03 / 1000,
-            "output": 0.06 / 1000
-        },
-        "gpt-3.5-turbo": {
-            "input": 0.001 / 1000,
-            "output": 0.002 / 1000
-        }
+        "gpt-4": {"input": 0.03 / 1000, "output": 0.06 / 1000},
+        "gpt-3.5-turbo": {"input": 0.001 / 1000, "output": 0.002 / 1000},
     }
 
-    def __init__(
-        self,
-        api_key: str = None,
-        model: str = None,
-        max_retries: int = 3
-    ):
+    def __init__(self, api_key: str = None, model: str = None, max_retries: int = 3):
         """
         Initialize OpenAI provider.
 
@@ -82,11 +73,10 @@ class OpenAIProvider(AIProvider):
         # Lazy import to avoid dependency if AI not enabled
         try:
             from openai import OpenAI
+
             self.client = OpenAI(api_key=self.api_key)
         except ImportError:
-            raise AIProviderError(
-                "OpenAI package not installed. Run: pip install openai"
-            )
+            raise AIProviderError("OpenAI package not installed. Run: pip install openai")
 
         logger.info(f"Initialized OpenAI provider with model {self.model}")
 
@@ -97,7 +87,7 @@ class OpenAIProvider(AIProvider):
         schema: Type[BaseModel],
         prompt_version: str,
         system_prompt: str = None,
-        max_tokens: int = 4000
+        max_tokens: int = 4000,
     ) -> Dict[str, Any]:
         """
         Extract structured data using OpenAI API.
@@ -128,11 +118,11 @@ class OpenAIProvider(AIProvider):
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "user", "content": user_prompt},
                     ],
                     response_format={"type": "json_object"},  # Force JSON output
                     max_tokens=max_tokens,
-                    temperature=0.1  # Low temperature for factual extraction
+                    temperature=0.1,  # Low temperature for factual extraction
                 )
 
                 break  # Success
@@ -143,7 +133,7 @@ class OpenAIProvider(AIProvider):
                 # Rate limit handling
                 if "rate_limit" in error_str.lower():
                     if attempt < self.max_retries - 1:
-                        wait_time = 2 ** attempt  # Exponential backoff
+                        wait_time = 2**attempt  # Exponential backoff
                         logger.warning(
                             f"Rate limit hit, retrying in {wait_time}s "
                             f"(attempt {attempt + 1}/{self.max_retries})"
@@ -151,16 +141,19 @@ class OpenAIProvider(AIProvider):
                         time.sleep(wait_time)
                         continue
                     else:
-                        raise RateLimitError(f"Rate limit exceeded after {self.max_retries} attempts")
+                        raise RateLimitError(
+                            f"Rate limit exceeded after {self.max_retries} attempts"
+                        )
 
                 # Other errors
                 logger.error(f"OpenAI API error: {error_str}")
                 raise AIProviderError(f"OpenAI API call failed: {error_str}")
 
         # Extract response
-        raw_output = response.choices[0].message.content
-        tokens_output = response.usage.completion_tokens
-        tokens_input_actual = response.usage.prompt_tokens
+        raw_output = response.choices[0].message.content or "{}"
+        usage = response.usage
+        tokens_output = usage.completion_tokens if usage else 0
+        tokens_input_actual = usage.prompt_tokens if usage else 0
 
         logger.debug(
             f"Response received: input_tokens={tokens_input_actual}, "
@@ -181,7 +174,7 @@ class OpenAIProvider(AIProvider):
                 "cost_estimate": self.estimate_cost(tokens_input_actual, tokens_output),
                 "validation_status": "failed",
                 "error_message": f"JSON parse error: {str(e)}",
-                "raw_output": raw_output
+                "raw_output": raw_output,
             }
 
         # Validate against schema
@@ -191,7 +184,7 @@ class OpenAIProvider(AIProvider):
             error_message = None
 
             # Check confidence threshold
-            if hasattr(validated, 'confidence') and validated.confidence < 0.6:
+            if hasattr(validated, "confidence") and validated.confidence < 0.6:
                 validation_status = "manual_review"
                 error_message = f"Low confidence: {validated.confidence}"
 
@@ -206,14 +199,16 @@ class OpenAIProvider(AIProvider):
 
         return {
             "extracted_facts": validated,
-            "confidence": validated.confidence if validated and hasattr(validated, 'confidence') else None,
+            "confidence": (
+                validated.confidence if validated and hasattr(validated, "confidence") else None
+            ),
             "model": self.model,
             "tokens_input": tokens_input_actual,
             "tokens_output": tokens_output,
             "cost_estimate": cost,
             "validation_status": validation_status,
             "error_message": error_message,
-            "raw_output": raw_output
+            "raw_output": raw_output,
         }
 
     def chat(
@@ -222,7 +217,7 @@ class OpenAIProvider(AIProvider):
         conversation_text: str,
         previous_response_id: Optional[str] = None,
         model: str = "gpt-5.1-mini",
-        max_output_tokens: int = 700
+        max_output_tokens: int = 700,
     ) -> Dict[str, Any]:
         """
         Generate a conversational response using the OpenAI Responses API.
@@ -244,7 +239,7 @@ class OpenAIProvider(AIProvider):
             "model": model,
             "instructions": instructions,
             "input": conversation_text,
-            "max_output_tokens": max_output_tokens
+            "max_output_tokens": max_output_tokens,
         }
 
         if previous_response_id:
@@ -260,7 +255,10 @@ class OpenAIProvider(AIProvider):
         usage = getattr(response, "usage", None)
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-        total_tokens = int(getattr(usage, "total_tokens", input_tokens + output_tokens) or (input_tokens + output_tokens))
+        total_tokens = int(
+            getattr(usage, "total_tokens", input_tokens + output_tokens)
+            or (input_tokens + output_tokens)
+        )
         cost = self.estimate_cost(input_tokens, output_tokens, model_name=model)
 
         return {
@@ -270,7 +268,7 @@ class OpenAIProvider(AIProvider):
             "tokens_input": input_tokens,
             "tokens_output": output_tokens,
             "tokens_total": total_tokens,
-            "cost_estimate": cost
+            "cost_estimate": cost,
         }
 
     def _extract_response_text(self, response: Any) -> str:
@@ -291,11 +289,7 @@ class OpenAIProvider(AIProvider):
         merged = "\n".join(chunks).strip()
         return merged or "I could not generate a response right now."
 
-    def _build_default_system_prompt(
-        self,
-        task_name: str,
-        schema: Type[BaseModel]
-    ) -> str:
+    def _build_default_system_prompt(self, task_name: str, schema: Type[BaseModel]) -> str:
         """Build default system prompt for extraction task"""
         return f"""You are a precise data extraction assistant for government policy documents.
 
@@ -314,11 +308,7 @@ Output must be valid JSON matching this schema:
 
 Return ONLY the JSON object, no other text."""
 
-    def _build_user_prompt(
-        self,
-        document_text: str,
-        schema: Type[BaseModel]
-    ) -> str:
+    def _build_user_prompt(self, document_text: str, schema: Type[BaseModel]) -> str:
         """Build user prompt with document text"""
         # Truncate if too long (keep first + last portions)
         max_chars = 100000  # ~25K tokens
@@ -326,9 +316,9 @@ Return ONLY the JSON object, no other text."""
         if len(document_text) > max_chars:
             keep = max_chars // 2
             document_text = (
-                document_text[:keep] +
-                f"\n\n[... middle section truncated ...]\n\n" +
-                document_text[-keep:]
+                document_text[:keep]
+                + f"\n\n[... middle section truncated ...]\n\n"
+                + document_text[-keep:]
             )
 
         return f"""Document to extract from:
@@ -338,10 +328,7 @@ Return ONLY the JSON object, no other text."""
 Extract the requested information and return as JSON."""
 
     def estimate_cost(
-        self,
-        input_tokens: int,
-        output_tokens: int,
-        model_name: Optional[str] = None
+        self, input_tokens: int, output_tokens: int, model_name: Optional[str] = None
     ) -> float:
         """Estimate cost for token usage"""
         price_model = model_name or self.model
@@ -352,10 +339,7 @@ Extract the requested information and return as JSON."""
         else:
             pricing = self.PRICING[price_model]
 
-        cost = (
-            input_tokens * pricing["input"] +
-            output_tokens * pricing["output"]
-        )
+        cost = input_tokens * pricing["input"] + output_tokens * pricing["output"]
 
         return round(cost, 6)
 

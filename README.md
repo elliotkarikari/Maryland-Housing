@@ -1,7 +1,7 @@
 # Maryland Growth & Family Viability Atlas
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![PostgreSQL 15+](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
+[![Databricks SQL](https://img.shields.io/badge/Databricks-SQL%20Warehouse-orange.svg)](https://www.databricks.com/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Railway Deployment](https://img.shields.io/badge/Deploy-Railway-blueviolet.svg)](https://railway.app/)
@@ -37,7 +37,7 @@ The Maryland Growth & Family Viability Atlas analyzes **structural tailwinds and
 
 > **"Which places in Maryland have stacked structural tailwinds if current policies and trends persist, and how confident should we be that those tailwinds will continue?"**
 
-This system uses **exclusively verifiable open data** from government sources to generate transparent, explainable classifications.
+This system uses **verifiable open data where available**, with explicit fallback flags when upstream sources are intermittent or blocked.
 
 ---
 
@@ -49,7 +49,8 @@ This system uses **exclusively verifiable open data** from government sources to
 - Measures **confidence levels** based on policy delivery track record
 - Provides **explainable classifications** with factor breakdowns
 - Uses **multi-year evidence** for robust trend detection
-- Exports **map-ready GeoJSON** for visualization
+- Serves a **live Databricks-backed county GeoJSON feed** for map visualization
+- Progressively improves map/detail output as new layer tables are ingested
 
 ### What It Does NOT Do
 
@@ -89,7 +90,7 @@ This system uses **exclusively verifiable open data** from government sources to
 | Component | Technology |
 |-----------|------------|
 | API Framework | FastAPI 0.109+ |
-| Database | PostgreSQL 15+ with PostGIS 3.3+ |
+| Database | Databricks SQL Warehouse (primary ingest) + PostgreSQL/PostGIS fallback |
 | ORM | SQLAlchemy 2.0 + GeoAlchemy2 |
 | Python | 3.12+ |
 
@@ -123,7 +124,7 @@ This system uses **exclusively verifiable open data** from government sources to
 ### Prerequisites
 
 - Python 3.12+
-- PostgreSQL 15+ with PostGIS 3.3+
+- Databricks SQL Warehouse credentials (`DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN`)
 - Census API key (free): [api.census.gov](https://api.census.gov/data/key_signup.html)
 - Mapbox token: [mapbox.com](https://www.mapbox.com/)
 
@@ -145,7 +146,8 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your API keys
 
-# 5. Initialize database
+# 5. (Optional) Initialize local Postgres fallback database
+# Skip when using DATA_BACKEND=databricks
 make init-db
 
 # 6. Run data ingestion
@@ -185,7 +187,7 @@ See [QUICKSTART.md](QUICKSTART.md) for detailed setup instructions.
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    PostgreSQL + PostGIS                          │
+│      Databricks SQL Warehouse (primary) + PostgreSQL fallback    │
 │  ─────────────────────────────────────────────────────────────  │
 │  layer1_employment_gravity  │  layer2_mobility_optionality      │
 │  layer3_school_trajectory   │  layer4_housing_elasticity        │
@@ -220,10 +222,10 @@ See [QUICKSTART.md](QUICKSTART.md) for detailed setup instructions.
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    EXPORT + API LAYER                            │
+│                       API + EXPORT LAYER                         │
 │  ─────────────────────────────────────────────────────────────  │
-│  src/export/geojson_export.py  →  exports/md_counties_*.geojson │
-│  src/api/main.py + routes.py   →  FastAPI REST endpoints        │
+│  src/api/main.py + routes.py   →  live Databricks county feed   │
+│  src/export/geojson_export.py  →  optional versioned snapshots  │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
@@ -251,13 +253,15 @@ http://localhost:8000/api/v1
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/layers/counties/latest` | Latest county GeoJSON with all classifications |
+| `GET` | `/layers/counties/latest` | Live county GeoJSON from Databricks (`md_counties` + latest layer scores, or `final_synthesis_current` when present) |
 | `GET` | `/layers/counties/{version}` | Versioned GeoJSON snapshot (YYYYMMDD) |
 | `GET` | `/areas/{fips}` | Detailed county analysis (scores, strengths, trends) |
 | `GET` | `/areas/{fips}/layers/{layer}` | Layer-specific factor breakdown |
 | `GET` | `/metadata/refresh` | Latest data refresh status |
 | `GET` | `/metadata/sources` | Data source documentation |
+| `GET` | `/metadata/capabilities` | Runtime feature flags + year policy metadata |
 | `GET` | `/metadata/classifications` | Classification threshold definitions |
+| `POST` | `/chat` | Ask Atlas endpoint (enabled when capabilities report chat enabled) |
 | `GET` | `/counties` | List all 24 MD counties with FIPS codes |
 | `GET` | `/health` | Health check endpoint |
 
@@ -294,11 +298,17 @@ curl http://localhost:8000/api/v1/areas/24031 | jq
 
 Interactive API documentation: `http://localhost:8000/docs`
 
+### Runtime Note
+
+- Map polygons and county properties are served live from Databricks-backed API queries.
+- `final_synthesis_current` is preferred when populated.
+- If synthesis rows are missing, the API derives county detail from the latest available layer tables so the map remains usable during incremental ingest.
+
 ---
 
 ## Data Sources
 
-All data sources are **publicly available government data** with programmatic access.
+Data-source availability is mixed by provider and run window (`available`, `intermittent`, `blocked`, `synthetic fallback`).
 
 ### Update Cadence
 
@@ -390,13 +400,13 @@ See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for full discussion.
 ```bash
 make help           # Show all available commands
 make install        # Install Python dependencies
-make init-db        # Initialize database with PostGIS
-make db-migrate     # Run Alembic migrations
+make init-db        # Initialize local Postgres fallback database (optional)
+make db-migrate     # Run numbered SQL migrations (scripts/run_sql_migrations.py)
 make ingest-all     # Run all 6 layer ingestion pipelines
 make ingest-layer1  # Ingest Economic Opportunity data
 make process        # Run multi-year scoring + classification
-make pipeline       # Complete V2 pipeline + GeoJSON export
-make export         # Generate GeoJSON outputs only
+make pipeline       # Complete V2 pipeline (live API feed + optional GeoJSON snapshots)
+make export         # Generate optional GeoJSON snapshots only
 make serve          # Start FastAPI server (port 8000)
 make frontend       # Start frontend dev server (port 3000)
 make test           # Run pytest with coverage
@@ -404,6 +414,13 @@ make lint           # Run Black, isort, mypy
 make format         # Auto-format code
 make clean          # Remove cache and temp files
 ```
+
+### Runtime Configuration Notes
+
+- CORS is origin-scoped via `CORS_ALLOW_ORIGINS` (comma-separated).
+- Year policy is runtime-configurable with `LODES_LATEST_YEAR`, `LODES_LAG_YEARS`,
+  `ACS_LATEST_YEAR`, `ACS_GEOGRAPHY_MAX_YEAR`, `NCES_OBSERVED_MAX_YEAR`, and `PREDICT_TO_YEAR`.
+- Frontend Ask Atlas visibility is gated by `/api/v1/metadata/capabilities`.
 
 ---
 
@@ -435,6 +452,6 @@ MIT License - See [LICENSE](LICENSE) file.
 
 ---
 
-**Built with:** Python, PostgreSQL/PostGIS, FastAPI, Mapbox GL JS
+**Built with:** Python, Databricks SQL + PostgreSQL/PostGIS fallback, FastAPI, Mapbox GL JS
 **Deployed on:** Railway
-**Last updated:** 2026-01-30
+**Last updated:** 2026-02-15

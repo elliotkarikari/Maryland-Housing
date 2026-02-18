@@ -9,14 +9,15 @@ Data sources:
 This layer modifies CONFIDENCE, not scores.
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional
-from sqlalchemy import text
 from datetime import datetime
+from typing import Dict, Optional
 
-from config.database import get_db, log_refresh
-from config.settings import get_settings, MD_COUNTY_FIPS
+import numpy as np
+import pandas as pd
+from sqlalchemy import text
+
+from config.database import get_db, log_refresh, table_name
+from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import fetch_usaspending_county
 from src.utils.logging import get_logger
 
@@ -24,9 +25,7 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
-def calculate_federal_spending_consistency(
-    spending_by_year: pd.DataFrame
-) -> float:
+def calculate_federal_spending_consistency(spending_by_year: pd.DataFrame) -> float:
     """
     Calculate federal spending consistency (1 - coefficient of variation).
 
@@ -41,7 +40,7 @@ def calculate_federal_spending_consistency(
     if len(spending_by_year) < 2:
         return 0.5  # Neutral if insufficient data
 
-    amounts = spending_by_year['amount']
+    amounts = spending_by_year["amount"]
 
     mean_amount = amounts.mean()
     std_amount = amounts.std()
@@ -60,10 +59,7 @@ def calculate_federal_spending_consistency(
     return consistency
 
 
-def fetch_usaspending_consistency(
-    start_year: int = 2020,
-    end_year: int = 2025
-) -> pd.DataFrame:
+def fetch_usaspending_consistency(start_year: int = 2020, end_year: int = 2025) -> pd.DataFrame:
     """
     Fetch federal spending data and calculate year-over-year consistency.
 
@@ -87,14 +83,14 @@ def fetch_usaspending_consistency(
 
             if not df_year.empty:
                 # Extract FIPS from shape_code
-                if 'shape_code' in df_year.columns:
-                    df_year['fips_code'] = df_year['shape_code'].astype(str).str.zfill(5)
-                    df_year = df_year[df_year['fips_code'].str.startswith('24')]
+                if "shape_code" in df_year.columns:
+                    df_year["fips_code"] = df_year["shape_code"].astype(str).str.zfill(5)
+                    df_year = df_year[df_year["fips_code"].str.startswith("24")]
 
-                    df_year['year'] = year
-                    df_year = df_year.rename(columns={'aggregated_amount': 'amount'})
+                    df_year["year"] = year
+                    df_year = df_year.rename(columns={"aggregated_amount": "amount"})
 
-                    yearly_data.append(df_year[['fips_code', 'year', 'amount']])
+                    yearly_data.append(df_year[["fips_code", "year", "amount"]])
 
         except Exception as e:
             logger.warning(f"Failed to fetch data for year {year}: {e}")
@@ -110,15 +106,14 @@ def fetch_usaspending_consistency(
     # Calculate consistency per county
     consistency_results = []
 
-    for fips_code in df_all['fips_code'].unique():
-        county_data = df_all[df_all['fips_code'] == fips_code]
+    for fips_code in df_all["fips_code"].unique():
+        county_data = df_all[df_all["fips_code"] == fips_code]
 
         consistency = calculate_federal_spending_consistency(county_data)
 
-        consistency_results.append({
-            'fips_code': fips_code,
-            'federal_awards_yoy_consistency': consistency
-        })
+        consistency_results.append(
+            {"fips_code": fips_code, "federal_awards_yoy_consistency": consistency}
+        )
 
     consistency_df = pd.DataFrame(consistency_results)
 
@@ -138,18 +133,20 @@ def fetch_ai_cip_follow_through() -> pd.DataFrame:
 
     with get_db() as db:
         # Query ai_evidence_link for CIP follow-through claims
-        query = text("""
+        query = text(
+            f"""
             SELECT
                 ael.geoid as fips_code,
                 AVG(ael.claim_value) as cip_follow_through_rate,
                 COUNT(*) as evidence_count
-            FROM ai_evidence_link ael
-            JOIN ai_extraction ae ON ael.extraction_id = ae.id
+            FROM {table_name('ai_evidence_link')} ael
+            JOIN {table_name('ai_extraction')} ae ON ael.extraction_id = ae.id
             WHERE ael.claim_type = 'cip_follow_through_rate'
                 AND ae.validation_status = 'valid'
                 AND ael.claim_value IS NOT NULL
             GROUP BY ael.geoid
-        """)
+        """
+        )
 
         df = pd.read_sql(query, db.connection())
 
@@ -163,9 +160,7 @@ def fetch_ai_cip_follow_through() -> pd.DataFrame:
 
 
 def calculate_confidence_score(
-    federal_consistency: Optional[float],
-    cip_follow_through: Optional[float],
-    has_cip_data: bool
+    federal_consistency: Optional[float], cip_follow_through: Optional[float], has_cip_data: bool
 ) -> Dict[str, float]:
     """
     Calculate composite confidence score from available evidence.
@@ -179,33 +174,31 @@ def calculate_confidence_score(
         Dict with confidence_score and component weights
     """
     # Weight federal consistency higher if no CIP data
-    if has_cip_data and pd.notna(cip_follow_through):
+    if has_cip_data and cip_follow_through is not None and pd.notna(cip_follow_through):
         # Both sources available
-        weights = {
-            'federal': 0.4,
-            'cip': 0.6  # CIP is more direct evidence
-        }
+        weights = {"federal": 0.4, "cip": 0.6}  # CIP is more direct evidence
 
-        federal_score = federal_consistency if pd.notna(federal_consistency) else 0.5
-        cip_score = cip_follow_through
-
-        confidence = (
-            weights['federal'] * federal_score +
-            weights['cip'] * cip_score
+        federal_score = (
+            float(federal_consistency)
+            if federal_consistency is not None and pd.notna(federal_consistency)
+            else 0.5
         )
+        cip_score = float(cip_follow_through)
 
-    elif pd.notna(federal_consistency):
+        confidence = weights["federal"] * federal_score + weights["cip"] * cip_score
+
+    elif federal_consistency is not None and pd.notna(federal_consistency):
         # Only federal data available
-        confidence = federal_consistency * 0.8  # Cap at 0.8 when missing CIP
+        confidence = float(federal_consistency) * 0.8  # Cap at 0.8 when missing CIP
 
     else:
         # No data available
         confidence = 0.5  # Neutral default
 
     return {
-        'confidence_score': confidence,
-        'federal_weight': 0.4 if has_cip_data else 1.0,
-        'cip_weight': 0.6 if has_cip_data else 0.0
+        "confidence_score": confidence,
+        "federal_weight": 0.4 if has_cip_data else 1.0,
+        "cip_weight": 0.6 if has_cip_data else 0.0,
     }
 
 
@@ -220,17 +213,15 @@ def classify_confidence(confidence_score: float) -> str:
         Classification: 'strong', 'conditional', or 'fragile'
     """
     if confidence_score >= settings.CONFIDENCE_STRONG_MIN:
-        return 'strong'
+        return "strong"
     elif confidence_score >= settings.CONFIDENCE_CONDITIONAL_MIN:
-        return 'conditional'
+        return "conditional"
     else:
-        return 'fragile'
+        return "fragile"
 
 
 def merge_and_store_policy_persistence(
-    federal_df: pd.DataFrame,
-    cip_df: pd.DataFrame,
-    data_year: int
+    federal_df: pd.DataFrame, cip_df: pd.DataFrame, data_year: int
 ):
     """
     Merge federal and CIP data, calculate confidence scores, and store.
@@ -243,86 +234,110 @@ def merge_and_store_policy_persistence(
     logger.info("Merging policy persistence data sources")
 
     # Start with all Maryland counties
-    all_counties = pd.DataFrame({
-        'fips_code': list(MD_COUNTY_FIPS.keys())
-    })
+    all_counties = pd.DataFrame({"fips_code": list(MD_COUNTY_FIPS.keys())})
 
     # Merge federal data
     if not federal_df.empty:
-        all_counties = all_counties.merge(
-            federal_df,
-            on='fips_code',
-            how='left'
-        )
+        all_counties = all_counties.merge(federal_df, on="fips_code", how="left")
     else:
-        all_counties['federal_awards_yoy_consistency'] = np.nan
+        all_counties["federal_awards_yoy_consistency"] = np.nan
 
     # Merge CIP data
     if not cip_df.empty:
         all_counties = all_counties.merge(
-            cip_df[['fips_code', 'cip_follow_through_rate']],
-            on='fips_code',
-            how='left'
+            cip_df[["fips_code", "cip_follow_through_rate"]], on="fips_code", how="left"
         )
-        all_counties['has_cip_data'] = all_counties['cip_follow_through_rate'].notna()
+        all_counties["has_cip_data"] = all_counties["cip_follow_through_rate"].notna()
     else:
-        all_counties['cip_follow_through_rate'] = np.nan
-        all_counties['has_cip_data'] = False
+        all_counties["cip_follow_through_rate"] = np.nan
+        all_counties["has_cip_data"] = False
 
     # Calculate confidence scores
     confidence_results = []
 
     for _, row in all_counties.iterrows():
         result = calculate_confidence_score(
-            federal_consistency=row['federal_awards_yoy_consistency'],
-            cip_follow_through=row['cip_follow_through_rate'],
-            has_cip_data=row['has_cip_data']
+            federal_consistency=row["federal_awards_yoy_consistency"],
+            cip_follow_through=row["cip_follow_through_rate"],
+            has_cip_data=row["has_cip_data"],
         )
 
-        confidence_class = classify_confidence(result['confidence_score'])
+        confidence_class = classify_confidence(result["confidence_score"])
 
-        confidence_results.append({
-            'fips_code': row['fips_code'],
-            'federal_awards_yoy_consistency': row['federal_awards_yoy_consistency'],
-            'cip_follow_through_rate': row['cip_follow_through_rate'],
-            'confidence_score': result['confidence_score'],
-            'confidence_class': confidence_class,
-            'data_year': data_year
-        })
+        confidence_results.append(
+            {
+                "fips_code": row["fips_code"],
+                "federal_awards_yoy_consistency": row["federal_awards_yoy_consistency"],
+                "cip_follow_through_rate": row["cip_follow_through_rate"],
+                "confidence_score": result["confidence_score"],
+                "confidence_class": confidence_class,
+                "data_year": data_year,
+            }
+        )
 
     results_df = pd.DataFrame(confidence_results)
 
     # Store in database
+    use_databricks_backend = (settings.DATA_BACKEND or "").strip().lower() == "databricks"
     with get_db() as db:
-        for _, row in results_df.iterrows():
-            sql = text("""
-                INSERT INTO policy_persistence (
-                    fips_code, data_year,
-                    federal_awards_yoy_consistency,
-                    cip_follow_through_rate,
-                    confidence_score,
-                    confidence_class
-                ) VALUES (
-                    :fips_code, :data_year,
-                    :federal_awards_yoy_consistency,
-                    :cip_follow_through_rate,
-                    :confidence_score,
-                    :confidence_class
-                )
-                ON CONFLICT (fips_code, data_year)
-                DO UPDATE SET
-                    federal_awards_yoy_consistency = EXCLUDED.federal_awards_yoy_consistency,
-                    cip_follow_through_rate = EXCLUDED.cip_follow_through_rate,
-                    confidence_score = EXCLUDED.confidence_score,
-                    confidence_class = EXCLUDED.confidence_class,
-                    updated_at = CURRENT_TIMESTAMP
-            """)
+        insert_sql = text(
+            f"""
+            INSERT INTO {table_name('policy_persistence')} (
+                fips_code, data_year,
+                federal_awards_yoy_consistency,
+                cip_follow_through_rate,
+                confidence_score,
+                confidence_class
+            ) VALUES (
+                :fips_code, :data_year,
+                :federal_awards_yoy_consistency,
+                :cip_follow_through_rate,
+                :confidence_score,
+                :confidence_class
+            )
+        """
+        )
+        upsert_sql = text(
+            f"""
+            INSERT INTO {table_name('policy_persistence')} (
+                fips_code, data_year,
+                federal_awards_yoy_consistency,
+                cip_follow_through_rate,
+                confidence_score,
+                confidence_class
+            ) VALUES (
+                :fips_code, :data_year,
+                :federal_awards_yoy_consistency,
+                :cip_follow_through_rate,
+                :confidence_score,
+                :confidence_class
+            )
+            ON CONFLICT (fips_code, data_year)
+            DO UPDATE SET
+                federal_awards_yoy_consistency = EXCLUDED.federal_awards_yoy_consistency,
+                cip_follow_through_rate = EXCLUDED.cip_follow_through_rate,
+                confidence_score = EXCLUDED.confidence_score,
+                confidence_class = EXCLUDED.confidence_class,
+                updated_at = CURRENT_TIMESTAMP
+        """
+        )
 
+        if use_databricks_backend:
+            db.execute(
+                text(
+                    f"""
+                    DELETE FROM {table_name('policy_persistence')}
+                    WHERE data_year = :data_year
+                    """
+                ),
+                {"data_year": data_year},
+            )
+
+        for _, row in results_df.iterrows():
             params = row.to_dict()
             # Convert NaN to None for SQL
             params = {k: (None if pd.isna(v) else v) for k, v in params.items()}
-
-            db.execute(sql, params)
+            db.execute(insert_sql if use_databricks_backend else upsert_sql, params)
 
         db.commit()
 
@@ -337,10 +352,7 @@ def merge_and_store_policy_persistence(
     )
 
 
-def run_policy_persistence_ingestion(
-    data_year: int = 2025,
-    include_ai: bool = True
-):
+def run_policy_persistence_ingestion(data_year: int = 2025, include_ai: bool = True):
     """
     Main entry point for policy persistence layer ingestion.
 
@@ -352,10 +364,7 @@ def run_policy_persistence_ingestion(
 
     try:
         # Fetch federal spending consistency (deterministic)
-        federal_df = fetch_usaspending_consistency(
-            start_year=data_year - 5,
-            end_year=data_year
-        )
+        federal_df = fetch_usaspending_consistency(start_year=data_year - 5, end_year=data_year)
 
         # Fetch AI-extracted CIP data (optional)
         if include_ai and settings.AI_ENABLED:
@@ -376,11 +385,7 @@ def run_policy_persistence_ingestion(
             status="success",
             records_processed=len(MD_COUNTY_FIPS),
             records_inserted=len(MD_COUNTY_FIPS),
-            metadata={
-                "data_year": data_year,
-                "include_ai": include_ai,
-                "cip_counties": cip_count
-            }
+            metadata={"data_year": data_year, "include_ai": include_ai, "cip_counties": cip_count},
         )
 
         logger.info("Policy persistence ingestion completed successfully")
@@ -392,7 +397,7 @@ def run_policy_persistence_ingestion(
             layer_name="policy_persistence",
             data_source="USASpending + AI CIP",
             status="failed",
-            error_message=str(e)
+            error_message=str(e),
         )
 
         raise
@@ -400,11 +405,12 @@ def run_policy_persistence_ingestion(
 
 if __name__ == "__main__":
     import sys
+
     from src.utils.logging import setup_logging
 
     setup_logging("policy_persistence")
 
     year = int(sys.argv[1]) if len(sys.argv) > 1 else 2025
-    include_ai = sys.argv[2].lower() != 'false' if len(sys.argv) > 2 else True
+    include_ai = sys.argv[2].lower() != "false" if len(sys.argv) > 2 else True
 
     run_policy_persistence_ingestion(data_year=year, include_ai=include_ai)

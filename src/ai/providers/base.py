@@ -6,7 +6,8 @@ provenance tracking, cost management, and output validation.
 """
 
 from abc import ABC, abstractmethod
-from typing import Type, Dict, Any
+from typing import Any, Dict, Type
+
 from pydantic import BaseModel
 
 
@@ -29,7 +30,7 @@ class AIProvider(ABC):
         schema: Type[BaseModel],
         prompt_version: str,
         system_prompt: str = None,
-        max_tokens: int = 4000
+        max_tokens: int = 4000,
     ) -> Dict[str, Any]:
         """
         Extract structured data from document text.
@@ -60,11 +61,7 @@ class AIProvider(ABC):
         pass
 
     @abstractmethod
-    def estimate_cost(
-        self,
-        input_tokens: int,
-        output_tokens: int
-    ) -> float:
+    def estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
         """
         Estimate cost for token usage.
 
@@ -93,19 +90,23 @@ class AIProvider(ABC):
 
 class AIProviderError(Exception):
     """Base exception for AI provider errors"""
+
     pass
 
 
 class ValidationError(AIProviderError):
     """Raised when output validation fails"""
+
     pass
 
 
 class CostLimitExceededError(AIProviderError):
     """Raised when cost limit is exceeded"""
+
     pass
 
 
 class RateLimitError(AIProviderError):
     """Raised when API rate limit is hit"""
+
     pass

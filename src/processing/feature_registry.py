@@ -12,19 +12,21 @@ This registry defines:
 NO feature should be scored without being registered here.
 """
 
-from typing import Literal, Dict, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Dict, List, Literal
 
 
 class Directionality(str, Enum):
     """Feature directionality for scoring"""
+
     POSITIVE = "positive"  # Higher values are better
     NEGATIVE = "negative"  # Lower values are better (e.g., risk, cost)
 
 
 class NormMethod(str, Enum):
     """Normalization method"""
+
     PERCENTILE = "percentile"  # Rank-based (0-1), robust to outliers
     ROBUST_ZSCORE = "robust_zscore"  # (x - median) / IQR, for heavy-tailed distributions
     MINMAX = "minmax"  # (x - min) / (max - min), use sparingly
@@ -35,6 +37,7 @@ class FeatureDefinition:
     """
     Definition of a single analytical feature
     """
+
     name: str  # Canonical feature name
     layer: str  # Layer name (e.g., 'employment_gravity')
     source_table: str  # PostgreSQL table name
@@ -61,7 +64,7 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Shannon entropy (bits)",
         description="Employment diversification across 20 NAICS sectors (higher = more resilient)",
-        weight=1.5  # Emphasize diversity
+        weight=1.5,  # Emphasize diversity
     ),
     FeatureDefinition(
         name="stable_sector_employment",
@@ -72,7 +75,7 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Share (0-1)",
         description="Share of employment in education, health, and public administration",
-        weight=1.0
+        weight=1.0,
     ),
     FeatureDefinition(
         name="federal_spending_stability",
@@ -83,7 +86,7 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.ROBUST_ZSCORE,
         unit="Coefficient of variation",
         description="Federal spending consistency (lower CV = more persistent funding)",
-        weight=0.8
+        weight=0.8,
     ),
     FeatureDefinition(
         name="employment_diversification_composite",
@@ -94,7 +97,7 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Composite score (0-1)",
         description="Legacy local-strength composite (sector diversity + stability)",
-        weight=0.8
+        weight=0.8,
     ),
     FeatureDefinition(
         name="economic_opportunity_index",
@@ -105,7 +108,7 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Composite score (0-1)",
         description="Composite of local strength (v1) + regional accessibility (v2)",
-        weight=2.2  # Primary Layer 1 signal
+        weight=2.2,  # Primary Layer 1 signal
     ),
     FeatureDefinition(
         name="qwi_net_job_growth_rate",
@@ -116,8 +119,8 @@ LAYER1_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Rate (0-1)",
         description="Net job growth rate from Census QWI (hires minus separations)",
-        weight=0.7
-    )
+        weight=0.7,
+    ),
 ]
 
 # ============================================================================
@@ -134,7 +137,7 @@ LAYER2_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Count of interstate exits",
         description="Highway network access points",
-        weight=1.0
+        weight=1.0,
     ),
     FeatureDefinition(
         name="transit_mode_count",
@@ -145,7 +148,7 @@ LAYER2_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Count of distinct modes",
         description="Number of transportation modes available (highway, rail, bus)",
-        weight=1.5
+        weight=1.5,
     ),
     FeatureDefinition(
         name="mobility_optionality_index",
@@ -156,8 +159,8 @@ LAYER2_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Index (0-1)",
         description="Composite mobility redundancy score",
-        weight=2.0
-    )
+        weight=2.0,
+    ),
 ]
 
 # ============================================================================
@@ -174,7 +177,7 @@ LAYER3_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.ROBUST_ZSCORE,
         unit="Percent change (3-year)",
         description="Enrollment trend direction (growing = positive family demand signal)",
-        weight=1.5
+        weight=1.5,
     ),
     FeatureDefinition(
         name="capital_per_student",
@@ -185,7 +188,7 @@ LAYER3_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Dollars per student",
         description="School capital investment per student (if CIP data available)",
-        weight=1.0
+        weight=1.0,
     ),
     FeatureDefinition(
         name="enrollment_momentum_score",
@@ -196,8 +199,8 @@ LAYER3_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Composite score",
         description="Pre-calculated enrollment trajectory signal",
-        weight=2.0
-    )
+        weight=2.0,
+    ),
 ]
 
 # ============================================================================
@@ -214,7 +217,7 @@ LAYER4_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Permits per 1000 households",
         description="Building permit intensity (supply responsiveness proxy)",
-        weight=1.5
+        weight=1.5,
     ),
     FeatureDefinition(
         name="price_to_income_trend",
@@ -225,7 +228,7 @@ LAYER4_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.ROBUST_ZSCORE,
         unit="Percentage point change",
         description="5-year change in price-to-income ratio (rising = less affordable)",
-        weight=1.0
+        weight=1.0,
     ),
     FeatureDefinition(
         name="supply_responsiveness",
@@ -236,7 +239,7 @@ LAYER4_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Composite score",
         description="Housing supply elasticity composite",
-        weight=2.0
+        weight=2.0,
     ),
     FeatureDefinition(
         name="fmr_2br_to_income",
@@ -247,7 +250,7 @@ LAYER4_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Ratio (annual rent / income)",
         description="HUD Fair Market Rent (2BR) as share of median income",
-        weight=0.6
+        weight=0.6,
     ),
     FeatureDefinition(
         name="lihtc_units_per_1000_households",
@@ -258,8 +261,8 @@ LAYER4_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Units per 1000 households",
         description="LIHTC affordable unit supply intensity",
-        weight=0.6
-    )
+        weight=0.6,
+    ),
 ]
 
 # ============================================================================
@@ -276,7 +279,7 @@ LAYER5_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.ROBUST_ZSCORE,
         unit="Net household inflow",
         description="IRS county-to-county migration net flow",
-        weight=1.5
+        weight=1.5,
     ),
     FeatureDefinition(
         name="working_age_share",
@@ -287,7 +290,7 @@ LAYER5_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Share (0-1)",
         description="Share of population age 25-44 (prime working age)",
-        weight=1.0
+        weight=1.0,
     ),
     FeatureDefinition(
         name="household_formation_change",
@@ -298,7 +301,7 @@ LAYER5_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.ROBUST_ZSCORE,
         unit="Percent change",
         description="Year-over-year household formation rate change",
-        weight=1.2
+        weight=1.2,
     ),
     FeatureDefinition(
         name="demographic_momentum_composite",
@@ -309,8 +312,8 @@ LAYER5_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Composite score",
         description="Pre-calculated demographic pressure composite",
-        weight=2.0
-    )
+        weight=2.0,
+    ),
 ]
 
 # ============================================================================
@@ -327,7 +330,7 @@ LAYER6_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Percent of county area",
         description="FEMA Special Flood Hazard Area (100-year floodplain)",
-        weight=1.5
+        weight=1.5,
     ),
     FeatureDefinition(
         name="air_quality_burden",
@@ -338,7 +341,7 @@ LAYER6_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="PM2.5 μg/m³",
         description="Particulate matter exposure (EPA EJScreen)",
-        weight=0.8
+        weight=0.8,
     ),
     FeatureDefinition(
         name="infrastructure_deficiency",
@@ -349,7 +352,7 @@ LAYER6_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Percent of bridges",
         description="Share of structurally deficient bridges",
-        weight=1.0
+        weight=1.0,
     ),
     FeatureDefinition(
         name="risk_drag_composite",
@@ -360,8 +363,8 @@ LAYER6_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Risk index (0-1)",
         description="Pre-calculated composite risk drag (subtractive only)",
-        weight=2.0
-    )
+        weight=2.0,
+    ),
 ]
 
 # ============================================================================
@@ -378,7 +381,7 @@ POLICY_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Consistency score (0-1)",
         description="1 - CV of federal awards across 5 years",
-        weight=1.0
+        weight=1.0,
     ),
     FeatureDefinition(
         name="cip_follow_through_rate",
@@ -390,7 +393,7 @@ POLICY_FEATURES: List[FeatureDefinition] = [
         unit="Completion rate (0-1)",
         description="CIP projects completed / planned (AI-extracted)",
         weight=1.5,
-        requires_ai=True  # Depends on AI document extraction
+        requires_ai=True,  # Depends on AI document extraction
     ),
     FeatureDefinition(
         name="confidence_score",
@@ -401,8 +404,8 @@ POLICY_FEATURES: List[FeatureDefinition] = [
         norm_method=NormMethod.PERCENTILE,
         unit="Composite score (0-1)",
         description="Policy delivery reliability composite",
-        weight=2.0
-    )
+        weight=2.0,
+    ),
 ]
 
 # ============================================================================
@@ -410,19 +413,17 @@ POLICY_FEATURES: List[FeatureDefinition] = [
 # ============================================================================
 
 ALL_FEATURES: List[FeatureDefinition] = (
-    LAYER1_FEATURES +
-    LAYER2_FEATURES +
-    LAYER3_FEATURES +
-    LAYER4_FEATURES +
-    LAYER5_FEATURES +
-    LAYER6_FEATURES +
-    POLICY_FEATURES
+    LAYER1_FEATURES
+    + LAYER2_FEATURES
+    + LAYER3_FEATURES
+    + LAYER4_FEATURES
+    + LAYER5_FEATURES
+    + LAYER6_FEATURES
+    + POLICY_FEATURES
 )
 
 # Build lookup dictionaries
-FEATURES_BY_NAME: Dict[str, FeatureDefinition] = {
-    f.name: f for f in ALL_FEATURES
-}
+FEATURES_BY_NAME: Dict[str, FeatureDefinition] = {f.name: f for f in ALL_FEATURES}
 
 FEATURES_BY_LAYER: Dict[str, List[FeatureDefinition]] = {
     "employment_gravity": LAYER1_FEATURES,
@@ -431,7 +432,7 @@ FEATURES_BY_LAYER: Dict[str, List[FeatureDefinition]] = {
     "housing_elasticity": LAYER4_FEATURES,
     "demographic_momentum": LAYER5_FEATURES,
     "risk_drag": LAYER6_FEATURES,
-    "policy_persistence": POLICY_FEATURES
+    "policy_persistence": POLICY_FEATURES,
 }
 
 
@@ -482,11 +483,13 @@ def validate_feature_coverage(db_session) -> Dict[str, Dict[str, int]]:
         layer_coverage = {}
 
         for feature in features:
-            query = text(f"""
+            query = text(
+                f"""
                 SELECT COUNT(DISTINCT fips_code)
                 FROM {feature.source_table}
                 WHERE {feature.source_column} IS NOT NULL
-            """)
+            """
+            )
 
             result = db_session.execute(query)
             count = result.scalar()
@@ -501,14 +504,16 @@ def validate_feature_coverage(db_session) -> Dict[str, Dict[str, int]]:
 # LAYER DEFINITIONS (for scoring)
 # ============================================================================
 
+
 @dataclass
 class LayerDefinition:
     """Definition of an analytical layer for scoring"""
+
     name: str
     display_name: str
     description: str
     is_penalty: bool = False  # True for risk_drag (subtractive)
-    features: List[FeatureDefinition] = None
+    features: List[FeatureDefinition] = field(default_factory=list)
 
 
 LAYER_DEFINITIONS = [
@@ -517,43 +522,43 @@ LAYER_DEFINITIONS = [
         display_name="Employment Gravity",
         description="Income stability through sector diversification and federal spending",
         is_penalty=False,
-        features=LAYER1_FEATURES
+        features=LAYER1_FEATURES,
     ),
     LayerDefinition(
         name="mobility_optionality",
         display_name="Mobility Optionality",
         description="Job-change resilience via transit and highway redundancy",
         is_penalty=False,
-        features=LAYER2_FEATURES
+        features=LAYER2_FEATURES,
     ),
     LayerDefinition(
         name="school_trajectory",
         display_name="School System Trajectory",
         description="Family viability through enrollment trends and capital investment",
         is_penalty=False,
-        features=LAYER3_FEATURES
+        features=LAYER3_FEATURES,
     ),
     LayerDefinition(
         name="housing_elasticity",
         display_name="Housing Elasticity",
         description="Growth absorption capacity through supply responsiveness",
         is_penalty=False,
-        features=LAYER4_FEATURES
+        features=LAYER4_FEATURES,
     ),
     LayerDefinition(
         name="demographic_momentum",
         display_name="Demographic Momentum",
         description="Demand pressure from migration and household formation",
         is_penalty=False,
-        features=LAYER5_FEATURES
+        features=LAYER5_FEATURES,
     ),
     LayerDefinition(
         name="risk_drag",
         display_name="Risk Drag",
         description="Long-term environmental and infrastructure constraints (PENALTY)",
         is_penalty=True,
-        features=LAYER6_FEATURES
-    )
+        features=LAYER6_FEATURES,
+    ),
 ]
 
 

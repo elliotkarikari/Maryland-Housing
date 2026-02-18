@@ -2,9 +2,9 @@ import pytest
 
 from src.processing.feature_registry import (
     FEATURES_BY_LAYER,
+    get_ai_dependent_features,
     get_feature,
     get_primary_features,
-    get_ai_dependent_features,
 )
 
 

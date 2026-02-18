@@ -11,6 +11,7 @@ Complete guide for deploying this system to production on Railway.
 ### Required Accounts & Keys
 
 - [ ] Railway account (https://railway.app)
+- [ ] Databricks workspace + SQL Warehouse access token
 - [ ] Census API key (https://api.census.gov/data/key_signup.html)
 - [ ] Mapbox account + token (https://account.mapbox.com/)
 - [ ] Optional: OpenAI API key (https://platform.openai.com/api-keys)
@@ -52,24 +53,22 @@ railway init
 # Environment: production
 ```
 
-### Step 3: Provision PostgreSQL with PostGIS
+### Step 3: Configure Databricks SQL Warehouse (Primary Backend)
+
+```bash
+railway variables set DATA_BACKEND="databricks"
+railway variables set DATABRICKS_SERVER_HOSTNAME="dbc-xxxx.cloud.databricks.com"
+railway variables set DATABRICKS_HTTP_PATH="/sql/1.0/warehouses/xxxx"
+railway variables set DATABRICKS_ACCESS_TOKEN="dapi..."
+railway variables set DATABRICKS_CATALOG="maryland_atlas"
+railway variables set DATABRICKS_SCHEMA="default"
+```
+
+Optional local fallback mode only:
 
 ```bash
 railway add --database postgres
-```
-
-Railway creates `DATABASE_URL` automatically.
-
-**Enable PostGIS extension:**
-
-```bash
-# Connect to Railway database
-railway connect postgres
-
-# In psql shell:
-CREATE EXTENSION IF NOT EXISTS postgis;
-CREATE EXTENSION IF NOT EXISTS postgis_topology;
-\q
+railway variables set DATA_BACKEND="postgres"
 ```
 
 ### Step 4: Set Environment Variables
@@ -90,6 +89,7 @@ railway variables set SENTRY_DSN="https://your_sentry_dsn"
 railway variables set ENVIRONMENT="production"
 railway variables set LOG_LEVEL="INFO"
 railway variables set DEBUG="false"
+railway variables set CORS_ALLOW_ORIGINS="https://your-frontend-domain.com"
 ```
 
 **Verify variables:**
@@ -114,19 +114,16 @@ Railway will:
 railway logs
 ```
 
-### Step 6: Initialize Database
+### Step 6: Validate Databricks Connectivity
 
 ```bash
-# Run initialization script
-railway run python scripts/init_db.py
+# Confirm backend connection from app runtime
+railway run python -c "from config.database import test_connection; print('db_connected=', test_connection())"
 ```
 
-Expected output:
+Expected output includes:
 ```
-✓ Database connection successful
-✓ Schema initialized
-✓ County boundaries loaded (24 counties)
-✓ Verification complete
+db_connected= True
 ```
 
 ### Step 7: Run Initial Data Ingestion
@@ -151,7 +148,8 @@ railway status
 curl https://your-app.up.railway.app/health
 
 # Test API
-curl https://your-app.up.railway.app/api/v1/metadata/refresh | jq
+curl https://your-app.up.railway.app/api/v1/layers/counties/latest | jq '.features | length'
+curl -i https://your-app.up.railway.app/api/v1/areas/24031 | head -n 20
 ```
 
 ---
@@ -164,7 +162,7 @@ Railway automatically configures cron jobs from `railway.json`:
 |-----|----------|---------|
 | `monthly-pipeline-run` | 1st @ 2 AM EST | Full ingestion + processing |
 | `weekly-ai-cip-extraction` | Monday @ 3 AM EST | AI document extraction |
-| `daily-export-refresh` | Daily @ 5 AM EST | Regenerate GeoJSON |
+| `daily-export-refresh` | Daily @ 5 AM EST | Optional GeoJSON snapshot refresh (map runtime stays API-first) |
 
 **Manual trigger:**
 ```bash
@@ -194,6 +192,8 @@ Expected response:
 {
   "status": "healthy",
   "database": "connected",
+  "county_boundaries": "available",
+  "county_count": 24,
   "geojson_export": "available",
   "environment": "production"
 }
@@ -215,28 +215,23 @@ railway logs --json > logs.json
 ### Database Monitoring
 
 ```bash
-# Connect to database
-railway connect postgres
+# Databricks connectivity from app runtime
+railway run python -c "from config.database import test_connection; print('db_connected=', test_connection())"
 
-# Check table sizes
-\dt+
+# Live county feed coverage (expect 24)
+curl https://your-app.up.railway.app/api/v1/layers/counties/latest | jq '.features | length'
 
-# Check recent refreshes
-SELECT layer_name, refresh_date, status
-FROM data_refresh_log
-ORDER BY refresh_date DESC
-LIMIT 10;
-
-# Check AI extraction costs
-SELECT * FROM v_ai_cost_summary
-ORDER BY extraction_date DESC;
+# Detail endpoint should return 200 for valid FIPS
+curl -i https://your-app.up.railway.app/api/v1/areas/24031 | head -n 20
 ```
 
 ### Cost Monitoring
 
 **Railway costs:**
-- Hobby plan: $5/month (includes 500MB PostgreSQL)
-- Pro plan: $20/month (includes 8GB PostgreSQL + priority support)
+- Depends on service plan and runtime usage.
+
+**Databricks costs:**
+- Driven by SQL Warehouse uptime/query volume.
 
 **AI extraction costs:**
 - Tracked in `ai_extraction` table
@@ -257,14 +252,13 @@ WHERE created_at >= date_trunc('month', CURRENT_DATE);
 
 ### Current Capacity (Hobby Plan)
 
-- **Database:** 500MB (sufficient for ~5 years of data)
+- **Database:** Databricks SQL Warehouse managed outside Railway
 - **API:** Single instance (handles ~100 req/sec)
 - **Cron:** 3 jobs (monthly, weekly, daily)
 
 ### When to Upgrade
 
 Upgrade to Pro plan if:
-- Database exceeds 400MB (check with `\l+` in psql)
 - API response times > 1 second
 - Need more than 3 cron jobs
 - Want staging environment
@@ -281,7 +275,7 @@ Upgrade to Pro plan if:
 }
 ```
 
-**Database:** Use Railway's managed PostgreSQL autoscaling.
+**Database:** Scale SQL Warehouse size/concurrency in Databricks.
 
 ---
 
@@ -289,9 +283,9 @@ Upgrade to Pro plan if:
 
 ### Automated Backups
 
-Railway provides automatic daily backups (retained 7 days on Hobby, 30 days on Pro).
+Railway covers application deployment rollback/history. Primary analytical data resides in Databricks and should follow Databricks workspace backup/versioning policy.
 
-**Manual backup:**
+Optional fallback-mode backup (only when `DATA_BACKEND=postgres`):
 ```bash
 # Export database
 railway run pg_dump $DATABASE_URL > backup_$(date +%Y%m%d).sql
@@ -315,14 +309,14 @@ railway run cat exports/md_counties_20260128.geojson > local_copy.geojson
 ### Recovery Procedure
 
 ```bash
-# 1. Restore database from backup
-railway connect postgres < backup_20260128.sql
+# 1. Confirm Databricks/API connectivity
+curl https://your-app.up.railway.app/health
 
-# 2. Reinitialize schema (if needed)
-railway run python scripts/init_db.py
-
-# 3. Re-run pipeline
+# 2. Re-run pipeline to repopulate synthesis and snapshots
 railway run python src/run_pipeline.py --level county
+
+# 3. Re-verify live endpoints
+curl https://your-app.up.railway.app/api/v1/layers/counties/latest | jq '.features | length'
 ```
 
 ---
@@ -421,16 +415,10 @@ async def get_area_detail(request: Request, geoid: str):
 
 ### Database Security
 
-```sql
--- Create read-only API user
-CREATE ROLE api_user WITH LOGIN PASSWORD 'strong_password';
-GRANT CONNECT ON DATABASE maryland_atlas TO api_user;
-GRANT USAGE ON SCHEMA public TO api_user;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO api_user;
-
--- Revoke write permissions
-REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM api_user;
-```
+- Use a dedicated Databricks service principal/token for API access.
+- Scope warehouse permissions to read access on required schemas/tables.
+- Rotate Databricks access tokens on a fixed schedule.
+- If running Postgres fallback mode, apply standard least-privilege SQL grants.
 
 ---
 
@@ -454,7 +442,7 @@ engine = create_engine(
 
 **Check:**
 ```bash
-railway run psql $DATABASE_URL -c "SELECT SUM(cost_estimate) FROM ai_extraction WHERE created_at >= date_trunc('month', CURRENT_DATE);"
+railway run python -c "from sqlalchemy import text; from config.database import engine; c=engine.connect(); print(c.execute(text(\"SELECT COALESCE(SUM(cost_estimate),0) FROM ai_extraction\")).scalar()); c.close()"
 ```
 
 **Fix:** Increase limit in `config/settings.py` or disable AI:
@@ -474,16 +462,17 @@ railway cron list
 railway run python src/run_pipeline.py --level county
 ```
 
-### "GeoJSON export missing"
+### "Live county feed missing"
 
 **Check logs:**
 ```bash
-railway logs --filter "geojson_export"
+railway logs --filter "layers/counties/latest"
 ```
 
-**Regenerate:**
+**Validate source tables via app health and rerun pipeline:**
 ```bash
-railway run python src/run_pipeline.py --export-only
+curl https://your-app.up.railway.app/health
+railway run python src/run_pipeline.py --level county
 ```
 
 ---
@@ -507,7 +496,8 @@ railway rollback --to <deployment_id>
 
 ### Database Indexes
 
-Already configured in `schema.sql`, but verify:
+For Databricks, optimize table layout/warehouse sizing in Databricks workspace settings.  
+Postgres fallback mode can verify indexes with:
 
 ```sql
 -- Check missing indexes
@@ -559,7 +549,7 @@ async def get_area_detail(geoid: str):
 **Production issues:**
 1. Check `/health` endpoint
 2. Review Railway logs
-3. Query `data_refresh_log` table
+3. Check `GET /api/v1/metadata/refresh` and `GET /api/v1/layers/counties/latest`
 4. Open GitHub issue with tag `production`
 
 **Data quality issues:**
@@ -589,7 +579,7 @@ railway status
 curl -w "@curl-format.txt" https://your-app.up.railway.app/health
 
 # Data freshness
-psql $DATABASE_URL -c "SELECT MAX(refresh_date) FROM data_refresh_log;"
+curl https://your-app.up.railway.app/api/v1/metadata/refresh | jq
 ```
 
 ---

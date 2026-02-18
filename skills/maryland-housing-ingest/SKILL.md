@@ -14,8 +14,8 @@ metadata:
 - Resuming partial ingest runs for layer 1 with append mode.
 
 ## Quick start
-1. Verify `.env` keys and `DATABASE_URL`.
-2. Ensure PostGIS extensions are enabled and run `make db-migrate` after schema changes.
+1. Verify `.env` keys with Databricks defaults: `DATA_BACKEND=databricks`, `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_ACCESS_TOKEN`.
+2. For Postgres fallback mode only, verify `DATABASE_URL` + PostGIS extensions, then run `make db-migrate` after schema changes.
 3. Run a single layer with `make ingest-layerX` before full ingest.
 
 ## Common fixes

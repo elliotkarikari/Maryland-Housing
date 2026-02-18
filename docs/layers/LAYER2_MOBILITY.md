@@ -164,7 +164,7 @@ This would enable true mobility momentum and stability analysis.
 
 ## Questions?
 
-See `docs/ANALYSIS_METHODS.md` Section 9 (Layer 2) for detailed methodology.
+See `docs/architecture/ANALYSIS_METHODS.md` Section 9 (Layer 2) for detailed methodology.
 
 For issues or questions, check:
 - https://github.com/r5py/r5py (R5 routing engine)

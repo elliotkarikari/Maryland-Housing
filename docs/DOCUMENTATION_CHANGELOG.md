@@ -10,6 +10,16 @@
 
 This changelog documents all updates made to the Maryland Housing Atlas documentation as part of the documentation improvement initiative. All changes focus on improving developer onboarding, system clarity, and maintainability.
 
+## Addendum (2026-02-15)
+
+Documentation structure was normalized during a follow-up cleanup pass:
+
+- Canonical API docs now live at `docs/api/API_REFERENCE.md`
+- `docs/PROJECT_CLEANUP_PLAN.md` marked historical
+- `docs/COMPLETE_SYSTEM_STATUS.md` converted to historical pointer
+- Archive index added at `docs/archive/README.md`
+- Top-level docs map added at `docs/README.md`
+
 ---
 
 ## Files Updated
@@ -136,6 +146,7 @@ This changelog documents all updates made to the Maryland Housing Atlas document
 ### 4. docs/COMPLETE_SYSTEM_STATUS.md
 
 **Status:** Created (New File)
+**2026-02 Note:** This path now serves as a historical pointer; archived snapshots live in `docs/archive/`.
 
 #### Content Added
 
@@ -243,7 +254,7 @@ The following files were reviewed but not modified as they already meet document
 
 ### Short-term (Next Release)
 
-1. Add API request/response examples to `docs/API_IMPLEMENTATION.md`
+1. Add API request/response examples to `docs/api/API_REFERENCE.md`
 2. Create layer-specific quickstart guides in `docs/layers/`
 3. Add performance benchmarks to ARCHITECTURE.md
 

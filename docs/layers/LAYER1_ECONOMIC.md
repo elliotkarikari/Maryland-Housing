@@ -2,7 +2,7 @@
 
 ## Overview
 
-Layer 1 was completely overhauled in January 2026 to use **wage-segmented accessibility metrics** instead of simple job counts. The new approach measures actual ability to reach high-wage jobs using LODES employment data and proximity-based routing.
+Layer 1 was completely overhauled in January 2026 to use **wage-segmented accessibility metrics** instead of simple job counts. The current approach prefers network OD travel-time routing (drive+transit) when available and falls back to proximity-based haversine routing for deterministic statewide continuity.
 
 ## What's New
 
@@ -84,7 +84,9 @@ All downloaded data is cached in `data/cache/economic_v2/`:
 - **~45-60 minutes** for 5-year window (2017-2021)
 
 ### Method
-- Proximity-based gravity model using haversine distance
+- Hybrid accessibility impedance:
+  - Preferred: network OD travel-time matrix (drive+transit, r5py)
+  - Fallback: proximity-based haversine model
 - Distance decay function weights jobs by inverse-square distance
 - No Java required (pure Python with pandas/numpy)
 
@@ -168,6 +170,15 @@ run_geojson_export()
 # (API auto-loads from database)
 ```
 
+### Sensitivity Audit (Recommended)
+
+```bash
+# Publish Layer 1 accessibility threshold stability report
+make layer1-sensitivity
+```
+
+Output: `docs/audits/layer1_accessibility_sensitivity_<YYYY-MM-DD>.md`
+
 ## Advanced: Historical Multi-Year Analysis
 
 To build true multi-year timeseries for Layer 1:
@@ -189,7 +200,7 @@ This enables true economic momentum and stability analysis across the full 5-yea
 - **Problem**: Doesn't measure accessibility or wage quality
 
 ### Version 2 (Current)
-- **Method**: Measure high-wage jobs accessible via proximity model
+- **Method**: Measure high-wage jobs accessible via network OD travel-time (fallback to proximity proxy)
 - **Metric**: `economic_accessibility_score` + `wage_quality_ratio`
 - **Advantage**: Policy-relevant, captures regional labor market access
 
@@ -212,7 +223,7 @@ Based on 2021 analysis (LODES 2019 data):
 
 ## Questions?
 
-See `docs/ANALYSIS_METHODS.md` Section 9 (Layer 1) for detailed methodology.
+See `docs/architecture/ANALYSIS_METHODS.md` Section 9 (Layer 1) for detailed methodology.
 
 For issues or questions:
 - Check cache directory: `data/cache/economic_v2/`
@@ -226,7 +237,7 @@ For issues or questions:
 | Focus | Jobs accessible | Transit performance |
 | Primary metric | High-wage job count | Multimodal accessibility |
 | Data source | LODES employment | OSM + GTFS |
-| Routing | Proximity model | R5 engine (optional) |
+| Routing | Network OD (fallback to proximity proxy) | R5 engine (optional) |
 | Distance basis | Haversine (km) | Travel time (min) |
 | Java required | No | Optional (fallback available) |
 

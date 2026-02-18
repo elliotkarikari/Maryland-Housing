@@ -38,12 +38,9 @@ const API_BASE_CANDIDATES = (() => {
     });
     return deduped;
 })();
-const COUNTY_GEOJSON_FALLBACK_STATIC_PATHS = [
-    './md_counties_latest.geojson',
-    'md_counties_latest.geojson',
-    '/md_counties_latest.geojson',
-    '/frontend/md_counties_latest.geojson'
-];
+const COUNTY_GEOJSON_MAX_ATTEMPTS = 6;
+const COUNTY_GEOJSON_RETRY_BASE_MS = 1200;
+const COUNTY_LAYER_AUTO_RECOVER_MS = 5000;
 
 const SIDEBAR_WIDTH_KEY = 'atlas.sidebar.width';
 const TOUR_STORAGE_KEY = 'atlas.guided_tour.dismissed.v1';
@@ -270,12 +267,24 @@ const appState = {
         previousResponseId: null,
         returnMode: 'empty'
     },
+    capabilities: window.AtlasCapabilities
+        ? window.AtlasCapabilities.defaultCapabilities()
+        : {
+            loaded: false,
+            chat_enabled: false,
+            ai_enabled: false,
+            api_version: null,
+            year_policy: null
+        },
     pendingCountyRequest: null,
     moveOpacityTimer: null,
     clickOpacityTimer: null,
     flowAnimationTimer: null,
     hoverPopupFips: null,
     apiBaseUrl: null,
+    countyLayerLoaded: false,
+    countyLayerRetryTimer: null,
+    countyLayerRetryAttempt: 0,
     tableViewOpen: false,
     tour: {
         active: false,
@@ -343,10 +352,13 @@ if (!MAPBOX_TOKEN) {
     renderFatal('Mapbox access token is missing. Set MAPBOX_ACCESS_TOKEN in your environment.');
 } else {
     mapboxgl.accessToken = MAPBOX_TOKEN;
-    initialize();
+    initialize().catch((error) => {
+        renderFatal(`Failed to initialize map: ${getReadableFetchError(error, 'initialization')}`);
+    });
 }
 
-function initialize() {
+async function initialize() {
+    await loadCapabilities();
     setupLegendSwatches();
     setupLegendInteractions();
     setupPanelControls();
@@ -359,7 +371,56 @@ function initialize() {
     setupSidebarResize();
     setupGlobalEvents();
     setCompareButtonState(false, false);
+    applyCapabilitiesUI();
     initializeMap();
+}
+
+function isChatEnabled() {
+    if (window.AtlasCapabilities) {
+        return window.AtlasCapabilities.isChatEnabled(appState.capabilities);
+    }
+    return Boolean(appState.capabilities && appState.capabilities.chat_enabled);
+}
+
+async function loadCapabilities() {
+    try {
+        const { response } = await fetchApi('/metadata/capabilities');
+        if (!response.ok) {
+            return;
+        }
+        const payload = await response.json();
+        appState.capabilities = window.AtlasCapabilities
+            ? window.AtlasCapabilities.normalize(payload)
+            : {
+                loaded: true,
+                chat_enabled: Boolean(payload.chat_enabled),
+                ai_enabled: Boolean(payload.ai_enabled),
+                api_version: payload.api_version || null,
+                year_policy: payload.year_policy || null
+            };
+    } catch (_error) {
+        // Keep conservative defaults when capabilities are unavailable.
+    }
+}
+
+function applyCapabilitiesUI() {
+    const chatEnabled = isChatEnabled();
+    if (dom.askPill) {
+        dom.askPill.style.display = chatEnabled ? 'inline-flex' : 'none';
+    }
+    if (dom.askShell) {
+        dom.askShell.classList.remove('expanded');
+        dom.askShell.classList.remove('sending');
+        dom.askShell.setAttribute('aria-hidden', 'true');
+        dom.askShell.style.display = chatEnabled ? 'inline-flex' : 'none';
+    }
+    if (!chatEnabled) {
+        appState.chat.open = false;
+        appState.chat.busy = false;
+        if (dom.analysisFloat) {
+            dom.analysisFloat.classList.remove('chat-mode');
+        }
+    }
 }
 
 function renderFatal(message) {
@@ -1132,12 +1193,29 @@ async function loadCountyLayer() {
             }
         });
 
+        appState.countyLayerLoaded = true;
+        appState.countyLayerRetryAttempt = 0;
+        clearCountyLayerRetry();
+
         addDemographicFlowLayers();
         await addCountyIllustrationLayers();
         wireCountyInteractions();
         applyLegendFilter();
     } catch (error) {
-        renderTransientPanelError(getReadableFetchError(error, '/layers/counties/latest'));
+        appState.countyLayerLoaded = false;
+        const delaySeconds = Math.max(
+            1,
+            Math.round(
+                Math.min(
+                    COUNTY_LAYER_AUTO_RECOVER_MS * (appState.countyLayerRetryAttempt + 1),
+                    30000
+                ) / 1000
+            )
+        );
+        renderTransientPanelError(
+            `${getReadableFetchError(error, '/layers/counties/latest')} Retrying in ${delaySeconds}s.`
+        );
+        scheduleCountyLayerRetry();
     }
 }
 
@@ -1615,44 +1693,38 @@ function offsetLngLatByKm(center, offsetXKm, offsetYKm) {
 }
 
 async function loadCountyGeoJson() {
-    let apiError = null;
+    let lastError = null;
 
-    try {
-        const { response, url: resolvedUrl } = await fetchApi('/layers/counties/latest');
-        if (!response.ok) {
-            throw new Error(`Could not load ${resolvedUrl} (HTTP ${response.status})`);
-        }
-
-        const geojson = await response.json();
-        if (isValidCountyGeoJson(geojson)) {
-            return geojson;
-        }
-        throw new Error('County GeoJSON response is invalid.');
-    } catch (error) {
-        apiError = error;
-    }
-
-    const fallbackPaths = getCountyGeoJsonFallbackPaths();
-    for (const fallbackPath of fallbackPaths) {
+    for (let attempt = 1; attempt <= COUNTY_GEOJSON_MAX_ATTEMPTS; attempt += 1) {
         try {
-            const response = await fetch(fallbackPath, { cache: 'no-store' });
+            const { response, url: resolvedUrl } = await fetchApi('/layers/counties/latest', {
+                cache: 'no-store'
+            });
             if (!response.ok) {
-                continue;
+                throw new Error(`Could not load ${resolvedUrl} (HTTP ${response.status})`);
             }
+
             const geojson = await response.json();
             if (isValidCountyGeoJson(geojson)) {
                 return geojson;
             }
-        } catch (_error) {
-            // Try next fallback path.
+            throw new Error('County GeoJSON response is invalid.');
+        } catch (error) {
+            lastError = error;
+            if (attempt < COUNTY_GEOJSON_MAX_ATTEMPTS) {
+                const delayMs = Math.min(
+                    COUNTY_GEOJSON_RETRY_BASE_MS * (2 ** (attempt - 1)),
+                    8000
+                );
+                await wait(delayMs);
+            }
         }
     }
 
-    const fallbackError = `County GeoJSON is unavailable from local fallback paths (${fallbackPaths.join(', ')}).`;
-    if (apiError) {
-        throw new Error(`${getReadableFetchError(apiError, '/layers/counties/latest')} ${fallbackError}`);
-    }
-    throw new Error(fallbackError);
+    throw new Error(
+        `${getReadableFetchError(lastError, '/layers/counties/latest')} ` +
+        `Retried ${COUNTY_GEOJSON_MAX_ATTEMPTS} times.`
+    );
 }
 
 function isValidCountyGeoJson(geojson) {
@@ -1663,30 +1735,31 @@ function isValidCountyGeoJson(geojson) {
     );
 }
 
-function getCountyGeoJsonFallbackPaths() {
-    const protocol = window.location.protocol || 'http:';
-    const unique = new Set(COUNTY_GEOJSON_FALLBACK_STATIC_PATHS);
+function clearCountyLayerRetry() {
+    if (appState.countyLayerRetryTimer) {
+        window.clearTimeout(appState.countyLayerRetryTimer);
+        appState.countyLayerRetryTimer = null;
+    }
+}
 
-    try {
-        unique.add(new URL('md_counties_latest.geojson', window.location.href).href);
-    } catch (_error) {
-        // Ignore malformed location URL.
+function scheduleCountyLayerRetry() {
+    if (appState.countyLayerLoaded || appState.countyLayerRetryTimer || !appState.map) {
+        return;
     }
 
-    const scriptTag = Array.from(document.getElementsByTagName('script'))
-        .find((script) => script.src && /\/map\.js(\?|$)/.test(script.src));
-    if (scriptTag && scriptTag.src) {
-        try {
-            unique.add(new URL('md_counties_latest.geojson', scriptTag.src).href);
-        } catch (_error) {
-            // Ignore malformed script URL.
+    const delayMs = Math.min(
+        COUNTY_LAYER_AUTO_RECOVER_MS * (appState.countyLayerRetryAttempt + 1),
+        30000
+    );
+    appState.countyLayerRetryAttempt += 1;
+
+    appState.countyLayerRetryTimer = window.setTimeout(async () => {
+        appState.countyLayerRetryTimer = null;
+        if (!appState.map || appState.countyLayerLoaded) {
+            return;
         }
-    }
-
-    unique.add(`${protocol}//localhost:3000/md_counties_latest.geojson`);
-    unique.add(`${protocol}//127.0.0.1:3000/md_counties_latest.geojson`);
-
-    return Array.from(unique);
+        await loadCountyLayer();
+    }, delayMs);
 }
 
 function decorateGeoJson(geojson) {
@@ -2432,6 +2505,16 @@ function renderStoryPanel(county, options = {}) {
     const weakestLayerHtml = weakestLayer
         ? `${renderLayerLabelWithIcon(weakestLayer.key, weakestLayer.label)} <strong>${weakestLayer.value.toFixed(3)}</strong>`
         : 'Not enough data to determine pressure layer.';
+    const askAtlasSectionHtml = isChatEnabled()
+        ? `
+            <section class="story-section">
+                <h4>Ask Atlas</h4>
+                <div class="quick-prompts">
+                    ${QUICK_PROMPTS.map((prompt, idx) => `<button class="quick-prompt" type="button" data-quick-prompt="${idx}">${escapeHtml(shortPromptLabel(prompt))}</button>`).join('')}
+                </div>
+            </section>
+        `
+        : '';
 
     dom.panelBody.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
@@ -2490,12 +2573,7 @@ function renderStoryPanel(county, options = {}) {
                 </div>
             </section>
 
-            <section class="story-section">
-                <h4>Ask Atlas</h4>
-                <div class="quick-prompts">
-                    ${QUICK_PROMPTS.map((prompt, idx) => `<button class="quick-prompt" type="button" data-quick-prompt="${idx}">${escapeHtml(shortPromptLabel(prompt))}</button>`).join('')}
-                </div>
-            </section>
+            ${askAtlasSectionHtml}
         </div>
 
         <div class="story-tab-content" data-story-tab-content="layers">
@@ -3774,6 +3852,14 @@ function disableCompareMode() {
 }
 
 function setupAskAtlasPill() {
+    if (!dom.askPill || !dom.askClose || !dom.askSend || !dom.askInput) {
+        return;
+    }
+    if (!isChatEnabled()) {
+        applyCapabilitiesUI();
+        return;
+    }
+
     dom.askPill.addEventListener('click', () => {
         openAskInput();
     });
@@ -3797,6 +3883,9 @@ function setupAskAtlasPill() {
 }
 
 function openAskInput(prefill = '') {
+    if (!isChatEnabled()) {
+        return;
+    }
     dom.askPill.style.display = 'none';
     dom.askShell.classList.add('expanded');
     dom.askShell.setAttribute('aria-hidden', 'false');
@@ -3814,6 +3903,9 @@ function closeAskInput() {
 }
 
 async function submitInlineAskQuestion() {
+    if (!isChatEnabled()) {
+        return;
+    }
     const question = dom.askInput.value.trim();
     if (!question || appState.chat.busy) {
         return;
@@ -3826,11 +3918,17 @@ async function submitInlineAskQuestion() {
 }
 
 async function submitAtlasQuestion(question) {
+    if (!isChatEnabled()) {
+        return;
+    }
     enterChatMode();
     await sendChatMessage(question);
 }
 
 function enterChatMode() {
+    if (!isChatEnabled()) {
+        return;
+    }
     appState.chat.open = true;
     if (dom.analysisFloat) {
         dom.analysisFloat.classList.remove('hidden');
@@ -3928,6 +4026,9 @@ function renderChatPanel() {
 }
 
 async function sendChatMessage(message) {
+    if (!isChatEnabled()) {
+        return;
+    }
     if (appState.chat.busy) {
         return;
     }
@@ -4243,6 +4344,12 @@ function countyNameFromFips(fipsCode) {
 
 function trimTrailingSlash(value) {
     return String(value || '').replace(/\/+$/, '');
+}
+
+function wait(ms) {
+    return new Promise((resolve) => {
+        window.setTimeout(resolve, ms);
+    });
 }
 
 function apiBaseCandidatesInOrder() {

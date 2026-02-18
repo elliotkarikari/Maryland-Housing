@@ -7,7 +7,8 @@ Thank you for your interest in contributing to the Maryland Growth & Family Viab
 ### Prerequisites
 
 - Python 3.12+
-- PostgreSQL 14+
+- Databricks SQL Warehouse credentials (`DATA_BACKEND=databricks` plus Databricks env vars)
+- PostgreSQL 14+ (optional fallback backend only)
 - Git
 - Census API key (free at [census.gov](https://api.census.gov/data/key_signup.html))
 - Mapbox token (free tier at [mapbox.com](https://mapbox.com))
@@ -30,14 +31,17 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your API keys
 
-# 5. Initialize database
+# 5. Optional: initialize Postgres fallback database
 make init-db
 
 # 6. Run the API
-make run-api
+make serve
 
 # 7. Serve the frontend (in another terminal)
-python frontend/serve.py
+make frontend
+
+# 8. Verify live Databricks-backed map feed
+curl http://localhost:8000/api/v1/layers/counties/latest | jq '.features | length'
 ```
 
 ## Code Style
@@ -86,7 +90,7 @@ src/
 ├── api/           # FastAPI endpoints
 ├── ingest/        # Data ingestion pipelines (one per layer)
 ├── processing/    # Scoring and classification logic
-├── export/        # GeoJSON generation
+├── export/        # Optional GeoJSON snapshot artifacts
 └── utils/         # Shared utilities
 ```
 
@@ -97,7 +101,7 @@ Each layer follows a consistent pattern:
 1. **Ingestion Script**: `src/ingest/layerN_*.py`
    - Fetches data from external sources
    - Computes raw metrics
-   - Stores in PostgreSQL
+   - Stores in Databricks SQL tables (Postgres fallback supported)
 
 2. **Migration**: `migrations/0XX_layerN_*.sql`
    - Creates/modifies database schema

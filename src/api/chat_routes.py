@@ -11,7 +11,6 @@ from src.ai.providers.base import AIProviderError
 from src.api.services.chat_service import ChatService
 from src.utils.logging import get_logger
 
-
 router = APIRouter()
 logger = get_logger(__name__)
 
@@ -51,7 +50,7 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
             message=request.message,
             context=request.context,
             history=[turn.model_dump() for turn in request.history],
-            previous_response_id=request.previous_response_id
+            previous_response_id=request.previous_response_id,
         )
 
         return ChatResponse(
@@ -61,9 +60,9 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
             tokens=ChatTokens(
                 input=int(result.get("tokens_input", 0) or 0),
                 output=int(result.get("tokens_output", 0) or 0),
-                total=int(result.get("tokens_total", 0) or 0)
+                total=int(result.get("tokens_total", 0) or 0),
             ),
-            cost=result.get("cost_estimate")
+            cost=result.get("cost_estimate"),
         )
 
     except ValueError as exc:
