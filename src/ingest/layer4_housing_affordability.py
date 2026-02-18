@@ -1536,7 +1536,7 @@ def store_county_housing_affordability(df: pd.DataFrame, data_year: int, acs_yea
     with get_db() as db:
 
         # Get existing v1 elasticity scores
-        elasticity_scores = {}
+        elasticity_scores: Dict[str, Optional[float]] = {}
         result = db.execute(
             text(
                 f"""

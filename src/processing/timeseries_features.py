@@ -425,9 +425,9 @@ def compute_all_timeseries_features(
         coverage_summary = (
             df.groupby("layer_name")["coverage_years"].agg(["mean", "min", "max"]).round(1)
         )
-        for layer, stats in coverage_summary.iterrows():
+        for row in coverage_summary.reset_index().to_dict(orient="records"):
             logger.info(
-                f"  {layer}: avg={stats['mean']:.1f} years (min={stats['min']:.0f}, max={stats['max']:.0f})"
+                f"  {row['layer_name']}: avg={row['mean']:.1f} years (min={row['min']:.0f}, max={row['max']:.0f})"
             )
 
     # Log refresh

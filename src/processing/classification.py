@@ -30,6 +30,18 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+def _extract_layer_scores(row: Dict[str, object]) -> pd.Series:
+    return pd.Series(
+        {
+            "employment_gravity": row.get("employment_gravity_score"),
+            "mobility_optionality": row.get("mobility_optionality_score"),
+            "school_trajectory": row.get("school_trajectory_score"),
+            "housing_elasticity": row.get("housing_elasticity_score"),
+            "demographic_momentum": row.get("demographic_momentum_score"),
+        }
+    )
+
+
 def classify_directional_status(layer_scores: pd.Series, risk_drag_score: float) -> str:
     """
     Classify directional status based on layer scores.
@@ -311,17 +323,9 @@ def classify_all_counties(layer_scores_df: pd.DataFrame, data_year: int) -> pd.D
     # Classify each county
     classifications = []
 
-    for _, row in layer_scores_df.iterrows():
+    for row in layer_scores_df.to_dict(orient="records"):
         # Extract layer scores (excluding risk drag)
-        layer_scores = pd.Series(
-            {
-                "employment_gravity": row.get("employment_gravity_score"),
-                "mobility_optionality": row.get("mobility_optionality_score"),
-                "school_trajectory": row.get("school_trajectory_score"),
-                "housing_elasticity": row.get("housing_elasticity_score"),
-                "demographic_momentum": row.get("demographic_momentum_score"),
-            }
-        )
+        layer_scores = _extract_layer_scores(row)
 
         risk_drag = row.get("risk_drag_score")
         policy_score = row.get("confidence_score")
@@ -348,7 +352,7 @@ def classify_all_counties(layer_scores_df: pd.DataFrame, data_year: int) -> pd.D
         row_with_classes["confidence_class"] = confidence_class
         row_with_classes["synthesis_grouping"] = synthesis_grouping
 
-        explainability = generate_explainability_payload(row_with_classes)
+        explainability = generate_explainability_payload(pd.Series(row_with_classes))
 
         classifications.append(
             {

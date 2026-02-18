@@ -45,9 +45,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.database import get_db, log_refresh, table_name as db_table_name
+from config.database import get_db, log_refresh
+from config.database import table_name as db_table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 from src.utils.prediction_utils import apply_predictions_to_table
 
@@ -164,6 +166,38 @@ def _resolve_data_path(
                 return None
         return target
     return None
+
+
+def _none_if_na(value):
+    return None if pd.isna(value) else value
+
+
+def _int_or_default(value, default: int = 0) -> int:
+    value = _none_if_na(value)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _float_or_default(value, default: float = 0.0) -> float:
+    value = _none_if_na(value)
+    if value is None:
+        return default
+    return float(value)
+
+
+def _int_or_none(value):
+    value = _none_if_na(value)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _float_or_none(value):
+    value = _none_if_na(value)
+    if value is None:
+        return None
+    return float(value)
 
 
 def _fetch_qwi_api(data_year: int) -> pd.DataFrame:
@@ -425,10 +459,12 @@ def _resolve_table_name(table_name: Optional[str]) -> Optional[str]:
 
 
 def _fetch_lodes_od_county_flows_from_table(od_year: int, table_name: str) -> pd.DataFrame:
-    table_name = _resolve_table_name(table_name)
-    if table_name is None:
+    resolved_table_name = _resolve_table_name(table_name)
+    if resolved_table_name is None:
         return pd.DataFrame()
-    table_ref = table_name if "." in table_name else db_table_name(table_name)
+    table_ref = (
+        resolved_table_name if "." in resolved_table_name else db_table_name(resolved_table_name)
+    )
 
     sql = text(
         f"""
@@ -643,7 +679,7 @@ def fetch_lodes_od_county_flows(od_year: int) -> pd.DataFrame:
         resident = chunk.groupby("h_county")[
             ["s000", "working_age_workers", "high_wage_workers"]
         ].sum()
-        for fips_code, vals in resident.iterrows():
+        for fips_code, vals in resident.to_dict(orient="index").items():
             metrics = county_metrics.setdefault(fips_code, _empty_metrics())
             metrics["od_resident_workers"] += int(vals["s000"])
             metrics["od_working_age_resident_workers"] += int(vals["working_age_workers"])
@@ -654,7 +690,7 @@ def fetch_lodes_od_county_flows(od_year: int) -> pd.DataFrame:
             same_agg = same_county.groupby("h_county")[
                 ["s000", "working_age_workers", "high_wage_workers"]
             ].sum()
-            for fips_code, vals in same_agg.iterrows():
+            for fips_code, vals in same_agg.to_dict(orient="index").items():
                 metrics = county_metrics.setdefault(fips_code, _empty_metrics())
                 metrics["od_live_work_same_county"] += int(vals["s000"])
                 metrics["od_working_age_live_work_same_county"] += int(vals["working_age_workers"])
@@ -1779,6 +1815,63 @@ def store_tract_economic_opportunity(
         acs_year: Year of ACS data used
     """
     logger.info(f"Storing {len(df)} tract economic opportunity records")
+    insert_sql = text(
+        f"""
+        INSERT INTO {L1_TRACT_TABLE} (
+            tract_geoid, fips_code, data_year,
+            total_jobs, high_wage_jobs, mid_wage_jobs, low_wage_jobs,
+            high_wage_jobs_accessible_45min, high_wage_jobs_accessible_30min,
+            total_jobs_accessible_45min, total_jobs_accessible_30min,
+            economic_accessibility_score, job_market_reach_score, wage_quality_ratio,
+            pct_regional_high_wage_accessible, pct_regional_jobs_accessible,
+            sector_diversity_entropy, high_wage_sector_concentration,
+            upward_mobility_score, job_quality_index,
+            tract_population, tract_working_age_pop, labor_force_participation,
+            lodes_year, acs_year
+        ) VALUES (
+            :tract_geoid, :fips_code, :data_year,
+            :total_jobs, :high_wage_jobs, :mid_wage_jobs, :low_wage_jobs,
+            :high_wage_45, :high_wage_30, :total_45, :total_30,
+            :econ_score, :market_score, :wage_ratio,
+            :pct_hw, :pct_total,
+            :entropy, :concentration,
+            :mobility, :quality,
+            :population, :working_age, :lfp,
+            :lodes_year, :acs_year
+        )
+    """
+    )
+    rows = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "tract_geoid": row["tract_geoid"],
+                "fips_code": row["fips_code"],
+                "data_year": data_year,
+                "total_jobs": _int_or_default(row.get("total_jobs")),
+                "high_wage_jobs": _int_or_default(row.get("high_wage_jobs")),
+                "mid_wage_jobs": _int_or_default(row.get("mid_wage_jobs")),
+                "low_wage_jobs": _int_or_default(row.get("low_wage_jobs")),
+                "high_wage_45": _int_or_default(row.get("high_wage_jobs_accessible_45min")),
+                "high_wage_30": _int_or_default(row.get("high_wage_jobs_accessible_30min")),
+                "total_45": _int_or_default(row.get("total_jobs_accessible_45min")),
+                "total_30": _int_or_default(row.get("total_jobs_accessible_30min")),
+                "econ_score": _float_or_none(row.get("economic_accessibility_score")),
+                "market_score": _float_or_default(row.get("job_market_reach_score")),
+                "wage_ratio": _float_or_default(row.get("wage_quality_ratio")),
+                "pct_hw": _float_or_default(row.get("pct_regional_high_wage_accessible")),
+                "pct_total": _float_or_default(row.get("pct_regional_jobs_accessible")),
+                "entropy": _float_or_default(row.get("sector_diversity_entropy")),
+                "concentration": _float_or_default(row.get("high_wage_sector_concentration")),
+                "mobility": _float_or_default(row.get("upward_mobility_score")),
+                "quality": _float_or_default(row.get("job_quality_index")),
+                "population": _int_or_default(row.get("population")),
+                "working_age": _int_or_default(row.get("working_age_pop")),
+                "lfp": _float_or_default(row.get("labor_force_participation")),
+                "lodes_year": lodes_year,
+                "acs_year": acs_year,
+            }
+        )
 
     with get_db() as db:
         # Clear existing data for this year
@@ -1792,69 +1885,7 @@ def store_tract_economic_opportunity(
             {"data_year": data_year},
         )
 
-        # Insert new records
-        for _, row in df.iterrows():
-            econ_score = row.get("economic_accessibility_score", None)
-            if econ_score is not None and pd.isna(econ_score):
-                econ_score = None
-            elif econ_score is not None:
-                econ_score = float(econ_score)
-
-            db.execute(
-                text(
-                    f"""
-                INSERT INTO {L1_TRACT_TABLE} (
-                    tract_geoid, fips_code, data_year,
-                    total_jobs, high_wage_jobs, mid_wage_jobs, low_wage_jobs,
-                    high_wage_jobs_accessible_45min, high_wage_jobs_accessible_30min,
-                    total_jobs_accessible_45min, total_jobs_accessible_30min,
-                    economic_accessibility_score, job_market_reach_score, wage_quality_ratio,
-                    pct_regional_high_wage_accessible, pct_regional_jobs_accessible,
-                    sector_diversity_entropy, high_wage_sector_concentration,
-                    upward_mobility_score, job_quality_index,
-                    tract_population, tract_working_age_pop, labor_force_participation,
-                    lodes_year, acs_year
-                ) VALUES (
-                    :tract_geoid, :fips_code, :data_year,
-                    :total_jobs, :high_wage_jobs, :mid_wage_jobs, :low_wage_jobs,
-                    :high_wage_45, :high_wage_30, :total_45, :total_30,
-                    :econ_score, :market_score, :wage_ratio,
-                    :pct_hw, :pct_total,
-                    :entropy, :concentration,
-                    :mobility, :quality,
-                    :population, :working_age, :lfp,
-                    :lodes_year, :acs_year
-                )
-            """
-                ),
-                {
-                    "tract_geoid": row["tract_geoid"],
-                    "fips_code": row["fips_code"],
-                    "data_year": data_year,
-                    "total_jobs": int(row.get("total_jobs", 0)),
-                    "high_wage_jobs": int(row.get("high_wage_jobs", 0)),
-                    "mid_wage_jobs": int(row.get("mid_wage_jobs", 0)),
-                    "low_wage_jobs": int(row.get("low_wage_jobs", 0)),
-                    "high_wage_45": int(row.get("high_wage_jobs_accessible_45min", 0)),
-                    "high_wage_30": int(row.get("high_wage_jobs_accessible_30min", 0)),
-                    "total_45": int(row.get("total_jobs_accessible_45min", 0)),
-                    "total_30": int(row.get("total_jobs_accessible_30min", 0)),
-                    "econ_score": econ_score,
-                    "market_score": float(row.get("job_market_reach_score", 0)),
-                    "wage_ratio": float(row.get("wage_quality_ratio", 0)),
-                    "pct_hw": float(row.get("pct_regional_high_wage_accessible", 0)),
-                    "pct_total": float(row.get("pct_regional_jobs_accessible", 0)),
-                    "entropy": float(row.get("sector_diversity_entropy", 0)),
-                    "concentration": float(row.get("high_wage_sector_concentration", 0)),
-                    "mobility": float(row.get("upward_mobility_score", 0)),
-                    "quality": float(row.get("job_quality_index", 0)),
-                    "population": int(row.get("population", 0)),
-                    "working_age": int(row.get("working_age_pop", 0)),
-                    "lfp": float(row.get("labor_force_participation", 0)),
-                    "lodes_year": lodes_year,
-                    "acs_year": acs_year,
-                },
-            )
+        execute_batch(db, insert_sql, rows, chunk_size=2000)
 
         db.commit()
 
@@ -1915,71 +1946,125 @@ def store_county_economic_opportunity(
 
             local_strength_scores[fips_code] = local_strength
 
-        for _, row in df.iterrows():
-            if use_databricks_backend:
-                db.execute(
-                    text(
-                        f"""
-                        INSERT INTO {L1_COUNTY_TABLE} (fips_code, data_year)
-                        SELECT :fips_code, :data_year
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM {L1_COUNTY_TABLE}
-                            WHERE fips_code = :fips_code AND data_year = :data_year
-                        )
-                        """
-                    ),
-                    {
-                        "fips_code": row["fips_code"],
-                        "data_year": data_year,
-                    },
+        if use_databricks_backend:
+            insert_sql = text(
+                f"""
+                INSERT INTO {L1_COUNTY_TABLE} (fips_code, data_year)
+                SELECT :fips_code, :data_year
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM {L1_COUNTY_TABLE}
+                    WHERE fips_code = :fips_code AND data_year = :data_year
                 )
-            else:
-                db.execute(
-                    text(
-                        f"""
-                        INSERT INTO {L1_COUNTY_TABLE} (fips_code, data_year)
-                        VALUES (:fips_code, :data_year)
-                        ON CONFLICT (fips_code, data_year) DO NOTHING
-                        """
-                    ),
-                    {
-                        "fips_code": row["fips_code"],
-                        "data_year": data_year,
-                    },
-                )
+                """
+            )
+        else:
+            insert_sql = text(
+                f"""
+                INSERT INTO {L1_COUNTY_TABLE} (fips_code, data_year)
+                VALUES (:fips_code, :data_year)
+                ON CONFLICT (fips_code, data_year) DO NOTHING
+                """
+            )
 
+        update_sql = text(
+            f"""
+            UPDATE {L1_COUNTY_TABLE}
+            SET
+                total_jobs = :total_jobs,
+                high_wage_jobs = :high_wage_jobs,
+                mid_wage_jobs = :mid_wage_jobs,
+                low_wage_jobs = :low_wage_jobs,
+                high_wage_jobs_accessible_45min = :high_wage_45,
+                high_wage_jobs_accessible_30min = :high_wage_30,
+                total_jobs_accessible_45min = :total_45,
+                total_jobs_accessible_30min = :total_30,
+                high_wage_jobs_accessible_45min_weighted_mean = :high_wage_45_weighted_mean,
+                high_wage_jobs_accessible_45min_weighted_median = :high_wage_45_weighted_median,
+                total_jobs_accessible_45min_weighted_mean = :total_45_weighted_mean,
+                total_jobs_accessible_45min_weighted_median = :total_45_weighted_median,
+                high_wage_jobs_accessible_30min_weighted_mean = :high_wage_30_weighted_mean,
+                high_wage_jobs_accessible_30min_weighted_median = :high_wage_30_weighted_median,
+                total_jobs_accessible_30min_weighted_mean = :total_30_weighted_mean,
+                total_jobs_accessible_30min_weighted_median = :total_30_weighted_median,
+                economic_accessibility_score = :econ_score,
+                job_market_reach_score = :market_score,
+                wage_quality_ratio = :wage_ratio,
+                pct_regional_high_wage_accessible = :pct_hw,
+                pct_regional_jobs_accessible = :pct_total,
+                sector_diversity_entropy = :sector_diversity_entropy,
+                stable_sector_share = :stable_sector_share,
+                high_wage_sector_concentration = :concentration,
+                upward_mobility_score = :mobility,
+                job_quality_index = :quality,
+                entrepreneurship_density = :entrepreneurship_density,
+                qwi_emp_total = :qwi_emp_total,
+                qwi_hires = :qwi_hires,
+                qwi_separations = :qwi_separations,
+                qwi_hire_rate = :qwi_hire_rate,
+                qwi_separation_rate = :qwi_separation_rate,
+                qwi_turnover_rate = :qwi_turnover_rate,
+                qwi_net_job_growth_rate = :qwi_net_job_growth_rate,
+                qwi_year = :qwi_year,
+                od_year = :od_year,
+                od_resident_workers = :od_resident_workers,
+                od_inbound_workers = :od_inbound_workers,
+                od_outbound_workers = :od_outbound_workers,
+                od_live_work_same_county = :od_live_work_same_county,
+                od_net_commuter_flow = :od_net_commuter_flow,
+                od_local_capture_rate = :od_local_capture_rate,
+                od_working_age_resident_workers = :od_working_age_resident_workers,
+                od_working_age_live_work_same_county = :od_working_age_live_work_same_county,
+                od_working_age_share = :od_working_age_share,
+                od_working_age_local_capture_rate = :od_working_age_local_capture_rate,
+                od_high_wage_resident_workers = :od_high_wage_resident_workers,
+                od_high_wage_live_work_same_county = :od_high_wage_live_work_same_county,
+                od_high_wage_share = :od_high_wage_share,
+                od_high_wage_local_capture_rate = :od_high_wage_local_capture_rate,
+                employment_diversification_score = COALESCE(:local_strength, employment_diversification_score),
+                economic_opportunity_index = :opportunity_index,
+                working_age_pop = :working_age,
+                labor_force_participation = :lfp,
+                accessibility_method = :accessibility_method,
+                accessibility_threshold_30_min = :accessibility_threshold_30_min,
+                accessibility_threshold_45_min = :accessibility_threshold_45_min,
+                accessibility_proxy_distance_30_km = :accessibility_proxy_distance_30_km,
+                accessibility_proxy_distance_45_km = :accessibility_proxy_distance_45_km,
+                lodes_year = :lodes_year,
+                acs_year = :acs_year,
+                accessibility_version = 'v2-accessibility',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE fips_code = :fips_code AND data_year = :data_year
+        """
+        )
+
+        county_rows = df.to_dict(orient="records")
+        key_rows = [
+            {
+                "fips_code": row["fips_code"],
+                "data_year": data_year,
+            }
+            for row in county_rows
+        ]
+        execute_batch(db, insert_sql, key_rows, chunk_size=500)
+
+        update_rows = []
+        for row in county_rows:
             local_strength = None
-            row_entropy = row.get("sector_diversity_entropy")
-            row_stable_share = row.get("stable_sector_share")
-            if pd.notna(row_entropy) and pd.notna(row_stable_share):
-                try:
-                    entropy_score = float(row_entropy) / np.log2(20)
-                    local_strength = 0.7 * entropy_score + 0.3 * float(row_stable_share)
-                except (TypeError, ValueError):
-                    local_strength = None
+            row_entropy = _float_or_none(row.get("sector_diversity_entropy"))
+            row_stable_share = _float_or_none(row.get("stable_sector_share"))
+            if row_entropy is not None and row_stable_share is not None:
+                entropy_score = float(row_entropy) / np.log2(20)
+                local_strength = 0.7 * entropy_score + 0.3 * float(row_stable_share)
 
             if local_strength is None:
-                local_strength = local_strength_scores.get(row["fips_code"])
-                if local_strength is not None and pd.isna(local_strength):
-                    local_strength = None
-                elif local_strength is not None:
-                    local_strength = float(local_strength)
+                local_strength = _float_or_none(local_strength_scores.get(row["fips_code"]))
 
             if local_strength is not None:
                 local_strength = float(max(0.0, min(1.0, float(local_strength))))
 
-            econ_score = row.get("economic_accessibility_score", None)
-            if econ_score is not None and pd.isna(econ_score):
-                econ_score = None
-            elif econ_score is not None:
-                econ_score = float(econ_score)
-
-            qwi_score = row.get("qwi_net_job_growth_score", None)
-            if qwi_score is not None and pd.isna(qwi_score):
-                qwi_score = None
-            elif qwi_score is not None:
-                qwi_score = float(qwi_score)
+            econ_score = _float_or_none(row.get("economic_accessibility_score"))
+            qwi_score = _float_or_none(row.get("qwi_net_job_growth_score"))
 
             if local_strength is None and econ_score is None:
                 base_index = None
@@ -2000,293 +2085,116 @@ def store_county_economic_opportunity(
                 opportunity_index = (
                     1 - QWI_BLEND_WEIGHT
                 ) * base_index + QWI_BLEND_WEIGHT * qwi_score
-            if opportunity_index is not None and pd.notna(opportunity_index):
-                opportunity_index = float(opportunity_index)
+            opportunity_index = _float_or_none(opportunity_index)
 
-            # Update existing records with new accessibility columns
-            db.execute(
-                text(
-                    f"""
-                UPDATE {L1_COUNTY_TABLE}
-                SET
-                    total_jobs = :total_jobs,
-                    high_wage_jobs = :high_wage_jobs,
-                    mid_wage_jobs = :mid_wage_jobs,
-                    low_wage_jobs = :low_wage_jobs,
-                    high_wage_jobs_accessible_45min = :high_wage_45,
-                    high_wage_jobs_accessible_30min = :high_wage_30,
-                    total_jobs_accessible_45min = :total_45,
-                    total_jobs_accessible_30min = :total_30,
-                    high_wage_jobs_accessible_45min_weighted_mean = :high_wage_45_weighted_mean,
-                    high_wage_jobs_accessible_45min_weighted_median = :high_wage_45_weighted_median,
-                    total_jobs_accessible_45min_weighted_mean = :total_45_weighted_mean,
-                    total_jobs_accessible_45min_weighted_median = :total_45_weighted_median,
-                    high_wage_jobs_accessible_30min_weighted_mean = :high_wage_30_weighted_mean,
-                    high_wage_jobs_accessible_30min_weighted_median = :high_wage_30_weighted_median,
-                    total_jobs_accessible_30min_weighted_mean = :total_30_weighted_mean,
-                    total_jobs_accessible_30min_weighted_median = :total_30_weighted_median,
-                    economic_accessibility_score = :econ_score,
-                    job_market_reach_score = :market_score,
-                    wage_quality_ratio = :wage_ratio,
-                    pct_regional_high_wage_accessible = :pct_hw,
-                    pct_regional_jobs_accessible = :pct_total,
-                    sector_diversity_entropy = :sector_diversity_entropy,
-                    stable_sector_share = :stable_sector_share,
-                    high_wage_sector_concentration = :concentration,
-                    upward_mobility_score = :mobility,
-                    job_quality_index = :quality,
-                    entrepreneurship_density = :entrepreneurship_density,
-                    qwi_emp_total = :qwi_emp_total,
-                    qwi_hires = :qwi_hires,
-                    qwi_separations = :qwi_separations,
-                    qwi_hire_rate = :qwi_hire_rate,
-                    qwi_separation_rate = :qwi_separation_rate,
-                    qwi_turnover_rate = :qwi_turnover_rate,
-                    qwi_net_job_growth_rate = :qwi_net_job_growth_rate,
-                    qwi_year = :qwi_year,
-                    od_year = :od_year,
-                    od_resident_workers = :od_resident_workers,
-                    od_inbound_workers = :od_inbound_workers,
-                    od_outbound_workers = :od_outbound_workers,
-                    od_live_work_same_county = :od_live_work_same_county,
-                    od_net_commuter_flow = :od_net_commuter_flow,
-                    od_local_capture_rate = :od_local_capture_rate,
-                    od_working_age_resident_workers = :od_working_age_resident_workers,
-                    od_working_age_live_work_same_county = :od_working_age_live_work_same_county,
-                    od_working_age_share = :od_working_age_share,
-                    od_working_age_local_capture_rate = :od_working_age_local_capture_rate,
-                    od_high_wage_resident_workers = :od_high_wage_resident_workers,
-                    od_high_wage_live_work_same_county = :od_high_wage_live_work_same_county,
-                    od_high_wage_share = :od_high_wage_share,
-                    od_high_wage_local_capture_rate = :od_high_wage_local_capture_rate,
-                    employment_diversification_score = COALESCE(:local_strength, employment_diversification_score),
-                    economic_opportunity_index = :opportunity_index,
-                    working_age_pop = :working_age,
-                    labor_force_participation = :lfp,
-                    accessibility_method = :accessibility_method,
-                    accessibility_threshold_30_min = :accessibility_threshold_30_min,
-                    accessibility_threshold_45_min = :accessibility_threshold_45_min,
-                    accessibility_proxy_distance_30_km = :accessibility_proxy_distance_30_km,
-                    accessibility_proxy_distance_45_km = :accessibility_proxy_distance_45_km,
-                    lodes_year = :lodes_year,
-                    acs_year = :acs_year,
-                    accessibility_version = 'v2-accessibility',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE fips_code = :fips_code AND data_year = :data_year
-            """
-                ),
+            update_rows.append(
                 {
                     "fips_code": row["fips_code"],
                     "data_year": data_year,
-                    "total_jobs": int(row.get("total_jobs", 0)),
-                    "high_wage_jobs": int(row.get("high_wage_jobs", 0)),
-                    "mid_wage_jobs": int(row.get("mid_wage_jobs", 0)),
-                    "low_wage_jobs": int(row.get("low_wage_jobs", 0)),
-                    "high_wage_45": int(row.get("high_wage_jobs_accessible_45min", 0)),
-                    "high_wage_30": int(row.get("high_wage_jobs_accessible_30min", 0)),
-                    "total_45": int(row.get("total_jobs_accessible_45min", 0)),
-                    "total_30": int(row.get("total_jobs_accessible_30min", 0)),
-                    "high_wage_45_weighted_mean": (
-                        float(row.get("high_wage_jobs_accessible_45min_weighted_mean"))
-                        if pd.notna(row.get("high_wage_jobs_accessible_45min_weighted_mean"))
-                        else None
+                    "total_jobs": _int_or_default(row.get("total_jobs")),
+                    "high_wage_jobs": _int_or_default(row.get("high_wage_jobs")),
+                    "mid_wage_jobs": _int_or_default(row.get("mid_wage_jobs")),
+                    "low_wage_jobs": _int_or_default(row.get("low_wage_jobs")),
+                    "high_wage_45": _int_or_default(row.get("high_wage_jobs_accessible_45min")),
+                    "high_wage_30": _int_or_default(row.get("high_wage_jobs_accessible_30min")),
+                    "total_45": _int_or_default(row.get("total_jobs_accessible_45min")),
+                    "total_30": _int_or_default(row.get("total_jobs_accessible_30min")),
+                    "high_wage_45_weighted_mean": _float_or_none(
+                        row.get("high_wage_jobs_accessible_45min_weighted_mean")
                     ),
-                    "high_wage_45_weighted_median": (
-                        float(row.get("high_wage_jobs_accessible_45min_weighted_median"))
-                        if pd.notna(row.get("high_wage_jobs_accessible_45min_weighted_median"))
-                        else None
+                    "high_wage_45_weighted_median": _float_or_none(
+                        row.get("high_wage_jobs_accessible_45min_weighted_median")
                     ),
-                    "total_45_weighted_mean": (
-                        float(row.get("total_jobs_accessible_45min_weighted_mean"))
-                        if pd.notna(row.get("total_jobs_accessible_45min_weighted_mean"))
-                        else None
+                    "total_45_weighted_mean": _float_or_none(
+                        row.get("total_jobs_accessible_45min_weighted_mean")
                     ),
-                    "total_45_weighted_median": (
-                        float(row.get("total_jobs_accessible_45min_weighted_median"))
-                        if pd.notna(row.get("total_jobs_accessible_45min_weighted_median"))
-                        else None
+                    "total_45_weighted_median": _float_or_none(
+                        row.get("total_jobs_accessible_45min_weighted_median")
                     ),
-                    "high_wage_30_weighted_mean": (
-                        float(row.get("high_wage_jobs_accessible_30min_weighted_mean"))
-                        if pd.notna(row.get("high_wage_jobs_accessible_30min_weighted_mean"))
-                        else None
+                    "high_wage_30_weighted_mean": _float_or_none(
+                        row.get("high_wage_jobs_accessible_30min_weighted_mean")
                     ),
-                    "high_wage_30_weighted_median": (
-                        float(row.get("high_wage_jobs_accessible_30min_weighted_median"))
-                        if pd.notna(row.get("high_wage_jobs_accessible_30min_weighted_median"))
-                        else None
+                    "high_wage_30_weighted_median": _float_or_none(
+                        row.get("high_wage_jobs_accessible_30min_weighted_median")
                     ),
-                    "total_30_weighted_mean": (
-                        float(row.get("total_jobs_accessible_30min_weighted_mean"))
-                        if pd.notna(row.get("total_jobs_accessible_30min_weighted_mean"))
-                        else None
+                    "total_30_weighted_mean": _float_or_none(
+                        row.get("total_jobs_accessible_30min_weighted_mean")
                     ),
-                    "total_30_weighted_median": (
-                        float(row.get("total_jobs_accessible_30min_weighted_median"))
-                        if pd.notna(row.get("total_jobs_accessible_30min_weighted_median"))
-                        else None
+                    "total_30_weighted_median": _float_or_none(
+                        row.get("total_jobs_accessible_30min_weighted_median")
                     ),
-                    "econ_score": float(row.get("economic_accessibility_score", 0)),
-                    "market_score": float(row.get("job_market_reach_score", 0)),
-                    "wage_ratio": float(row.get("wage_quality_ratio", 0)),
-                    "pct_hw": float(row.get("pct_regional_high_wage_accessible", 0)),
-                    "pct_total": float(row.get("pct_regional_jobs_accessible", 0)),
-                    "sector_diversity_entropy": (
-                        float(row.get("sector_diversity_entropy"))
-                        if pd.notna(row.get("sector_diversity_entropy"))
-                        else None
-                    ),
-                    "stable_sector_share": (
-                        float(row.get("stable_sector_share"))
-                        if pd.notna(row.get("stable_sector_share"))
-                        else None
-                    ),
-                    "concentration": float(row.get("high_wage_sector_concentration", 0)),
-                    "mobility": float(row.get("upward_mobility_score", 0)),
-                    "quality": float(row.get("job_quality_index", 0)),
-                    "entrepreneurship_density": (
-                        float(row.get("entrepreneurship_density"))
-                        if pd.notna(row.get("entrepreneurship_density"))
-                        else None
-                    ),
+                    "econ_score": econ_score,
+                    "market_score": _float_or_default(row.get("job_market_reach_score")),
+                    "wage_ratio": _float_or_default(row.get("wage_quality_ratio")),
+                    "pct_hw": _float_or_default(row.get("pct_regional_high_wage_accessible")),
+                    "pct_total": _float_or_default(row.get("pct_regional_jobs_accessible")),
+                    "sector_diversity_entropy": row_entropy,
+                    "stable_sector_share": row_stable_share,
+                    "concentration": _float_or_default(row.get("high_wage_sector_concentration")),
+                    "mobility": _float_or_default(row.get("upward_mobility_score")),
+                    "quality": _float_or_default(row.get("job_quality_index")),
+                    "entrepreneurship_density": _float_or_none(row.get("entrepreneurship_density")),
                     "local_strength": local_strength,
                     "opportunity_index": opportunity_index,
-                    "qwi_emp_total": (
-                        int(row.get("qwi_emp_total"))
-                        if pd.notna(row.get("qwi_emp_total"))
-                        else None
+                    "qwi_emp_total": _int_or_none(row.get("qwi_emp_total")),
+                    "qwi_hires": _int_or_none(row.get("qwi_hires")),
+                    "qwi_separations": _int_or_none(row.get("qwi_separations")),
+                    "qwi_hire_rate": _float_or_none(row.get("qwi_hire_rate")),
+                    "qwi_separation_rate": _float_or_none(row.get("qwi_separation_rate")),
+                    "qwi_turnover_rate": _float_or_none(row.get("qwi_turnover_rate")),
+                    "qwi_net_job_growth_rate": _float_or_none(row.get("qwi_net_job_growth_rate")),
+                    "qwi_year": _int_or_none(row.get("qwi_year")),
+                    "od_year": _int_or_none(row.get("od_year")),
+                    "od_resident_workers": _int_or_none(row.get("od_resident_workers")),
+                    "od_inbound_workers": _int_or_none(row.get("od_inbound_workers")),
+                    "od_outbound_workers": _int_or_none(row.get("od_outbound_workers")),
+                    "od_live_work_same_county": _int_or_none(row.get("od_live_work_same_county")),
+                    "od_net_commuter_flow": _int_or_none(row.get("od_net_commuter_flow")),
+                    "od_local_capture_rate": _float_or_none(row.get("od_local_capture_rate")),
+                    "od_working_age_resident_workers": _int_or_none(
+                        row.get("od_working_age_resident_workers")
                     ),
-                    "qwi_hires": (
-                        int(row.get("qwi_hires")) if pd.notna(row.get("qwi_hires")) else None
+                    "od_working_age_live_work_same_county": _int_or_none(
+                        row.get("od_working_age_live_work_same_county")
                     ),
-                    "qwi_separations": (
-                        int(row.get("qwi_separations"))
-                        if pd.notna(row.get("qwi_separations"))
-                        else None
+                    "od_working_age_share": _float_or_none(row.get("od_working_age_share")),
+                    "od_working_age_local_capture_rate": _float_or_none(
+                        row.get("od_working_age_local_capture_rate")
                     ),
-                    "qwi_hire_rate": (
-                        float(row.get("qwi_hire_rate"))
-                        if pd.notna(row.get("qwi_hire_rate"))
-                        else None
+                    "od_high_wage_resident_workers": _int_or_none(
+                        row.get("od_high_wage_resident_workers")
                     ),
-                    "qwi_separation_rate": (
-                        float(row.get("qwi_separation_rate"))
-                        if pd.notna(row.get("qwi_separation_rate"))
-                        else None
+                    "od_high_wage_live_work_same_county": _int_or_none(
+                        row.get("od_high_wage_live_work_same_county")
                     ),
-                    "qwi_turnover_rate": (
-                        float(row.get("qwi_turnover_rate"))
-                        if pd.notna(row.get("qwi_turnover_rate"))
-                        else None
+                    "od_high_wage_share": _float_or_none(row.get("od_high_wage_share")),
+                    "od_high_wage_local_capture_rate": _float_or_none(
+                        row.get("od_high_wage_local_capture_rate")
                     ),
-                    "qwi_net_job_growth_rate": (
-                        float(row.get("qwi_net_job_growth_rate"))
-                        if pd.notna(row.get("qwi_net_job_growth_rate"))
-                        else None
-                    ),
-                    "qwi_year": int(row.get("qwi_year")) if pd.notna(row.get("qwi_year")) else None,
-                    "od_year": int(row.get("od_year")) if pd.notna(row.get("od_year")) else None,
-                    "od_resident_workers": (
-                        int(row.get("od_resident_workers"))
-                        if pd.notna(row.get("od_resident_workers"))
-                        else None
-                    ),
-                    "od_inbound_workers": (
-                        int(row.get("od_inbound_workers"))
-                        if pd.notna(row.get("od_inbound_workers"))
-                        else None
-                    ),
-                    "od_outbound_workers": (
-                        int(row.get("od_outbound_workers"))
-                        if pd.notna(row.get("od_outbound_workers"))
-                        else None
-                    ),
-                    "od_live_work_same_county": (
-                        int(row.get("od_live_work_same_county"))
-                        if pd.notna(row.get("od_live_work_same_county"))
-                        else None
-                    ),
-                    "od_net_commuter_flow": (
-                        int(row.get("od_net_commuter_flow"))
-                        if pd.notna(row.get("od_net_commuter_flow"))
-                        else None
-                    ),
-                    "od_local_capture_rate": (
-                        float(row.get("od_local_capture_rate"))
-                        if pd.notna(row.get("od_local_capture_rate"))
-                        else None
-                    ),
-                    "od_working_age_resident_workers": (
-                        int(row.get("od_working_age_resident_workers"))
-                        if pd.notna(row.get("od_working_age_resident_workers"))
-                        else None
-                    ),
-                    "od_working_age_live_work_same_county": (
-                        int(row.get("od_working_age_live_work_same_county"))
-                        if pd.notna(row.get("od_working_age_live_work_same_county"))
-                        else None
-                    ),
-                    "od_working_age_share": (
-                        float(row.get("od_working_age_share"))
-                        if pd.notna(row.get("od_working_age_share"))
-                        else None
-                    ),
-                    "od_working_age_local_capture_rate": (
-                        float(row.get("od_working_age_local_capture_rate"))
-                        if pd.notna(row.get("od_working_age_local_capture_rate"))
-                        else None
-                    ),
-                    "od_high_wage_resident_workers": (
-                        int(row.get("od_high_wage_resident_workers"))
-                        if pd.notna(row.get("od_high_wage_resident_workers"))
-                        else None
-                    ),
-                    "od_high_wage_live_work_same_county": (
-                        int(row.get("od_high_wage_live_work_same_county"))
-                        if pd.notna(row.get("od_high_wage_live_work_same_county"))
-                        else None
-                    ),
-                    "od_high_wage_share": (
-                        float(row.get("od_high_wage_share"))
-                        if pd.notna(row.get("od_high_wage_share"))
-                        else None
-                    ),
-                    "od_high_wage_local_capture_rate": (
-                        float(row.get("od_high_wage_local_capture_rate"))
-                        if pd.notna(row.get("od_high_wage_local_capture_rate"))
-                        else None
-                    ),
-                    "working_age": int(row.get("working_age_pop", 0)),
-                    "lfp": float(row.get("labor_force_participation", 0)),
+                    "working_age": _int_or_default(row.get("working_age_pop")),
+                    "lfp": _float_or_default(row.get("labor_force_participation")),
                     "accessibility_method": (
                         str(row.get("accessibility_method"))
-                        if pd.notna(row.get("accessibility_method"))
+                        if _none_if_na(row.get("accessibility_method")) is not None
                         else None
                     ),
-                    "accessibility_threshold_30_min": (
-                        int(row.get("accessibility_threshold_30_min"))
-                        if pd.notna(row.get("accessibility_threshold_30_min"))
-                        else None
+                    "accessibility_threshold_30_min": _int_or_none(
+                        row.get("accessibility_threshold_30_min")
                     ),
-                    "accessibility_threshold_45_min": (
-                        int(row.get("accessibility_threshold_45_min"))
-                        if pd.notna(row.get("accessibility_threshold_45_min"))
-                        else None
+                    "accessibility_threshold_45_min": _int_or_none(
+                        row.get("accessibility_threshold_45_min")
                     ),
-                    "accessibility_proxy_distance_30_km": (
-                        float(row.get("accessibility_proxy_distance_30_km"))
-                        if pd.notna(row.get("accessibility_proxy_distance_30_km"))
-                        else None
+                    "accessibility_proxy_distance_30_km": _float_or_none(
+                        row.get("accessibility_proxy_distance_30_km")
                     ),
-                    "accessibility_proxy_distance_45_km": (
-                        float(row.get("accessibility_proxy_distance_45_km"))
-                        if pd.notna(row.get("accessibility_proxy_distance_45_km"))
-                        else None
+                    "accessibility_proxy_distance_45_km": _float_or_none(
+                        row.get("accessibility_proxy_distance_45_km")
                     ),
                     "lodes_year": lodes_year,
                     "acs_year": acs_year,
-                },
+                }
             )
+        execute_batch(db, update_sql, update_rows, chunk_size=500)
 
         db.commit()
 

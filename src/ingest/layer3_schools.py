@@ -20,7 +20,7 @@ import sys
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -35,6 +35,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.database import get_db, log_refresh
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import download_file
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -356,28 +357,21 @@ def calculate_school_indicators(latest_year: Optional[int] = None) -> pd.DataFra
     if df.empty:
         return pd.DataFrame()
 
-    # Compute 3-year enrollment change
-    df = df.sort_values(["fips_code", "data_year"])
-
-    def compute_3yr_change(group):
-        group = group.sort_values("data_year")
-
-        for idx, row in group.iterrows():
-            year = row["data_year"]
-            baseline_year = year - 3
-
-            baseline_rows = group[group["data_year"] == baseline_year]
-            if not baseline_rows.empty:
-                baseline_val = baseline_rows.iloc[0]["total_enrollment"]
-                current_val = row["total_enrollment"]
-
-                if baseline_val > 0:
-                    pct_change = ((current_val - baseline_val) / baseline_val) * 100
-                    group.loc[idx, "enrollment_3yr_change_pct"] = pct_change
-
-        return group
-
-    df = df.groupby("fips_code", group_keys=False).apply(compute_3yr_change)
+    # Compute 3-year enrollment change via keyed baseline merge.
+    df = df.sort_values(["fips_code", "data_year"]).copy()
+    baseline_lookup = df[["fips_code", "data_year", "total_enrollment"]].rename(
+        columns={"data_year": "baseline_year", "total_enrollment": "baseline_enrollment"}
+    )
+    df["baseline_year"] = df["data_year"] - 3
+    df = df.merge(baseline_lookup, on=["fips_code", "baseline_year"], how="left")
+    valid_baseline = df["baseline_enrollment"].notna() & (df["baseline_enrollment"] > 0)
+    df["enrollment_3yr_change_pct"] = np.nan
+    df.loc[valid_baseline, "enrollment_3yr_change_pct"] = (
+        (df.loc[valid_baseline, "total_enrollment"] - df.loc[valid_baseline, "baseline_enrollment"])
+        / df.loc[valid_baseline, "baseline_enrollment"]
+        * 100
+    )
+    df = df.drop(columns=["baseline_year", "baseline_enrollment"])
 
     # Compute enrollment momentum score (percentile rank within each year)
     def compute_momentum_score(year_group):
@@ -404,51 +398,55 @@ def store_school_data(df: pd.DataFrame):
         # Clear existing data
         db.execute(text("DELETE FROM layer3_school_trajectory"))
 
-        # Insert new records
-        for _, row in df.iterrows():
-            db.execute(
-                text(
-                    """
-                    INSERT INTO layer3_school_trajectory (
-                        fips_code, data_year, total_enrollment, schools_total,
-                        enrollment_3yr_change_pct, enrollment_momentum_score,
-                        capital_investment_score, capacity_strain_indicator
-                    ) VALUES (
-                        :fips_code, :data_year, :total_enrollment, :schools_total,
-                        :enrollment_3yr_change_pct, :enrollment_momentum_score,
-                        :capital_investment_score, :capacity_strain_indicator
-                    )
-                """
-                ),
-                {
-                    "fips_code": row["fips_code"],
-                    "data_year": int(row["data_year"]),
-                    "total_enrollment": (
-                        float(row["total_enrollment"])
-                        if pd.notna(row["total_enrollment"])
-                        else None
-                    ),
-                    "schools_total": (
-                        int(row["schools_total"]) if pd.notna(row["schools_total"]) else None
-                    ),
-                    "enrollment_3yr_change_pct": (
-                        float(row["enrollment_3yr_change_pct"])
-                        if pd.notna(row.get("enrollment_3yr_change_pct"))
-                        else None
-                    ),
-                    "enrollment_momentum_score": (
-                        float(row["enrollment_momentum_score"])
-                        if pd.notna(row.get("enrollment_momentum_score"))
-                        else None
-                    ),
-                    "capital_investment_score": None,
-                    "capacity_strain_indicator": None,
-                },
+        insert_sql = text(
+            """
+            INSERT INTO layer3_school_trajectory (
+                fips_code, data_year, total_enrollment, schools_total,
+                enrollment_3yr_change_pct, enrollment_momentum_score,
+                capital_investment_score, capacity_strain_indicator
+            ) VALUES (
+                :fips_code, :data_year, :total_enrollment, :schools_total,
+                :enrollment_3yr_change_pct, :enrollment_momentum_score,
+                :capital_investment_score, :capacity_strain_indicator
             )
+            """
+        )
+        rows = _build_school_rows(df)
+        execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
     logger.info("✓ School data stored successfully")
+
+
+def _build_school_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "fips_code": row.get("fips_code"),
+                "data_year": _int_or_none(row.get("data_year")),
+                "total_enrollment": _float_or_none(row.get("total_enrollment")),
+                "schools_total": _int_or_none(row.get("schools_total")),
+                "enrollment_3yr_change_pct": _float_or_none(row.get("enrollment_3yr_change_pct")),
+                "enrollment_momentum_score": _float_or_none(row.get("enrollment_momentum_score")),
+                "capital_investment_score": None,
+                "capacity_strain_indicator": None,
+            }
+        )
+    return rows
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if pd.isna(value):
+        return None
+    return int(value)
 
 
 def main():

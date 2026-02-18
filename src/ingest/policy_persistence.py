@@ -10,7 +10,7 @@ This layer modifies CONFIDENCE, not scores.
 """
 
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -19,6 +19,7 @@ from sqlalchemy import text
 from config.database import get_db, log_refresh, table_name
 from config.settings import MD_COUNTY_FIPS, get_settings
 from src.utils.data_sources import fetch_usaspending_county
+from src.utils.db_bulk import execute_batch
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -103,19 +104,27 @@ def fetch_usaspending_consistency(start_year: int = 2020, end_year: int = 2025) 
     # Combine all years
     df_all = pd.concat(yearly_data, ignore_index=True)
 
-    # Calculate consistency per county
-    consistency_results = []
-
-    for fips_code in df_all["fips_code"].unique():
-        county_data = df_all[df_all["fips_code"] == fips_code]
-
-        consistency = calculate_federal_spending_consistency(county_data)
-
-        consistency_results.append(
-            {"fips_code": fips_code, "federal_awards_yoy_consistency": consistency}
-        )
-
-    consistency_df = pd.DataFrame(consistency_results)
+    stats_df = (
+        df_all.groupby("fips_code")["amount"]
+        .agg(obs_count="count", mean_amount="mean", std_amount="std")
+        .reset_index()
+    )
+    stats_df["std_amount"] = stats_df["std_amount"].fillna(0.0)
+    stats_df["cv"] = np.where(
+        stats_df["mean_amount"] != 0,
+        stats_df["std_amount"] / stats_df["mean_amount"],
+        np.nan,
+    )
+    stats_df["federal_awards_yoy_consistency"] = np.where(
+        stats_df["obs_count"] < 2,
+        0.5,
+        np.where(
+            stats_df["mean_amount"] == 0,
+            0.0,
+            np.maximum(0.0, 1.0 - stats_df["cv"]),
+        ),
+    )
+    consistency_df = stats_df[["fips_code", "federal_awards_yoy_consistency"]]
 
     logger.info(f"Calculated consistency for {len(consistency_df)} counties")
 
@@ -252,28 +261,7 @@ def merge_and_store_policy_persistence(
         all_counties["cip_follow_through_rate"] = np.nan
         all_counties["has_cip_data"] = False
 
-    # Calculate confidence scores
-    confidence_results = []
-
-    for _, row in all_counties.iterrows():
-        result = calculate_confidence_score(
-            federal_consistency=row["federal_awards_yoy_consistency"],
-            cip_follow_through=row["cip_follow_through_rate"],
-            has_cip_data=row["has_cip_data"],
-        )
-
-        confidence_class = classify_confidence(result["confidence_score"])
-
-        confidence_results.append(
-            {
-                "fips_code": row["fips_code"],
-                "federal_awards_yoy_consistency": row["federal_awards_yoy_consistency"],
-                "cip_follow_through_rate": row["cip_follow_through_rate"],
-                "confidence_score": result["confidence_score"],
-                "confidence_class": confidence_class,
-                "data_year": data_year,
-            }
-        )
+    confidence_results = _build_policy_persistence_rows(all_counties, data_year)
 
     results_df = pd.DataFrame(confidence_results)
 
@@ -333,11 +321,12 @@ def merge_and_store_policy_persistence(
                 {"data_year": data_year},
             )
 
-        for _, row in results_df.iterrows():
-            params = row.to_dict()
-            # Convert NaN to None for SQL
-            params = {k: (None if pd.isna(v) else v) for k, v in params.items()}
-            db.execute(insert_sql if use_databricks_backend else upsert_sql, params)
+        execute_batch(
+            db,
+            insert_sql if use_databricks_backend else upsert_sql,
+            confidence_results,
+            chunk_size=1000,
+        )
 
         db.commit()
 
@@ -350,6 +339,36 @@ def merge_and_store_policy_persistence(
         f"conditional={len(results_df[results_df['confidence_class']=='conditional'])}, "
         f"fragile={len(results_df[results_df['confidence_class']=='fragile'])}"
     )
+
+
+def _build_policy_persistence_rows(
+    all_counties: pd.DataFrame, data_year: int
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in all_counties.to_dict(orient="records"):
+        result = calculate_confidence_score(
+            federal_consistency=row.get("federal_awards_yoy_consistency"),
+            cip_follow_through=row.get("cip_follow_through_rate"),
+            has_cip_data=bool(row.get("has_cip_data")),
+        )
+        confidence_score = result["confidence_score"]
+        rows.append(
+            {
+                "fips_code": row.get("fips_code"),
+                "federal_awards_yoy_consistency": _none_if_na(
+                    row.get("federal_awards_yoy_consistency")
+                ),
+                "cip_follow_through_rate": _none_if_na(row.get("cip_follow_through_rate")),
+                "confidence_score": _none_if_na(confidence_score),
+                "confidence_class": classify_confidence(confidence_score),
+                "data_year": int(data_year),
+            }
+        )
+    return rows
+
+
+def _none_if_na(value: Any) -> Any:
+    return None if pd.isna(value) else value
 
 
 def run_policy_persistence_ingestion(data_year: int = 2025, include_ai: bool = True):

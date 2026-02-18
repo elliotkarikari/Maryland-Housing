@@ -9,7 +9,7 @@ Implements:
 """
 
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -406,73 +406,56 @@ def store_final_synthesis(df: pd.DataFrame):
         """
         )
 
-        rows = []
-        for _, row in df.iterrows():
-            # Determine uncertainty level from reasons
-            n_reasons = len(row["uncertainty_reasons"])
-            if n_reasons == 0:
-                uncertainty_level = "low"
-            elif n_reasons == 1:
-                uncertainty_level = "medium"
-            else:
-                uncertainty_level = "high"
-
-            row_dict = {
-                "geoid": row["geoid"],
-                "current_as_of_year": int(row["current_as_of_year"]),
-                "final_grouping": row["final_grouping"],
-                "directional_status": row["directional_status"],
-                "confidence_level": row["confidence_level"],
-                "uncertainty_level": uncertainty_level,
-                "uncertainty_reasons": json.dumps(row["uncertainty_reasons"]),
-                "composite_score": (
-                    float(row["composite_score"]) if pd.notna(row["composite_score"]) else None
-                ),
-                "risk_drag_applied": (
-                    float(row.get("risk_drag_score", 0))
-                    if pd.notna(row.get("risk_drag_score"))
-                    else None
-                ),
-                "employment_gravity_score": (
-                    float(row.get("employment_gravity_score"))
-                    if pd.notna(row.get("employment_gravity_score"))
-                    else None
-                ),
-                "mobility_optionality_score": (
-                    float(row.get("mobility_optionality_score"))
-                    if pd.notna(row.get("mobility_optionality_score"))
-                    else None
-                ),
-                "school_trajectory_score": (
-                    float(row.get("school_trajectory_score"))
-                    if pd.notna(row.get("school_trajectory_score"))
-                    else None
-                ),
-                "housing_elasticity_score": (
-                    float(row.get("housing_elasticity_score"))
-                    if pd.notna(row.get("housing_elasticity_score"))
-                    else None
-                ),
-                "demographic_momentum_score": (
-                    float(row.get("demographic_momentum_score"))
-                    if pd.notna(row.get("demographic_momentum_score"))
-                    else None
-                ),
-                "risk_drag_score": (
-                    float(row.get("risk_drag_score"))
-                    if pd.notna(row.get("risk_drag_score"))
-                    else None
-                ),
-                "classification_version": "v2.0-multiyear",
-            }
-
-            rows.append(row_dict)
+        rows = _build_final_synthesis_rows(df)
 
         execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
     logger.info("✓ Final synthesis stored successfully")
+
+
+def _build_final_synthesis_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        uncertainty_reasons = row.get("uncertainty_reasons")
+        if not isinstance(uncertainty_reasons, list):
+            uncertainty_reasons = []
+        reason_count = len(uncertainty_reasons)
+        if reason_count == 0:
+            uncertainty_level = "low"
+        elif reason_count == 1:
+            uncertainty_level = "medium"
+        else:
+            uncertainty_level = "high"
+
+        rows.append(
+            {
+                "geoid": row.get("geoid"),
+                "current_as_of_year": int(row.get("current_as_of_year")),
+                "final_grouping": row.get("final_grouping"),
+                "directional_status": row.get("directional_status"),
+                "confidence_level": row.get("confidence_level"),
+                "uncertainty_level": uncertainty_level,
+                "uncertainty_reasons": json.dumps(uncertainty_reasons),
+                "composite_score": _float_or_none(row.get("composite_score")),
+                "risk_drag_applied": _float_or_none(row.get("risk_drag_score")),
+                "employment_gravity_score": _float_or_none(row.get("employment_gravity_score")),
+                "mobility_optionality_score": _float_or_none(row.get("mobility_optionality_score")),
+                "school_trajectory_score": _float_or_none(row.get("school_trajectory_score")),
+                "housing_elasticity_score": _float_or_none(row.get("housing_elasticity_score")),
+                "demographic_momentum_score": _float_or_none(row.get("demographic_momentum_score")),
+                "risk_drag_score": _float_or_none(row.get("risk_drag_score")),
+                "classification_version": "v2.0-multiyear",
+            }
+        )
+    return rows
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if pd.isna(value):
+        return None
+    return float(value)
 
 
 def main():

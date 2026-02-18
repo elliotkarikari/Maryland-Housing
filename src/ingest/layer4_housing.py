@@ -17,7 +17,9 @@ import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
@@ -292,68 +294,132 @@ def store_housing_data(df: pd.DataFrame):
         """
         )
 
-        for _, row in df.iterrows():
-            row_dict = {
-                "fips_code": row["fips_code"],
-                "data_year": int(row["data_year"]),
-                "permits_total": (
-                    int(row["permits_total"]) if pd.notna(row.get("permits_total")) else None
-                ),
-                "permits_single_family": (
-                    int(row["permits_single_family"])
-                    if pd.notna(row.get("permits_single_family"))
-                    else None
-                ),
-                "permits_multifamily": (
-                    int(row["permits_multifamily"])
-                    if pd.notna(row.get("permits_multifamily"))
-                    else None
-                ),
-                "permits_per_1000_households": (
-                    float(row["permits_per_1000_households"])
-                    if pd.notna(row.get("permits_per_1000_households"))
-                    else None
-                ),
-                "permits_3yr_trend": (
-                    None if pd.isna(row.get("permits_3yr_trend")) else row.get("permits_3yr_trend")
-                ),
-                "median_home_value": (
-                    float(row["median_home_value"]) if pd.notna(row["median_home_value"]) else None
-                ),
-                "median_household_income": (
-                    float(row["median_household_income"])
-                    if pd.notna(row["median_household_income"])
-                    else None
-                ),
-                "price_to_income_ratio": (
-                    float(row["price_to_income_ratio"])
-                    if pd.notna(row["price_to_income_ratio"])
-                    else None
-                ),
-                "price_to_income_5yr_change": (
-                    float(row["price_to_income_5yr_change"])
-                    if pd.notna(row.get("price_to_income_5yr_change"))
-                    else None
-                ),
-                "has_open_zoning_gis": None,
-                "zoning_capacity_indicator": None,
-                "supply_responsiveness_score": (
-                    float(row["supply_responsiveness_score"])
-                    if pd.notna(row["supply_responsiveness_score"])
-                    else None
-                ),
-                "housing_elasticity_index": (
-                    float(row["housing_elasticity_index"])
-                    if pd.notna(row["housing_elasticity_index"])
-                    else None
-                ),
-            }
-
-            db.execute(insert_sql, row_dict)
+        rows = _build_housing_rows(df)
+        if rows:
+            db.execute(insert_sql, rows)
 
         db.commit()
 
     logger.info("✓ Housing data stored successfully")
+
+
+def _build_housing_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "fips_code": row.get("fips_code"),
+                "data_year": _int_or_none(row.get("data_year")),
+                "permits_total": _int_or_none(row.get("permits_total")),
+                "permits_single_family": _int_or_none(row.get("permits_single_family")),
+                "permits_multifamily": _int_or_none(row.get("permits_multifamily")),
+                "permits_per_1000_households": _float_or_none(
+                    row.get("permits_per_1000_households")
+                ),
+                "permits_3yr_trend": _none_if_na(row.get("permits_3yr_trend")),
+                "median_home_value": _float_or_none(row.get("median_home_value")),
+                "median_household_income": _float_or_none(row.get("median_household_income")),
+                "price_to_income_ratio": _float_or_none(row.get("price_to_income_ratio")),
+                "price_to_income_5yr_change": _float_or_none(row.get("price_to_income_5yr_change")),
+                "has_open_zoning_gis": None,
+                "zoning_capacity_indicator": None,
+                "supply_responsiveness_score": _float_or_none(
+                    row.get("supply_responsiveness_score")
+                ),
+                "housing_elasticity_index": _float_or_none(row.get("housing_elasticity_index")),
+            }
+        )
+    return rows
+
+
+def _apply_housing_trends(combined: pd.DataFrame) -> pd.DataFrame:
+    combined = combined.copy()
+
+    ratio_lookup = combined[["fips_code", "data_year", "price_to_income_ratio"]].rename(
+        columns={
+            "data_year": "lookup_year",
+            "price_to_income_ratio": "price_to_income_ratio_baseline",
+        }
+    )
+    permits_lookup = combined[["fips_code", "data_year", "permits_per_1000_households"]].rename(
+        columns={
+            "data_year": "lookup_year",
+            "permits_per_1000_households": "permits_per_1000_households_baseline",
+        }
+    )
+
+    combined["price_baseline_year"] = combined["data_year"] - 5
+    combined["permits_baseline_year"] = combined["data_year"] - 2
+
+    combined = combined.merge(
+        ratio_lookup,
+        left_on=["fips_code", "price_baseline_year"],
+        right_on=["fips_code", "lookup_year"],
+        how="left",
+    ).drop(columns=["lookup_year"])
+
+    combined = combined.merge(
+        permits_lookup,
+        left_on=["fips_code", "permits_baseline_year"],
+        right_on=["fips_code", "lookup_year"],
+        how="left",
+    ).drop(columns=["lookup_year"])
+
+    combined["price_to_income_5yr_change"] = pd.NA
+    ratio_valid = (
+        combined["price_to_income_ratio"].notna()
+        & combined["price_to_income_ratio_baseline"].notna()
+    )
+    combined.loc[ratio_valid, "price_to_income_5yr_change"] = (
+        combined.loc[ratio_valid, "price_to_income_ratio"]
+        - combined.loc[ratio_valid, "price_to_income_ratio_baseline"]
+    ).round(4)
+
+    combined["permits_3yr_trend"] = pd.NA
+    permits_valid = (
+        combined["permits_per_1000_households"].notna()
+        & combined["permits_per_1000_households_baseline"].notna()
+        & (combined["permits_per_1000_households_baseline"] != 0)
+    )
+    permits_pct_change = pd.Series(np.nan, index=combined.index, dtype=float)
+    permits_pct_change.loc[permits_valid] = (
+        (
+            combined.loc[permits_valid, "permits_per_1000_households"]
+            - combined.loc[permits_valid, "permits_per_1000_households_baseline"]
+        )
+        / combined.loc[permits_valid, "permits_per_1000_households_baseline"]
+        * 100
+    )
+    combined.loc[permits_valid, "permits_3yr_trend"] = np.select(
+        [permits_pct_change.loc[permits_valid] >= 5, permits_pct_change.loc[permits_valid] <= -5],
+        ["increasing", "decreasing"],
+        default="stable",
+    )
+
+    return combined.drop(
+        columns=[
+            "price_baseline_year",
+            "permits_baseline_year",
+            "price_to_income_ratio_baseline",
+            "permits_per_1000_households_baseline",
+        ]
+    )
+
+
+def _none_if_na(value: Any) -> Any:
+    return None if pd.isna(value) else value
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if pd.isna(value):
+        return None
+    return int(value)
 
 
 def run_layer4_ingestion(data_year: int = None, multi_year: bool = True):
@@ -430,42 +496,7 @@ def run_layer4_ingestion(data_year: int = None, multi_year: bool = True):
 
     combined = pd.concat(all_years, ignore_index=True)
 
-    # Compute 5-year price-to-income change when baseline exists
-    combined["price_to_income_5yr_change"] = pd.NA
-    for fips in combined["fips_code"].unique():
-        sub = combined[combined["fips_code"] == fips].copy()
-        year_to_ratio = {
-            row["data_year"]: row["price_to_income_ratio"] for _, row in sub.iterrows()
-        }
-        for idx, row in sub.iterrows():
-            baseline_year = row["data_year"] - 5
-            if baseline_year in year_to_ratio:
-                baseline = year_to_ratio[baseline_year]
-                if pd.notna(baseline):
-                    combined.loc[idx, "price_to_income_5yr_change"] = round(
-                        row["price_to_income_ratio"] - baseline, 4
-                    )
-
-    # Compute 3-year permits trend (per 1000 households) when baseline exists
-    combined["permits_3yr_trend"] = pd.NA
-    for fips in combined["fips_code"].unique():
-        sub = combined[combined["fips_code"] == fips].copy()
-        year_to_permits = {
-            row["data_year"]: row["permits_per_1000_households"] for _, row in sub.iterrows()
-        }
-        for idx, row in sub.iterrows():
-            baseline_year = row["data_year"] - 2
-            if baseline_year in year_to_permits:
-                baseline = year_to_permits[baseline_year]
-                current = row["permits_per_1000_households"]
-                if pd.notna(baseline) and pd.notna(current) and baseline != 0:
-                    pct_change = (current - baseline) / baseline * 100
-                    if pct_change >= 5:
-                        combined.loc[idx, "permits_3yr_trend"] = "increasing"
-                    elif pct_change <= -5:
-                        combined.loc[idx, "permits_3yr_trend"] = "decreasing"
-                    else:
-                        combined.loc[idx, "permits_3yr_trend"] = "stable"
+    combined = _apply_housing_trends(combined)
 
     # Store in database
     logger.info("Storing combined housing data...")

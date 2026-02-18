@@ -10,7 +10,8 @@ Implements deterministic weighted composition:
 Composition: 0.5*level + 0.3*momentum + 0.2*stability
 """
 
-from typing import Dict, List, Optional
+import json
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -352,46 +353,67 @@ def store_layer_summary_scores(df: pd.DataFrame):
         """
         )
 
-        import json
-
-        rows = []
-        for _, row in df.iterrows():
-            row_dict = {
-                "geoid": row["geoid"],
-                "layer_name": row["layer_name"],
-                "as_of_year": int(row["as_of_year"]),
-                "layer_level_score": (
-                    float(row["layer_level_score"]) if pd.notna(row["layer_level_score"]) else None
-                ),
-                "layer_momentum_score": (
-                    float(row["layer_momentum_score"])
-                    if pd.notna(row["layer_momentum_score"])
-                    else None
-                ),
-                "layer_stability_score": (
-                    float(row["layer_stability_score"])
-                    if pd.notna(row["layer_stability_score"])
-                    else None
-                ),
-                "layer_overall_score": (
-                    float(row["layer_overall_score"])
-                    if pd.notna(row["layer_overall_score"])
-                    else None
-                ),
-                "missingness_penalty": float(row["missingness_penalty"]),
-                "has_momentum": bool(row["has_momentum"]),
-                "has_stability": bool(row["has_stability"]),
-                "coverage_years": int(row["coverage_years"]),
-                "weights": json.dumps(row["weights_used"]),
-                "normalization_method": "percentile_rank",
-            }
-            rows.append(row_dict)
+        rows = _build_layer_summary_rows(df)
 
         execute_batch(db, insert_sql, rows, chunk_size=1000)
 
         db.commit()
 
     logger.info("✓ Layer summary scores stored successfully")
+
+
+def _build_layer_summary_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        rows.append(
+            {
+                "geoid": _none_if_na(row.get("geoid")),
+                "layer_name": _none_if_na(row.get("layer_name")),
+                "as_of_year": _int_or_default(row.get("as_of_year")),
+                "layer_level_score": _float_or_none(row.get("layer_level_score")),
+                "layer_momentum_score": _float_or_none(row.get("layer_momentum_score")),
+                "layer_stability_score": _float_or_none(row.get("layer_stability_score")),
+                "layer_overall_score": _float_or_none(row.get("layer_overall_score")),
+                "missingness_penalty": _float_or_none(row.get("missingness_penalty")),
+                "has_momentum": _bool_or_default(row.get("has_momentum")),
+                "has_stability": _bool_or_default(row.get("has_stability")),
+                "coverage_years": _int_or_default(row.get("coverage_years")),
+                "weights": json.dumps(row.get("weights_used") or {}),
+                "normalization_method": "percentile_rank",
+            }
+        )
+    return rows
+
+
+def _none_if_na(value: Any) -> Any:
+    return None if pd.isna(value) else value
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
+def _int_or_default(value: Any, default: int = 0) -> int:
+    if pd.isna(value):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool_or_default(value: Any, default: bool = False) -> bool:
+    if pd.isna(value):
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    return bool(value)
 
 
 def compute_all_layer_scores(as_of_year: int = 2025) -> pd.DataFrame:

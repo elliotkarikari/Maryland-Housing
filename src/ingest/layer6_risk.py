@@ -13,7 +13,7 @@ from datetime import datetime
 
 # Ensure project root is on sys.path when running as a script
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import geopandas as gpd
 import numpy as np
@@ -96,9 +96,10 @@ def _compute_sfha_metrics() -> pd.DataFrame:
         return pd.DataFrame()
 
     counties_proj = counties.to_crs("EPSG:5070")
+    county_geom_by_fips = counties_proj.set_index("fips_code")["geometry"].to_dict()
     results = []
 
-    for _, county in counties.iterrows():
+    for county in counties[["fips_code", "geometry"]].to_dict(orient="records"):
         fips = county["fips_code"]
         geom = county["geometry"]
         minx, miny, maxx, maxy = geom.bounds
@@ -121,7 +122,7 @@ def _compute_sfha_metrics() -> pd.DataFrame:
             continue
 
         sfha_proj = sfha_gdf.to_crs("EPSG:5070")
-        county_geom = counties_proj[counties_proj["fips_code"] == fips].iloc[0]["geometry"]
+        county_geom = county_geom_by_fips[fips]
         clipped = gpd.clip(sfha_proj, county_geom)
         sfha_area_m2 = clipped.area.sum() if not clipped.empty else 0.0
         county_area_m2 = county_geom.area
@@ -429,13 +430,23 @@ def store_risk_data(df: pd.DataFrame):
         """
         )
 
-        for _, row in df.iterrows():
-            row_dict = {k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()}
-            db.execute(insert_sql, row_dict)
+        rows = _build_risk_rows(df)
+        if rows:
+            db.execute(insert_sql, rows)
 
         db.commit()
 
     logger.info("✓ Risk data stored successfully")
+
+
+def _build_risk_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        row_dict: Dict[str, Any] = {}
+        for key, value in row.items():
+            row_dict[key] = None if pd.isna(value) else value
+        rows.append(row_dict)
+    return rows
 
 
 def main():

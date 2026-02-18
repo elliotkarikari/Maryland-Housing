@@ -33,6 +33,20 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+def _build_normalized_rows(long_df: pd.DataFrame) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    for row in long_df.to_dict(orient="records"):
+        rows.append(
+            {
+                "fips_code": str(row["fips_code"]),
+                "data_year": int(row["data_year"]),
+                "feature_name": str(row["feature_name"]),
+                "normalized_value": float(row["normalized_value"]),
+            }
+        )
+    return rows
+
+
 def percentile_normalize(values: pd.Series, directionality: Directionality) -> pd.Series:
     """
     Normalize using percentile rank (0-1).
@@ -376,15 +390,7 @@ def store_normalized_features(normalized_layers: Dict[str, pd.DataFrame], data_y
             "_normalized", "", regex=False
         )
 
-        rows = [
-            {
-                "fips_code": str(row["fips_code"]),
-                "data_year": int(row["data_year"]),
-                "feature_name": str(row["feature_name"]),
-                "normalized_value": float(row["normalized_value"]),
-            }
-            for _, row in long_df.iterrows()
-        ]
+        rows = _build_normalized_rows(long_df)
 
         insert_count = execute_batch(db, insert_sql, rows, chunk_size=1000)
 
