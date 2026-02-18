@@ -18,6 +18,7 @@
 - In pandas tests, avoid `is True/False` identity checks on scalar values; cast with `bool(...)` to prevent numpy scalar identity mismatches.
 - Workflow-level concurrency cancellation (`cancel-in-progress`) is a low-risk way to cut wasted CI minutes on rapidly updated branches.
 - `paths-ignore` should be limited to clearly non-runtime paths (archives/process docs) so CI acceleration does not hide code regressions.
+- Performance gates are more stable when they enforce scaling ratios on deterministic synthetic datasets instead of absolute runtime thresholds.
 
 ### Preventive Prompt Snippet
 Before any broad refactor: "List canonical docs, list non-canonical docs, and prove each deletion candidate has zero runtime dependency and a documented replacement."

@@ -73,6 +73,9 @@ jobs:
       - name: Docs consistency check
         run: ./scripts/check_docs_consistency.sh
 
+      - name: Performance regression check
+        run: python scripts/performance_regression_check.py
+
       - name: Black
         run: python -m black --check src tests config
 

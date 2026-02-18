@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all process pipeline export serve frontend test test-fast lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
+.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all process pipeline export serve frontend test test-fast perf-check lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -31,6 +31,7 @@ help:
 		@echo "  make serve          - Start FastAPI development server"
 		@echo "  make test           - Run test suite"
 		@echo "  make test-fast      - Run fast-fail test pass for quick iteration"
+		@echo "  make perf-check     - Run local performance regression checks"
 		@echo "  make clean          - Remove temporary files"
 		@echo "  make agent-lightning - Start Agent Lightning pilot container"
 	@echo ""
@@ -127,6 +128,9 @@ test:
 
 test-fast:
 	$(PYTHON) -m pytest tests/ -q --maxfail=1
+
+perf-check:
+	$(PYTHON) scripts/performance_regression_check.py
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

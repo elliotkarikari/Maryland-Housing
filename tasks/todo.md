@@ -19,4 +19,4 @@
 - [x] Bit 3 (slice K): optimize remaining Layer5 compute loops (`src/ingest/layer5_demographics.py`, `src/ingest/layer5_demographic_equity.py`) with vectorized year-anchored/join-based calculations
 - [ ] Bit 3: simplify ingest write paths (replace highest-cost row-by-row inserts)
 - [x] Bit 4 (slice A): accelerate CI/dev cycle time with workflow concurrency cancellation + archive/process-only path ignores + `make test-fast`
-- [ ] Bit 4: automate performance regression checks for ingest/API hot paths
+- [x] Bit 4 (slice B): automate performance regression checks for ingest/API hot paths (`scripts/performance_regression_check.py` + CI gate + `make perf-check`)
