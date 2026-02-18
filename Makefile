@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all process pipeline export serve frontend test lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
+.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all process pipeline export serve frontend test test-fast lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -28,10 +28,11 @@ help:
 	@echo "  make process        - Run multi-year scoring + classification"
 	@echo "  make pipeline       - Run V2 pipeline + GeoJSON export"
 	@echo "  make export         - Generate GeoJSON outputs (V2)"
-	@echo "  make serve          - Start FastAPI development server"
-	@echo "  make test           - Run test suite"
-	@echo "  make clean          - Remove temporary files"
-	@echo "  make agent-lightning - Start Agent Lightning pilot container"
+		@echo "  make serve          - Start FastAPI development server"
+		@echo "  make test           - Run test suite"
+		@echo "  make test-fast      - Run fast-fail test pass for quick iteration"
+		@echo "  make clean          - Remove temporary files"
+		@echo "  make agent-lightning - Start Agent Lightning pilot container"
 	@echo ""
 	@echo "Claude Prompt Management:"
 	@echo "  make claude-list    - List all available prompts"
@@ -123,6 +124,9 @@ format:
 
 test:
 	$(PYTHON) -m pytest tests/ -v --cov=src
+
+test-fast:
+	$(PYTHON) -m pytest tests/ -q --maxfail=1
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

@@ -39,15 +39,23 @@ Bit 3 simplification/optimization slice focused on scoring pipeline internals.
 - Replaced `iterrows()` row materialization loops in tract/county storage paths with record-based iteration (`to_dict(orient="records")`).
 - Added shared coercion helpers and row-builder helpers (`_build_tract_demographic_rows(...)`, `_build_county_demographic_rows(...)`).
 - Preserved DB write semantics and existing `execute_batch(...)` usage.
+- Replaced row-wise segregation math loops in `compute_segregation_indices(...)` with county-aggregated vectorized calculations.
+- Preserved segregation fallback semantics for non-computable counties (`dissimilarity=0`, `exposure=0.5`, `isolation=0.5`).
 
 ### `src/ingest/layer5_demographics.py`
 - Replaced per-row `db.execute(...)` inserts in `store_demographic_data` with `execute_batch(...)`.
 - Preserved delete-then-insert behavior and DB schema contract.
+- Replaced row-wise vacancy prediction assignment loop with vectorized mask-based assignment per county.
+- Added `_apply_momentum_features(...)` to compute year-anchored momentum fields via keyed joins (exact baseline-year match, no row-order assumptions).
 
 ### `src/ingest/layer6_risk_vulnerability.py`
 - Replaced `iterrows()`-based row shaping in `store_risk_vulnerability_data` with `_build_risk_vulnerability_rows(...)` using record-based iteration.
 - Centralized expected insert columns into a fixed list to ensure stable defaults for sparse upstream dataframes.
 - Preserved delete-then-insert behavior and existing `execute_batch(...)` storage semantics.
+
+### `src/export/geojson_export.py`
+- Replaced `iterrows()`-based explainability generation with `_build_explainability_df(...)` using record-based iteration.
+- Preserved export payload schema and explainability text behavior.
 
 ### `tests/test_processing_scoring.py`
 - Added `test_calculate_layer_score_partial_coverage` to validate missing-data semantics.
@@ -70,12 +78,17 @@ Bit 3 simplification/optimization slice focused on scoring pipeline internals.
 
 ### `tests/test_ingest/test_layer5_demographic_equity.py`
 - Added tests for tract/county row-builder coercion behavior.
+- Added `test_compute_segregation_indices_handles_valid_and_invalid_counties` for county fallback and vectorized aggregation correctness.
 
 ### `tests/test_ingest/test_layer5_demographics.py`
 - Added `test_store_demographic_data_uses_batched_execute` to verify batched insert path and NaN sanitization.
+- Added `test_apply_vacancy_predictions_only_fills_eligible_future_rows` and `test_apply_momentum_features_requires_exact_reference_years`.
 
 ### `tests/test_ingest/test_layer6_risk_vulnerability_storage.py`
 - Added `test_build_risk_vulnerability_rows_applies_defaults_and_expected_columns` for row-builder default/provenance coverage.
+
+### `tests/test_export_geojson_export.py`
+- Added `test_build_explainability_df_returns_expected_columns`.
 
 ## Why This Is Minimal and Safe
 - Public API and output schema are unchanged.
@@ -106,6 +119,9 @@ Bit 3 simplification/optimization slice focused on scoring pipeline internals.
 - `.venv/bin/python -m pytest tests/test_ingest/test_layer6_risk_vulnerability_storage.py tests/test_ingest/test_layer6_years.py -q`
 - `.venv/bin/python -m black --check src/ingest/layer6_risk_vulnerability.py tests/test_ingest/test_layer6_risk_vulnerability_storage.py`
 - `.venv/bin/python -m isort --check-only src/ingest/layer6_risk_vulnerability.py tests/test_ingest/test_layer6_risk_vulnerability_storage.py`
+- `.venv/bin/python -m pytest tests/test_export_geojson_export.py -q`
+- `.venv/bin/python -m black --check src/export/geojson_export.py tests/test_export_geojson_export.py`
+- `.venv/bin/python -m isort --check-only src/export/geojson_export.py tests/test_export_geojson_export.py`
 - `./scripts/check_year_literals.py`
 - `./scripts/check_migration_prefixes.py`
 - `./scripts/check_docs_consistency.sh`

@@ -4,6 +4,7 @@ import pandas as pd
 from src.ingest.layer5_demographic_equity import (
     _build_county_demographic_rows,
     _build_tract_demographic_rows,
+    compute_segregation_indices,
 )
 
 
@@ -55,3 +56,28 @@ def test_build_county_demographic_rows_handles_pct_and_nullable_rates():
     assert rows[1]["net_rate"] is None
     assert rows[1]["inflow_rate"] is None
     assert rows[1]["outflow_rate"] is None
+
+
+def test_compute_segregation_indices_handles_valid_and_invalid_counties():
+    df = pd.DataFrame(
+        {
+            "tract_geoid": ["24001000100", "24001000200", "24003000100"],
+            "fips_code": ["24001", "24001", "24003"],
+            "pop_black_alone": [50.0, 0.0, 0.0],
+            "pop_hispanic": [0.0, 50.0, 0.0],
+            "pop_white_alone": [50.0, 50.0, 100.0],
+            "total_population": [100.0, 100.0, 100.0],
+        }
+    )
+
+    result = compute_segregation_indices(df)
+    county_24001 = result.loc[result["fips_code"] == "24001"].iloc[0]
+    county_24003 = result.loc[result["fips_code"] == "24003"].iloc[0]
+
+    assert county_24001["dissimilarity_index"] == 0.0
+    assert county_24001["exposure_index"] == 0.5
+    assert county_24001["isolation_index"] == 0.5
+
+    assert county_24003["dissimilarity_index"] == 0.0
+    assert county_24003["exposure_index"] == 0.5
+    assert county_24003["isolation_index"] == 0.5

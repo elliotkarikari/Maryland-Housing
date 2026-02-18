@@ -133,6 +133,27 @@ def _generate_explainability_payload(
     }
 
 
+def _build_explainability_df(df: pd.DataFrame) -> pd.DataFrame:
+    explainability_rows = []
+    for row in df.to_dict(orient="records"):
+        layer_scores = {
+            "employment_gravity": row.get("employment_gravity_score"),
+            "mobility_optionality": row.get("mobility_optionality_score"),
+            "school_trajectory": row.get("school_trajectory_score"),
+            "housing_elasticity": row.get("housing_elasticity_score"),
+            "demographic_momentum": row.get("demographic_momentum_score"),
+        }
+        explainability_rows.append(
+            _generate_explainability_payload(
+                directional_class=row.get("directional_status"),
+                confidence_class=row.get("confidence_level"),
+                risk_drag_score=row.get("risk_drag_score"),
+                layer_scores=layer_scores,
+            )
+        )
+    return pd.DataFrame(explainability_rows)
+
+
 def fetch_latest_synthesis() -> pd.DataFrame:
     """
     Fetch latest multi-year synthesis and layer scores from database.
@@ -178,24 +199,7 @@ def fetch_latest_synthesis() -> pd.DataFrame:
     df["confidence_class"] = df["confidence_level"]
 
     # Generate explainability fields (not stored in V2 table)
-    explainability = []
-    for _, row in df.iterrows():
-        layer_scores = {
-            "employment_gravity": row.get("employment_gravity_score"),
-            "mobility_optionality": row.get("mobility_optionality_score"),
-            "school_trajectory": row.get("school_trajectory_score"),
-            "housing_elasticity": row.get("housing_elasticity_score"),
-            "demographic_momentum": row.get("demographic_momentum_score"),
-        }
-        payload = _generate_explainability_payload(
-            directional_class=row.get("directional_status"),
-            confidence_class=row.get("confidence_level"),
-            risk_drag_score=row.get("risk_drag_score"),
-            layer_scores=layer_scores,
-        )
-        explainability.append(payload)
-
-    explainability_df = pd.DataFrame(explainability)
+    explainability_df = _build_explainability_df(df)
     df = pd.concat([df.reset_index(drop=True), explainability_df], axis=1)
 
     logger.info(f"Fetched synthesis for {len(df)} counties")

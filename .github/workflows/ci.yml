@@ -2,10 +2,22 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "docs/archive/**"
+      - "docs/audits/**"
+      - "tasks/**"
   push:
     branches:
       - main
       - codex/**
+    paths-ignore:
+      - "docs/archive/**"
+      - "docs/audits/**"
+      - "tasks/**"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   quality:

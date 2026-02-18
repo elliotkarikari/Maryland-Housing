@@ -634,100 +634,85 @@ def compute_segregation_indices(df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Computing segregation indices...")
 
     df = df.copy()
+    df["minority_pop"] = df["pop_black_alone"].fillna(0) + df["pop_hispanic"].fillna(0)
+    df["majority_pop"] = df["pop_white_alone"].fillna(0)
+    df["tract_pop"] = df["total_population"].fillna(0)
 
-    # For each county, compute dissimilarity and exposure indices
-    results = []
+    county_totals = df.groupby("fips_code").agg(
+        T_minority=("minority_pop", "sum"),
+        T_majority=("majority_pop", "sum"),
+        T_total=("tract_pop", "sum"),
+    )
+    county_valid = (
+        (county_totals["T_minority"] > 0)
+        & (county_totals["T_majority"] > 0)
+        & (county_totals["T_total"] > 0)
+    )
 
-    for fips_code, county_group in df.groupby("fips_code"):
-        # Total county populations
-        T_minority = county_group["pop_black_alone"].sum() + county_group["pop_hispanic"].sum()
-        T_majority = county_group["pop_white_alone"].sum()
-        T_total = county_group["total_population"].sum()
+    df = df.join(county_totals, on="fips_code")
+    valid_rows = (df["T_minority"] > 0) & (df["T_majority"] > 0) & (df["T_total"] > 0)
+    valid_with_population = valid_rows & (df["tract_pop"] > 0)
 
-        if T_minority == 0 or T_majority == 0 or T_total == 0:
-            # Can't compute meaningful segregation
-            for idx in county_group.index:
-                results.append(
-                    {
-                        "idx": idx,
-                        "dissimilarity_index": 0,
-                        "exposure_index": 0.5,
-                        "isolation_index": 0.5,
-                    }
-                )
-            continue
-
-        # Compute tract-level contributions
-        for idx, row in county_group.iterrows():
-            t_i = row["pop_black_alone"] + row["pop_hispanic"]  # Minority in tract
-            w_i = row["pop_white_alone"]  # Majority in tract
-            n_i = row["total_population"]  # Total in tract
-
-            # Tract-level dissimilarity contribution
-            d_contribution = (
-                abs(t_i / T_minority - w_i / T_majority) if T_minority > 0 and T_majority > 0 else 0
-            )
-
-            # Exposure: probability minority encounters majority
-            # P*xy = sum((ti/T) * (wi/ni))
-            exposure_contribution = (
-                (t_i / T_minority) * (w_i / n_i) if T_minority > 0 and n_i > 0 else 0
-            )
-
-            # Isolation: probability minority encounters minority
-            isolation_contribution = (
-                (t_i / T_minority) * (t_i / n_i) if T_minority > 0 and n_i > 0 else 0
-            )
-
-            results.append(
-                {
-                    "idx": idx,
-                    "d_contribution": d_contribution,
-                    "exposure_contribution": exposure_contribution,
-                    "isolation_contribution": isolation_contribution,
-                }
-            )
-
-    # Aggregate contributions back to county level
-    result_df = pd.DataFrame(results)
-
-    # Join back contributions
-    df = df.reset_index(drop=True)
-    if "d_contribution" in result_df.columns:
-        df["d_contribution"] = result_df["d_contribution"].values
-
-    # Now compute county-level indices and assign to tracts
-    for fips_code, county_group in df.groupby("fips_code"):
-        county_D = (
-            0.5 * county_group["d_contribution"].sum()
-            if "d_contribution" in county_group.columns
-            else 0
+    df["d_contribution"] = 0.0
+    df.loc[valid_rows, "d_contribution"] = (
+        (
+            df.loc[valid_rows, "minority_pop"] / df.loc[valid_rows, "T_minority"]
+            - df.loc[valid_rows, "majority_pop"] / df.loc[valid_rows, "T_majority"]
         )
-        county_D = min(county_D, 1.0)  # Cap at 1
+        .abs()
+        .astype(float)
+    )
 
-        # Assign county-level index to all tracts (uniform within county)
-        df.loc[df["fips_code"] == fips_code, "dissimilarity_index"] = county_D
+    df["exposure_contribution"] = 0.0
+    df.loc[valid_with_population, "exposure_contribution"] = (
+        (
+            df.loc[valid_with_population, "minority_pop"]
+            / df.loc[valid_with_population, "T_minority"]
+        )
+        * (
+            df.loc[valid_with_population, "majority_pop"]
+            / df.loc[valid_with_population, "tract_pop"]
+        )
+    ).astype(float)
 
-        # Exposure and isolation (county-level, assigned to tracts)
-        T_minority = county_group["pop_black_alone"].sum() + county_group["pop_hispanic"].sum()
-        T_majority = county_group["pop_white_alone"].sum()
+    df["isolation_contribution"] = 0.0
+    df.loc[valid_with_population, "isolation_contribution"] = (
+        (
+            df.loc[valid_with_population, "minority_pop"]
+            / df.loc[valid_with_population, "T_minority"]
+        )
+        * (
+            df.loc[valid_with_population, "minority_pop"]
+            / df.loc[valid_with_population, "tract_pop"]
+        )
+    ).astype(float)
 
-        exposure = 0
-        isolation = 0
-        for _, row in county_group.iterrows():
-            t_i = row["pop_black_alone"] + row["pop_hispanic"]
-            w_i = row["pop_white_alone"]
-            n_i = row["total_population"]
-            if T_minority > 0 and n_i > 0:
-                exposure += (t_i / T_minority) * (w_i / n_i)
-                isolation += (t_i / T_minority) * (t_i / n_i)
+    county_d = (df.groupby("fips_code")["d_contribution"].sum() * 0.5).clip(upper=1.0)
+    county_exposure = df.groupby("fips_code")["exposure_contribution"].sum()
+    county_isolation = df.groupby("fips_code")["isolation_contribution"].sum()
 
-        df.loc[df["fips_code"] == fips_code, "exposure_index"] = exposure
-        df.loc[df["fips_code"] == fips_code, "isolation_index"] = isolation
+    df["dissimilarity_index"] = df["fips_code"].map(county_d).fillna(0.0)
+    df["exposure_index"] = df["fips_code"].map(county_exposure).fillna(0.0)
+    df["isolation_index"] = df["fips_code"].map(county_isolation).fillna(0.0)
 
-    # Clean up temporary column
-    if "d_contribution" in df.columns:
-        df = df.drop(columns=["d_contribution"])
+    invalid_counties = ~df["fips_code"].map(county_valid).fillna(False)
+    df.loc[invalid_counties, "dissimilarity_index"] = 0.0
+    df.loc[invalid_counties, "exposure_index"] = 0.5
+    df.loc[invalid_counties, "isolation_index"] = 0.5
+
+    df = df.drop(
+        columns=[
+            "minority_pop",
+            "majority_pop",
+            "tract_pop",
+            "T_minority",
+            "T_majority",
+            "T_total",
+            "d_contribution",
+            "exposure_contribution",
+            "isolation_contribution",
+        ]
+    )
 
     logger.info(f"Avg dissimilarity: {df['dissimilarity_index'].mean():.3f}")
     logger.info(f"Avg exposure: {df['exposure_index'].mean():.3f}")

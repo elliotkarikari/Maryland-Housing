@@ -13,6 +13,11 @@
 - Keep opportunity-index composition logic isolated in a row-builder helper so weighting behavior is explicit and testable outside DB interactions.
 - Legacy ingest modules still matter for maintenance; replacing per-row `db.execute` with `execute_batch` is low-risk and immediately improves runtime.
 - Large wide-table inserts benefit from a dedicated row-builder helper plus a fixed expected-column list to guarantee stable defaults across schema drift.
+- Even small row-wise loops in export paths should be converted to record-based builders for consistency and easier unit testing.
+- For time-series momentum metrics, prefer key-based joins on explicit reference years over row-position shifts so sparse-year datasets do not compute false deltas.
+- In pandas tests, avoid `is True/False` identity checks on scalar values; cast with `bool(...)` to prevent numpy scalar identity mismatches.
+- Workflow-level concurrency cancellation (`cancel-in-progress`) is a low-risk way to cut wasted CI minutes on rapidly updated branches.
+- `paths-ignore` should be limited to clearly non-runtime paths (archives/process docs) so CI acceleration does not hide code regressions.
 
 ### Preventive Prompt Snippet
 Before any broad refactor: "List canonical docs, list non-canonical docs, and prove each deletion candidate has zero runtime dependency and a documented replacement."

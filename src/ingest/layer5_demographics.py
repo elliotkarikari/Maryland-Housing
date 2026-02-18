@@ -336,7 +336,8 @@ def apply_vacancy_predictions(combined: pd.DataFrame) -> pd.DataFrame:
     max_extrap = settings.PREDICTION_MAX_EXTRAP_YEARS
 
     for fips in combined["fips_code"].unique():
-        sub = combined[combined["fips_code"] == fips].copy()
+        sub_mask = combined["fips_code"] == fips
+        sub = combined.loc[sub_mask]
         history = sub[sub["vacancy_rate"].notna()]
         if len(history) < min_years:
             continue
@@ -359,22 +360,83 @@ def apply_vacancy_predictions(combined: pd.DataFrame) -> pd.DataFrame:
             continue
 
         end_year = min(target_year, max_year + max_extrap)
-        for idx, row in sub.iterrows():
-            if pd.notna(row.get("vacancy_rate")):
-                continue
-            year = float(row["data_year"])
-            if year <= max_year or year > end_year:
-                continue
-            pred = float(slope * year + intercept)
-            pred = float(max(0.0, min(1.0, pred)))
-            combined.loc[idx, "vacancy_rate_pred"] = pred
-            combined.loc[idx, "vacancy_predicted"] = True
-            combined.loc[idx, "vacancy_pred_method"] = method
-            combined.loc[idx, "vacancy_pred_years"] = int(year - max_year)
-            if pd.isna(combined.loc[idx, "vacancy_source"]):
-                combined.loc[idx, "vacancy_source"] = "predicted"
+        year_series = combined["data_year"].astype(float)
+        prediction_mask = (
+            sub_mask
+            & combined["vacancy_rate"].isna()
+            & (year_series > max_year)
+            & (year_series <= end_year)
+        )
+        if not prediction_mask.any():
+            continue
+
+        predict_years = year_series.loc[prediction_mask]
+        predictions = (slope * predict_years + intercept).clip(lower=0.0, upper=1.0).astype(float)
+        combined.loc[prediction_mask, "vacancy_rate_pred"] = predictions
+        combined.loc[prediction_mask, "vacancy_predicted"] = True
+        combined.loc[prediction_mask, "vacancy_pred_method"] = method
+        combined.loc[prediction_mask, "vacancy_pred_years"] = (predict_years - max_year).astype(int)
+        missing_source_mask = prediction_mask & combined["vacancy_source"].isna()
+        combined.loc[missing_source_mask, "vacancy_source"] = "predicted"
 
     return combined
+
+
+def _apply_momentum_features(combined: pd.DataFrame) -> pd.DataFrame:
+    combined = combined.copy()
+
+    pop_lookup = combined[["fips_code", "data_year", "pop_age_25_44"]].rename(
+        columns={"data_year": "lookup_year", "pop_age_25_44": "pop_age_25_44_baseline"}
+    )
+    household_lookup = combined[["fips_code", "data_year", "households_total"]].rename(
+        columns={"data_year": "lookup_year", "households_total": "households_total_baseline"}
+    )
+
+    combined["baseline_year"] = combined["data_year"] - 2
+    combined["prior_year"] = combined["data_year"] - 1
+    combined = combined.merge(
+        pop_lookup,
+        left_on=["fips_code", "baseline_year"],
+        right_on=["fips_code", "lookup_year"],
+        how="left",
+    ).drop(columns=["lookup_year"])
+    combined = combined.merge(
+        household_lookup,
+        left_on=["fips_code", "prior_year"],
+        right_on=["fips_code", "lookup_year"],
+        how="left",
+    ).drop(columns=["lookup_year"])
+
+    pop_baseline = combined["pop_age_25_44_baseline"]
+    pop_current = combined["pop_age_25_44"]
+    pop_valid = pop_baseline.notna() & pop_current.notna() & (pop_baseline != 0)
+    combined["working_age_momentum"] = pd.NA
+    combined.loc[pop_valid, "working_age_momentum"] = (
+        (pop_current.loc[pop_valid] - pop_baseline.loc[pop_valid])
+        / pop_baseline.loc[pop_valid]
+        * 100
+    )
+
+    household_baseline = combined["households_total_baseline"]
+    household_current = combined["households_total"]
+    household_valid = (
+        household_baseline.notna() & household_current.notna() & (household_baseline != 0)
+    )
+    combined["household_formation_change"] = pd.NA
+    combined.loc[household_valid, "household_formation_change"] = (
+        (household_current.loc[household_valid] - household_baseline.loc[household_valid])
+        / household_baseline.loc[household_valid]
+        * 100
+    )
+
+    return combined.drop(
+        columns=[
+            "baseline_year",
+            "prior_year",
+            "pop_age_25_44_baseline",
+            "households_total_baseline",
+        ]
+    )
 
 
 def _fetch_crosswalk_from_api(zip_codes: list[str]) -> pd.DataFrame:
@@ -804,35 +866,7 @@ def main():
         combined = pd.concat(all_years, ignore_index=True)
 
         # Working-age momentum (3-year change) and household formation change (YoY)
-        combined["working_age_momentum"] = pd.NA
-        combined["household_formation_change"] = pd.NA
-
-        for fips in combined["fips_code"].unique():
-            sub = combined[combined["fips_code"] == fips].copy()
-            year_to_pop = {row["data_year"]: row["pop_age_25_44"] for _, row in sub.iterrows()}
-            year_to_households = {
-                row["data_year"]: row["households_total"] for _, row in sub.iterrows()
-            }
-
-            for idx, row in sub.iterrows():
-                year = row["data_year"]
-                baseline_year = year - 2
-                if baseline_year in year_to_pop:
-                    baseline = year_to_pop[baseline_year]
-                    current = row["pop_age_25_44"]
-                    if pd.notna(baseline) and baseline != 0 and pd.notna(current):
-                        combined.loc[idx, "working_age_momentum"] = (
-                            (current - baseline) / baseline * 100
-                        )
-
-                prior_year = year - 1
-                if prior_year in year_to_households:
-                    baseline = year_to_households[prior_year]
-                    current = row["households_total"]
-                    if pd.notna(baseline) and baseline != 0 and pd.notna(current):
-                        combined.loc[idx, "household_formation_change"] = (
-                            (current - baseline) / baseline * 100
-                        )
+        combined = _apply_momentum_features(combined)
 
         # Composite demographic momentum score (percentile of available signals)
         combined["demographic_momentum_score"] = pd.NA
