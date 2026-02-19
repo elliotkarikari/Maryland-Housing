@@ -1,4 +1,4 @@
-.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all process pipeline export serve frontend test test-fast perf-regression lint clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
+.PHONY: help install init-db db-setup db-migrate databricks-medallion ingest-all ingest-layer1 ingest-layer2 ingest-layer3 ingest-layer4 ingest-layer5 ingest-layer6 ingest-layer3-v1 ingest-layer4-v1 ingest-layer5-v1 ingest-layer6-v1 process pipeline export serve frontend test test-fast perf-regression lint smoke eval clean agent-lightning layer1-sensitivity claude-help claude-list claude-run claude-exec claude-new
 
 # Prefer local venv if present.
 ifeq (,$(wildcard .venv/bin/python))
@@ -24,16 +24,22 @@ help:
 	@echo "  make ingest-layer4  - Ingest Housing Affordability (v2) data"
 	@echo "  make ingest-layer5  - Ingest Demographic Equity (v2) data"
 	@echo "  make ingest-layer6  - Ingest Risk Vulnerability (v2) data"
+	@echo "  make ingest-layer3-v1 - Ingest School System data (legacy)"
+	@echo "  make ingest-layer4-v1 - Ingest Housing Elasticity data (legacy)"
+	@echo "  make ingest-layer5-v1 - Ingest Demographic Momentum data (legacy)"
+	@echo "  make ingest-layer6-v1 - Ingest Risk Drag data (legacy)"
 	@echo "  make layer1-sensitivity - Run Layer 1 accessibility threshold sensitivity report"
 	@echo "  make process        - Run multi-year scoring + classification"
 	@echo "  make pipeline       - Run V2 pipeline + GeoJSON export"
 	@echo "  make export         - Generate GeoJSON outputs (V2)"
-		@echo "  make serve          - Start FastAPI development server"
-		@echo "  make test           - Run test suite"
-		@echo "  make test-fast      - Run fast-fail test pass for quick iteration"
-		@echo "  make perf-regression - Run dataframe hot-path performance scaling checks"
-		@echo "  make clean          - Remove temporary files"
-		@echo "  make agent-lightning - Start Agent Lightning pilot container"
+	@echo "  make serve          - Start FastAPI development server"
+	@echo "  make test           - Run test suite"
+	@echo "  make test-fast      - Run fast-fail test pass for quick iteration"
+	@echo "  make perf-regression - Run dataframe hot-path performance scaling checks"
+	@echo "  make smoke          - Run fast API/pipeline smoke tests"
+	@echo "  make eval           - Run Agent Lightning eval checks"
+	@echo "  make clean          - Remove temporary files"
+	@echo "  make agent-lightning - Start Agent Lightning pilot container"
 	@echo ""
 	@echo "Claude Prompt Management:"
 	@echo "  make claude-list    - List all available prompts"
@@ -91,6 +97,18 @@ ingest-layer5:
 ingest-layer6:
 	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer6_risk_vulnerability
 
+ingest-layer3-v1:
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer3_schools
+
+ingest-layer4-v1:
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer4_housing
+
+ingest-layer5-v1:
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer5_demographics
+
+ingest-layer6-v1:
+	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) -m src.ingest.layer6_risk
+
 layer1-sensitivity:
 	DATA_BACKEND=$(DATA_BACKEND) $(PYTHON) scripts/layer1_accessibility_sensitivity.py
 
@@ -131,6 +149,15 @@ test-fast:
 
 perf-regression:
 	$(PYTHON) scripts/performance_regression_check.py
+
+smoke:
+	@echo "Running smoke checks..."
+	$(PYTHON) -m pytest tests/test_api_endpoints.py -q
+	$(PYTHON) -m pytest tests/test_run_pipelines.py -q
+
+eval:
+	@echo "Running Agent Lightning eval checks..."
+	$(PYTHON) devtools/agent_lightning/run_evals.py
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

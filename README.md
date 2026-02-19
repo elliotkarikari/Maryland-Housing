@@ -409,6 +409,8 @@ make pipeline       # Complete V2 pipeline (live API feed + optional GeoJSON sna
 make export         # Generate optional GeoJSON snapshots only
 make serve          # Start FastAPI server (port 8000)
 make frontend       # Start frontend dev server (port 3000)
+make smoke          # Run fast smoke tests
+make eval           # Run Agent Lightning eval checks
 make test           # Run pytest with coverage
 make lint           # Run Black, isort, mypy
 make format         # Auto-format code
